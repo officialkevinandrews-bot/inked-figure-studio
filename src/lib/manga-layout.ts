@@ -1,3 +1,5 @@
+import type { SpeechBalloon, ComicMark, SpeedLinesEffect, SFXStamp } from "./manga-effects";
+
 export interface Point {
   x: number;
   y: number;
@@ -60,6 +62,10 @@ export interface PageLayout {
   format: PageFormat;
   panels: PanelPolygon[];
   elements: PlacedElement[];
+  balloons: SpeechBalloon[];
+  comicMarks: ComicMark[];
+  speedLines: SpeedLinesEffect[];
+  sfxStamps: SFXStamp[];
 }
 
 /** Pre-defined manga panel layouts (normalized 0..1 coordinates) */

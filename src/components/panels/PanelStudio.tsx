@@ -7,6 +7,15 @@ import {
   splitPanel,
   getPanelPixelBounds,
 } from "@/lib/manga-layout";
+import {
+  type BalloonShape,
+  type SpeechBalloon,
+  type ComicMark,
+  type SpeedLinesEffect,
+  type SFXStamp,
+  SFX_PRESETS,
+  COMIC_MARK_PRESETS,
+} from "@/lib/manga-effects";
 import { PageCanvas } from "./PageCanvas";
 import {
   Scissors,
@@ -14,7 +23,6 @@ import {
   SplitSquareHorizontal,
   Maximize2,
   Trash2,
-  Plus,
   ZoomIn,
   ZoomOut,
   FlipHorizontal,
@@ -23,7 +31,10 @@ import {
   Sparkles,
   Layers,
   ArrowLeft,
-  Download,
+  MessageSquare,
+  Zap,
+  Smile,
+  Volume2,
 } from "lucide-react";
 
 interface PanelStudioProps {
@@ -36,12 +47,18 @@ export function PanelStudio({ layout, onUpdateLayout, onOpen3dStudio }: PanelStu
   const [selectedPanelId, setSelectedPanelId] = useState<string | null>(
     layout.panels[0]?.id ?? null
   );
-  const [selectedElementId, setSelectedElementId] = useState<string | null>(null);
+  const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [zoom, setZoom] = useState(0.8);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const selectedPanel = layout.panels.find((p) => p.id === selectedPanelId);
-  const selectedElement = layout.elements.find((el) => el.id === selectedElementId);
+
+  // Identify what is currently selected
+  const selectedElement = layout.elements.find((el) => el.id === selectedItemId);
+  const selectedBalloon = layout.balloons?.find((b) => b.id === selectedItemId);
+  const selectedComicMark = layout.comicMarks?.find((m) => m.id === selectedItemId);
+  const selectedSpeedLine = layout.speedLines?.find((l) => l.id === selectedItemId);
+  const selectedSFX = layout.sfxStamps?.find((s) => s.id === selectedItemId);
 
   // Template change
   const handleApplyTemplate = (templateName: string) => {
@@ -91,21 +108,135 @@ export function PanelStudio({ layout, onUpdateLayout, onOpen3dStudio }: PanelStu
     setSelectedPanelId(remaining[0].id);
   };
 
-  // Update element
-  const handleUpdateElement = (id: string, updated: Partial<PlacedElement>) => {
+  // --- Adders for Phase 3 features ---
+  const handleAddBalloon = (shape: BalloonShape = "oval") => {
+    if (!selectedPanel) return;
+    const bounds = getPanelPixelBounds(
+      selectedPanel,
+      layout.format.width,
+      layout.format.height,
+      layout.format.margin,
+      layout.format.gutter
+    );
+
+    const newBalloon: SpeechBalloon = {
+      id: `balloon-${Date.now()}`,
+      panelId: selectedPanel.id,
+      shape,
+      text: shape === "burst" ? "WHAT?!" : shape === "cloud" ? "(Thinking...)" : "Dialogue text here...",
+      x: bounds.minX + bounds.width * 0.2,
+      y: bounds.minY + 20,
+      width: 140,
+      height: 90,
+      tailX: 30,
+      tailY: 60,
+      hasTail: shape !== "box",
+      fontSize: 13,
+      fontFamily: "'Zen Kaku Gothic New', sans-serif",
+      isVertical: false,
+      borderWidth: 2.5,
+      borderColor: "#000000",
+      backgroundColor: "#ffffff",
+      zIndex: (layout.balloons?.length ?? 0) + 100,
+    };
+
     onUpdateLayout({
       ...layout,
-      elements: layout.elements.map((el) => (el.id === id ? { ...el, ...updated } : el)),
+      balloons: [...(layout.balloons ?? []), newBalloon],
     });
+    setSelectedItemId(newBalloon.id);
   };
 
-  // Delete element
-  const handleDeleteElement = (id: string) => {
+  const handleAddComicMark = (type: ComicMark["type"]) => {
+    if (!selectedPanel) return;
+    const bounds = getPanelPixelBounds(
+      selectedPanel,
+      layout.format.width,
+      layout.format.height,
+      layout.format.margin,
+      layout.format.gutter
+    );
+
+    const newMark: ComicMark = {
+      id: `mark-${Date.now()}`,
+      panelId: selectedPanel.id,
+      type,
+      x: bounds.minX + bounds.width * 0.4,
+      y: bounds.minY + bounds.height * 0.2,
+      size: 36,
+      rotation: 0,
+      zIndex: (layout.comicMarks?.length ?? 0) + 50,
+    };
+
     onUpdateLayout({
       ...layout,
-      elements: layout.elements.filter((el) => el.id !== id),
+      comicMarks: [...(layout.comicMarks ?? []), newMark],
     });
-    if (selectedElementId === id) setSelectedElementId(null);
+    setSelectedItemId(newMark.id);
+  };
+
+  const handleAddSpeedLines = (type: "radial" | "linear" = "radial") => {
+    if (!selectedPanel) return;
+    const bounds = getPanelPixelBounds(
+      selectedPanel,
+      layout.format.width,
+      layout.format.height,
+      layout.format.margin,
+      layout.format.gutter
+    );
+
+    const newLines: SpeedLinesEffect = {
+      id: `speedlines-${Date.now()}`,
+      panelId: selectedPanel.id,
+      type,
+      centerX: bounds.minX + bounds.width / 2,
+      centerY: bounds.minY + bounds.height / 2,
+      angle: 0,
+      density: 55,
+      innerRadius: Math.min(bounds.width, bounds.height) * 0.2,
+      outerRadius: Math.max(bounds.width, bounds.height) * 0.9,
+      strokeWidth: 1.5,
+      color: "#000000",
+      zIndex: 2,
+    };
+
+    onUpdateLayout({
+      ...layout,
+      speedLines: [...(layout.speedLines ?? []), newLines],
+    });
+    setSelectedItemId(newLines.id);
+  };
+
+  const handleAddSFX = (text: string) => {
+    if (!selectedPanel) return;
+    const bounds = getPanelPixelBounds(
+      selectedPanel,
+      layout.format.width,
+      layout.format.height,
+      layout.format.margin,
+      layout.format.gutter
+    );
+
+    const newSFX: SFXStamp = {
+      id: `sfx-${Date.now()}`,
+      panelId: selectedPanel.id,
+      text,
+      x: bounds.minX + bounds.width * 0.3,
+      y: bounds.minY + bounds.height * 0.4,
+      fontSize: 48,
+      fillColor: "#ffffff",
+      strokeColor: "#000000",
+      strokeWidth: 4,
+      rotation: -12,
+      skewX: -10,
+      zIndex: 80,
+    };
+
+    onUpdateLayout({
+      ...layout,
+      sfxStamps: [...(layout.sfxStamps ?? []), newSFX],
+    });
+    setSelectedItemId(newSFX.id);
   };
 
   // Image import onto panel
@@ -141,7 +272,7 @@ export function PanelStudio({ layout, onUpdateLayout, onOpen3dStudio }: PanelStu
       ...layout,
       elements: [...layout.elements, newEl],
     });
-    setSelectedElementId(newEl.id);
+    setSelectedItemId(newEl.id);
   };
 
   return (
@@ -227,55 +358,127 @@ export function PanelStudio({ layout, onUpdateLayout, onOpen3dStudio }: PanelStu
         </div>
       </header>
 
-      {/* Main Page Canvas Area */}
+      {/* Main Workspace */}
       <div className="flex min-h-0 flex-1">
-        {/* Left Toolbar: Knife Cut & Panel Tools */}
-        <aside className="flex w-64 flex-col border-r-2 border-foreground bg-card p-3 space-y-4">
+        {/* Left Toolbar: Knife Cut & Manga Adders */}
+        <aside className="flex w-64 flex-col border-r-2 border-foreground bg-card p-3 space-y-4 overflow-y-auto">
+          {/* Knife Tools */}
           <div>
-            <h2 className="font-display text-sm flex items-center gap-1.5 mb-2">
-              <Scissors className="h-4 w-4 text-primary" /> Knife Split Tools
+            <h2 className="font-display text-sm flex items-center gap-1.5 mb-1.5">
+              <Scissors className="h-4 w-4 text-primary" /> Knife Split
             </h2>
-            <p className="text-[11px] text-muted-foreground mb-3">
-              Select a panel and click a cut style to split it dynamically:
-            </p>
-
-            <div className="space-y-2">
+            <div className="grid grid-cols-2 gap-1.5">
               <button
                 disabled={!selectedPanel}
                 onClick={() => handleKnifeSplit("horizontal")}
-                className="w-full flex items-center gap-2 rounded-sm border border-border px-3 py-1.5 text-xs font-semibold hover:border-foreground hover:bg-accent disabled:opacity-40"
+                className="flex items-center justify-center gap-1 rounded-sm border border-border py-1.5 text-xs font-semibold hover:border-foreground hover:bg-accent disabled:opacity-40"
               >
-                <SplitSquareHorizontal className="h-4 w-4" />
-                Horizontal Split
+                <SplitSquareHorizontal className="h-3.5 w-3.5" /> Horiz Cut
               </button>
-
               <button
                 disabled={!selectedPanel}
                 onClick={() => handleKnifeSplit("vertical")}
-                className="w-full flex items-center gap-2 rounded-sm border border-border px-3 py-1.5 text-xs font-semibold hover:border-foreground hover:bg-accent disabled:opacity-40"
+                className="flex items-center justify-center gap-1 rounded-sm border border-border py-1.5 text-xs font-semibold hover:border-foreground hover:bg-accent disabled:opacity-40"
               >
-                <SplitSquareVertical className="h-4 w-4" />
-                Vertical Split
+                <SplitSquareVertical className="h-3.5 w-3.5" /> Vert Cut
               </button>
-
               <button
                 disabled={!selectedPanel}
                 onClick={() => handleKnifeSplit("diagonal")}
-                className="w-full flex items-center gap-2 rounded-sm border-2 border-primary bg-primary/10 px-3 py-1.5 text-xs font-semibold hover:bg-primary/20 disabled:opacity-40"
+                className="col-span-2 flex items-center justify-center gap-1.5 rounded-sm border-2 border-primary bg-primary/10 py-1.5 text-xs font-semibold hover:bg-primary/20 disabled:opacity-40"
               >
-                <Scissors className="h-4 w-4 text-primary" />
-                Diagonal Action Slash
+                <Scissors className="h-3.5 w-3.5 text-primary" /> Action Slash (Diagonal)
               </button>
             </div>
           </div>
 
-          {/* Gutter & Margin adjustments */}
-          <div className="space-y-3 border-t border-border pt-3 text-xs">
-            <h3 className="font-display text-sm">Gutter & Margins</h3>
+          {/* Speech Balloons Adder */}
+          <div className="border-t border-border pt-3">
+            <h2 className="font-display text-sm flex items-center gap-1.5 mb-2">
+              <MessageSquare className="h-4 w-4 text-primary" /> Speech Balloons
+            </h2>
+            <div className="grid grid-cols-2 gap-1.5">
+              {[
+                { shape: "oval" as const, label: "Oval" },
+                { shape: "burst" as const, label: "Shout / Spiky" },
+                { shape: "cloud" as const, label: "Thought Cloud" },
+                { shape: "box" as const, label: "Narration Box" },
+                { shape: "whisper" as const, label: "Whisper (Dash)" },
+                { shape: "electric" as const, label: "Electric / Radio" },
+              ].map((b) => (
+                <button
+                  key={b.shape}
+                  disabled={!selectedPanel}
+                  onClick={() => handleAddBalloon(b.shape)}
+                  className="rounded-sm border border-border p-1.5 text-xs font-medium hover:border-foreground hover:bg-accent text-left disabled:opacity-40 truncate"
+                >
+                  + {b.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Comic Marks & Emotion Symbols */}
+          <div className="border-t border-border pt-3">
+            <h2 className="font-display text-sm flex items-center gap-1.5 mb-2">
+              <Smile className="h-4 w-4 text-primary" /> Comic Marks
+            </h2>
+            <div className="grid grid-cols-4 gap-1.5">
+              {COMIC_MARK_PRESETS.map((m) => (
+                <button
+                  key={m.type}
+                  disabled={!selectedPanel}
+                  onClick={() => handleAddComicMark(m.type)}
+                  title={m.label}
+                  className="rounded-sm border border-border p-1.5 text-base flex items-center justify-center hover:border-foreground hover:bg-accent disabled:opacity-40"
+                >
+                  {m.symbol}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Speed Lines & Screentones */}
+          <div className="border-t border-border pt-3">
+            <h2 className="font-display text-sm flex items-center gap-1.5 mb-2">
+              <Zap className="h-4 w-4 text-primary" /> Speed Lines
+            </h2>
+            <button
+              disabled={!selectedPanel}
+              onClick={() => handleAddSpeedLines("radial")}
+              className="w-full flex items-center justify-center gap-1.5 rounded-sm border border-border py-1.5 text-xs font-semibold hover:border-foreground hover:bg-accent disabled:opacity-40"
+            >
+              + Radial Focus Burst
+            </button>
+          </div>
+
+          {/* SFX / Onomatopoeia Stamps */}
+          <div className="border-t border-border pt-3">
+            <h2 className="font-display text-sm flex items-center gap-1.5 mb-2">
+              <Volume2 className="h-4 w-4 text-primary" /> Manga SFX Stamps
+            </h2>
+            <div className="grid grid-cols-3 gap-1">
+              {SFX_PRESETS.map((s) => (
+                <button
+                  key={s.text}
+                  disabled={!selectedPanel}
+                  onClick={() => handleAddSFX(s.text)}
+                  title={s.label}
+                  className="rounded-sm border border-border px-1 py-1 text-xs font-bold hover:border-foreground hover:bg-accent disabled:opacity-40 truncate"
+                >
+                  {s.text}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Gutter & Margins Settings */}
+          <div className="space-y-2 border-t border-border pt-3 text-xs">
+            <h3 className="font-display text-xs">Gutters & Margins</h3>
             <label className="block">
               <span className="flex justify-between">
-                <span>Gutter Spacing</span>
-                <span className="font-semibold">{layout.format.gutter} px</span>
+                <span>Gutter:</span>
+                <span className="font-semibold">{layout.format.gutter}px</span>
               </span>
               <input
                 type="range"
@@ -288,105 +491,118 @@ export function PanelStudio({ layout, onUpdateLayout, onOpen3dStudio }: PanelStu
                     format: { ...layout.format, gutter: +e.target.value },
                   })
                 }
-                className="w-full accent-primary mt-1"
-              />
-            </label>
-
-            <label className="block">
-              <span className="flex justify-between">
-                <span>Outer Margin</span>
-                <span className="font-semibold">{layout.format.margin} px</span>
-              </span>
-              <input
-                type="range"
-                min={10}
-                max={60}
-                value={layout.format.margin}
-                onChange={(e) =>
-                  onUpdateLayout({
-                    ...layout,
-                    format: { ...layout.format, margin: +e.target.value },
-                  })
-                }
-                className="w-full accent-primary mt-1"
+                className="w-full accent-primary"
               />
             </label>
           </div>
-
-          {/* Selected Panel Info */}
-          {selectedPanel && (
-            <div className="border-t border-border pt-3 space-y-2 text-xs">
-              <h3 className="font-display text-sm">Active Panel: {selectedPanel.id}</h3>
-              <label className="block">
-                <span className="flex justify-between">
-                  <span>Border Weight</span>
-                  <span>{selectedPanel.borderWidth} px</span>
-                </span>
-                <input
-                  type="range"
-                  min={1}
-                  max={8}
-                  value={selectedPanel.borderWidth}
-                  onChange={(e) => {
-                    const bw = +e.target.value;
-                    onUpdateLayout({
-                      ...layout,
-                      panels: layout.panels.map((p) =>
-                        p.id === selectedPanel.id ? { ...p, borderWidth: bw } : p
-                      ),
-                    });
-                  }}
-                  className="w-full accent-primary mt-1"
-                />
-              </label>
-
-              {layout.panels.length > 1 && (
-                <button
-                  onClick={handleDeletePanel}
-                  className="w-full flex items-center justify-center gap-1.5 rounded-sm border border-destructive text-destructive px-3 py-1.5 text-xs hover:bg-destructive/10"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                  Delete Panel
-                </button>
-              )}
-            </div>
-          )}
         </aside>
 
-        {/* Center: Scrollable Manga Page Canvas */}
+        {/* Center Canvas */}
         <main className="flex-1 overflow-auto p-8 flex items-center justify-center bg-muted/40">
           <PageCanvas
             layout={layout}
             selectedPanelId={selectedPanelId}
-            selectedElementId={selectedElementId}
+            selectedItemId={selectedItemId}
             onSelectPanel={setSelectedPanelId}
-            onSelectElement={setSelectedElementId}
-            onUpdateElement={handleUpdateElement}
-            onDeleteElement={handleDeleteElement}
+            onSelectItem={setSelectedItemId}
+            onUpdateElement={(id, u) =>
+              onUpdateLayout({
+                ...layout,
+                elements: layout.elements.map((el) => (el.id === id ? { ...el, ...u } : el)),
+              })
+            }
+            onDeleteElement={(id) => {
+              onUpdateLayout({
+                ...layout,
+                elements: layout.elements.filter((el) => el.id !== id),
+              });
+              if (selectedItemId === id) setSelectedItemId(null);
+            }}
+            onUpdateBalloon={(id, u) =>
+              onUpdateLayout({
+                ...layout,
+                balloons: layout.balloons.map((b) => (b.id === id ? { ...b, ...u } : b)),
+              })
+            }
+            onDeleteBalloon={(id) => {
+              onUpdateLayout({
+                ...layout,
+                balloons: layout.balloons.filter((b) => b.id !== id),
+              });
+              if (selectedItemId === id) setSelectedItemId(null);
+            }}
+            onUpdateComicMark={(id, u) =>
+              onUpdateLayout({
+                ...layout,
+                comicMarks: layout.comicMarks.map((m) => (m.id === id ? { ...m, ...u } : m)),
+              })
+            }
+            onDeleteComicMark={(id) => {
+              onUpdateLayout({
+                ...layout,
+                comicMarks: layout.comicMarks.filter((m) => m.id !== id),
+              });
+              if (selectedItemId === id) setSelectedItemId(null);
+            }}
+            onUpdateSpeedLines={(id, u) =>
+              onUpdateLayout({
+                ...layout,
+                speedLines: layout.speedLines.map((l) => (l.id === id ? { ...l, ...u } : l)),
+              })
+            }
+            onDeleteSpeedLines={(id) => {
+              onUpdateLayout({
+                ...layout,
+                speedLines: layout.speedLines.filter((l) => l.id !== id),
+              });
+              if (selectedItemId === id) setSelectedItemId(null);
+            }}
+            onUpdateSFXStamp={(id, u) =>
+              onUpdateLayout({
+                ...layout,
+                sfxStamps: layout.sfxStamps.map((s) => (s.id === id ? { ...s, ...u } : s)),
+              })
+            }
+            onDeleteSFXStamp={(id) => {
+              onUpdateLayout({
+                ...layout,
+                sfxStamps: layout.sfxStamps.filter((s) => s.id !== id),
+              });
+              if (selectedItemId === id) setSelectedItemId(null);
+            }}
             zoom={zoom}
           />
         </main>
 
-        {/* Right Sidebar: Element Inspector & Breakout Controls */}
+        {/* Right Inspector Sidebar */}
         <aside className="flex w-72 flex-col border-l-2 border-foreground bg-card p-3 space-y-4 overflow-y-auto">
-          {selectedElement ? (
+          {/* 1. Character Element Selected */}
+          {selectedElement && (
             <div className="space-y-4">
               <div className="flex items-center justify-between border-b border-border pb-2">
-                <h2 className="font-display text-base">Selected Figure</h2>
+                <h2 className="font-display text-base">Figure Inspector</h2>
                 <button
-                  onClick={() => handleDeleteElement(selectedElement.id)}
+                  onClick={() => {
+                    onUpdateLayout({
+                      ...layout,
+                      elements: layout.elements.filter((el) => el.id !== selectedElement.id),
+                    });
+                    setSelectedItemId(null);
+                  }}
                   className="text-destructive hover:bg-destructive/10 p-1 rounded-sm"
-                  title="Delete element"
                 >
                   <Trash2 className="h-4 w-4" />
                 </button>
               </div>
 
-              {/* 1-Click Breakout Pop-Out Toggle */}
+              {/* Breakout Toggle */}
               <div
                 onClick={() =>
-                  handleUpdateElement(selectedElement.id, {
-                    breakout: !selectedElement.breakout,
+                  onUpdateLayout({
+                    ...layout,
+                    elements: layout.elements.map((el) =>
+                      el.id === selectedElement.id ? { ...el, breakout: !el.breakout } : el
+                    ),
                   })
                 }
                 className={`p-3 rounded-sm border-2 cursor-pointer transition-all ${
@@ -410,17 +626,16 @@ export function PanelStudio({ layout, onUpdateLayout, onOpen3dStudio }: PanelStu
                   </span>
                 </div>
                 <p className="text-[11px] text-muted-foreground mt-1.5">
-                  When enabled, weapons, character heads, or limbs pop out past panel borders into gutters!
+                  Pop out past panel borders and gutters!
                 </p>
               </div>
 
-              {/* Transform Controls */}
+              {/* Dimensions */}
               <div className="space-y-3 text-xs">
-                <h3 className="font-semibold text-muted-foreground">Dimensions & Scale</h3>
                 <label className="block">
                   <span className="flex justify-between">
                     <span>Width</span>
-                    <span className="tabular-nums font-mono">{Math.round(selectedElement.width)} px</span>
+                    <span className="font-mono">{Math.round(selectedElement.width)}px</span>
                   </span>
                   <input
                     type="range"
@@ -430,9 +645,11 @@ export function PanelStudio({ layout, onUpdateLayout, onOpen3dStudio }: PanelStu
                     onChange={(e) => {
                       const w = +e.target.value;
                       const ratio = selectedElement.height / selectedElement.width;
-                      handleUpdateElement(selectedElement.id, {
-                        width: w,
-                        height: Math.round(w * ratio),
+                      onUpdateLayout({
+                        ...layout,
+                        elements: layout.elements.map((el) =>
+                          el.id === selectedElement.id ? { ...el, width: w, height: Math.round(w * ratio) } : el
+                        ),
                       });
                     }}
                     className="w-full accent-primary mt-1"
@@ -442,7 +659,7 @@ export function PanelStudio({ layout, onUpdateLayout, onOpen3dStudio }: PanelStu
                 <label className="block">
                   <span className="flex justify-between">
                     <span>Rotation</span>
-                    <span className="tabular-nums font-mono">{selectedElement.rotation}°</span>
+                    <span className="font-mono">{selectedElement.rotation}°</span>
                   </span>
                   <input
                     type="range"
@@ -450,48 +667,18 @@ export function PanelStudio({ layout, onUpdateLayout, onOpen3dStudio }: PanelStu
                     max={180}
                     value={selectedElement.rotation}
                     onChange={(e) =>
-                      handleUpdateElement(selectedElement.id, {
-                        rotation: +e.target.value,
+                      onUpdateLayout({
+                        ...layout,
+                        elements: layout.elements.map((el) =>
+                          el.id === selectedElement.id ? { ...el, rotation: +e.target.value } : el
+                        ),
                       })
                     }
                     className="w-full accent-primary mt-1"
                   />
                 </label>
-
-                {/* Flip options */}
-                <div className="flex gap-2 pt-1">
-                  <button
-                    onClick={() =>
-                      handleUpdateElement(selectedElement.id, {
-                        flipX: !selectedElement.flipX,
-                      })
-                    }
-                    className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-sm border text-xs font-semibold ${
-                      selectedElement.flipX
-                        ? "border-primary bg-primary/10 text-primary"
-                        : "border-border hover:border-foreground"
-                    }`}
-                  >
-                    <FlipHorizontal className="h-3.5 w-3.5" /> Flip Horiz
-                  </button>
-                  <button
-                    onClick={() =>
-                      handleUpdateElement(selectedElement.id, {
-                        flipY: !selectedElement.flipY,
-                      })
-                    }
-                    className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-sm border text-xs font-semibold ${
-                      selectedElement.flipY
-                        ? "border-primary bg-primary/10 text-primary"
-                        : "border-border hover:border-foreground"
-                    }`}
-                  >
-                    <FlipVertical className="h-3.5 w-3.5" /> Flip Vert
-                  </button>
-                </div>
               </div>
 
-              {/* Non-destructive 3D Re-pose button */}
               {selectedElement.source3d && (
                 <div className="border-t border-border pt-3">
                   <button
@@ -504,13 +691,176 @@ export function PanelStudio({ layout, onUpdateLayout, onOpen3dStudio }: PanelStu
                 </div>
               )}
             </div>
-          ) : (
+          )}
+
+          {/* 2. Speech Balloon Selected */}
+          {selectedBalloon && (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between border-b border-border pb-2">
+                <h2 className="font-display text-base">Speech Balloon</h2>
+                <button
+                  onClick={() => {
+                    onUpdateLayout({
+                      ...layout,
+                      balloons: layout.balloons.filter((b) => b.id !== selectedBalloon.id),
+                    });
+                    setSelectedItemId(null);
+                  }}
+                  className="text-destructive hover:bg-destructive/10 p-1 rounded-sm"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold mb-1">Dialogue Text</label>
+                <textarea
+                  value={selectedBalloon.text}
+                  onChange={(e) =>
+                    onUpdateLayout({
+                      ...layout,
+                      balloons: layout.balloons.map((b) =>
+                        b.id === selectedBalloon.id ? { ...b, text: e.target.value } : b
+                      ),
+                    })
+                  }
+                  className="w-full h-24 p-2 text-xs rounded-sm border border-input bg-background"
+                />
+              </div>
+
+              <div className="space-y-2 text-xs">
+                <label className="block">
+                  <span className="flex justify-between">
+                    <span>Font Size</span>
+                    <span className="font-mono">{selectedBalloon.fontSize}px</span>
+                  </span>
+                  <input
+                    type="range"
+                    min={9}
+                    max={36}
+                    value={selectedBalloon.fontSize}
+                    onChange={(e) =>
+                      onUpdateLayout({
+                        ...layout,
+                        balloons: layout.balloons.map((b) =>
+                          b.id === selectedBalloon.id ? { ...b, fontSize: +e.target.value } : b
+                        ),
+                      })
+                    }
+                    className="w-full accent-primary mt-1"
+                  />
+                </label>
+
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={selectedBalloon.isVertical}
+                    onChange={(e) =>
+                      onUpdateLayout({
+                        ...layout,
+                        balloons: layout.balloons.map((b) =>
+                          b.id === selectedBalloon.id ? { ...b, isVertical: e.target.checked } : b
+                        ),
+                      })
+                    }
+                    className="accent-primary"
+                  />
+                  Vertical Reading (Japanese)
+                </label>
+              </div>
+            </div>
+          )}
+
+          {/* 3. SFX Stamp Selected */}
+          {selectedSFX && (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between border-b border-border pb-2">
+                <h2 className="font-display text-base">SFX Stamp</h2>
+                <button
+                  onClick={() => {
+                    onUpdateLayout({
+                      ...layout,
+                      sfxStamps: layout.sfxStamps.filter((s) => s.id !== selectedSFX.id),
+                    });
+                    setSelectedItemId(null);
+                  }}
+                  className="text-destructive hover:bg-destructive/10 p-1 rounded-sm"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold mb-1">Sound Word</label>
+                <input
+                  type="text"
+                  value={selectedSFX.text}
+                  onChange={(e) =>
+                    onUpdateLayout({
+                      ...layout,
+                      sfxStamps: layout.sfxStamps.map((s) =>
+                        s.id === selectedSFX.id ? { ...s, text: e.target.value } : s
+                      ),
+                    })
+                  }
+                  className="w-full px-2 py-1 text-xs rounded-sm border border-input bg-background font-bold"
+                />
+              </div>
+
+              <div className="space-y-2 text-xs">
+                <label className="block">
+                  <span className="flex justify-between">
+                    <span>Font Size</span>
+                    <span className="font-mono">{selectedSFX.fontSize}px</span>
+                  </span>
+                  <input
+                    type="range"
+                    min={20}
+                    max={120}
+                    value={selectedSFX.fontSize}
+                    onChange={(e) =>
+                      onUpdateLayout({
+                        ...layout,
+                        sfxStamps: layout.sfxStamps.map((s) =>
+                          s.id === selectedSFX.id ? { ...s, fontSize: +e.target.value } : s
+                        ),
+                      })
+                    }
+                    className="w-full accent-primary mt-1"
+                  />
+                </label>
+
+                <label className="block">
+                  <span className="flex justify-between">
+                    <span>Rotation</span>
+                    <span className="font-mono">{selectedSFX.rotation}°</span>
+                  </span>
+                  <input
+                    type="range"
+                    min={-180}
+                    max={180}
+                    value={selectedSFX.rotation}
+                    onChange={(e) =>
+                      onUpdateLayout({
+                        ...layout,
+                        sfxStamps: layout.sfxStamps.map((s) =>
+                          s.id === selectedSFX.id ? { ...s, rotation: +e.target.value } : s
+                        ),
+                      })
+                    }
+                    className="w-full accent-primary mt-1"
+                  />
+                </label>
+              </div>
+            </div>
+          )}
+
+          {!selectedElement && !selectedBalloon && !selectedSFX && !selectedComicMark && !selectedSpeedLine && (
             <div className="flex flex-col items-center justify-center h-full text-center text-muted-foreground p-4">
               <Layers className="h-8 w-8 mb-2 opacity-50" />
-              <p className="text-xs font-semibold">No Element Selected</p>
+              <p className="text-xs font-semibold">Select an Element</p>
               <p className="text-[11px] mt-1">
-                Click a character on the page to adjust its scale, rotation, layer order, or toggle
-                Breakout Pop-out mode.
+                Click any character, balloon, or effect on the canvas to configure its properties.
               </p>
             </div>
           )}

@@ -89,6 +89,10 @@ export function Studio() {
     format: PAGE_FORMATS[0],
     panels: getPresetPanels("classic-6"),
     elements: [],
+    balloons: [],
+    comicMarks: [],
+    speedLines: [],
+    sfxStamps: [],
   });
 
   // Snapshot & Save modals

@@ -1,34 +1,61 @@
 import React from "react";
-import type { PageLayout, PanelPolygon, PlacedElement } from "@/lib/manga-layout";
+import type { PageLayout, PlacedElement } from "@/lib/manga-layout";
 import { getPanelPixelBounds } from "@/lib/manga-layout";
 import { PanelTransformer } from "./PanelTransformer";
+import { SpeechBalloonRenderer } from "./SpeechBalloonRenderer";
+import {
+  ComicMarkRenderer,
+  SpeedLinesRenderer,
+  SFXStampRenderer,
+} from "./EffectsRenderers";
+import type { SpeechBalloon, ComicMark, SpeedLinesEffect, SFXStamp } from "@/lib/manga-effects";
 
 interface PageCanvasProps {
   layout: PageLayout;
   selectedPanelId: string | null;
-  selectedElementId: string | null;
+  selectedItemId: string | null;
   onSelectPanel: (panelId: string) => void;
-  onSelectElement: (elementId: string | null) => void;
+  onSelectItem: (itemId: string | null) => void;
   onUpdateElement: (id: string, updated: Partial<PlacedElement>) => void;
   onDeleteElement: (id: string) => void;
+  onUpdateBalloon: (id: string, updated: Partial<SpeechBalloon>) => void;
+  onDeleteBalloon: (id: string) => void;
+  onUpdateComicMark: (id: string, updated: Partial<ComicMark>) => void;
+  onDeleteComicMark: (id: string) => void;
+  onUpdateSpeedLines: (id: string, updated: Partial<SpeedLinesEffect>) => void;
+  onDeleteSpeedLines: (id: string) => void;
+  onUpdateSFXStamp: (id: string, updated: Partial<SFXStamp>) => void;
+  onDeleteSFXStamp: (id: string) => void;
   zoom?: number;
 }
 
 export function PageCanvas({
   layout,
   selectedPanelId,
-  selectedElementId,
+  selectedItemId,
   onSelectPanel,
-  onSelectElement,
+  onSelectItem,
   onUpdateElement,
   onDeleteElement,
+  onUpdateBalloon,
+  onDeleteBalloon,
+  onUpdateComicMark,
+  onDeleteComicMark,
+  onUpdateSpeedLines,
+  onDeleteSpeedLines,
+  onUpdateSFXStamp,
+  onDeleteSFXStamp,
   zoom = 1,
 }: PageCanvasProps) {
   const { width, height, margin, gutter } = layout.format;
 
-  // Group elements into clipped panel elements vs breakout elements
   const clippedElements = layout.elements.filter((el) => !el.breakout);
   const breakoutElements = layout.elements.filter((el) => el.breakout);
+
+  const balloons = layout.balloons ?? [];
+  const comicMarks = layout.comicMarks ?? [];
+  const speedLines = layout.speedLines ?? [];
+  const sfxStamps = layout.sfxStamps ?? [];
 
   return (
     <div
@@ -48,7 +75,7 @@ export function PageCanvas({
         }}
         className="relative overflow-hidden border-2 border-foreground bg-white text-black"
         onClick={() => {
-          onSelectElement(null);
+          onSelectItem(null);
         }}
       >
         {/* SVG Defs for Panel Clipping Masks */}
@@ -59,9 +86,9 @@ export function PageCanvas({
           <defs>
             {layout.panels.map((p) => {
               const bounds = getPanelPixelBounds(p, width, height, margin, gutter);
-              const pathD = bounds.points
-                .map((pt, i) => `${i === 0 ? "M" : "L"} ${pt.x} ${pt.y}`)
-                .join(" ") + " Z";
+              const pathD =
+                bounds.points.map((pt, i) => `${i === 0 ? "M" : "L"} ${pt.x} ${pt.y}`).join(" ") +
+                " Z";
               return (
                 <clipPath key={`clip-${p.id}`} id={`clip-${p.id}`} clipPathUnits="userSpaceOnUse">
                   <path d={pathD} />
@@ -71,7 +98,7 @@ export function PageCanvas({
           </defs>
         </svg>
 
-        {/* 1. Panel Backgrounds & Borders Layer */}
+        {/* 1. Panel Backgrounds Layer */}
         {layout.panels.map((p) => {
           const bounds = getPanelPixelBounds(p, width, height, margin, gutter);
           const isSelected = selectedPanelId === p.id;
@@ -91,7 +118,7 @@ export function PageCanvas({
               onClick={(e) => {
                 e.stopPropagation();
                 onSelectPanel(p.id);
-                onSelectElement(null);
+                onSelectItem(null);
               }}
             >
               <polygon
@@ -106,7 +133,21 @@ export function PageCanvas({
           );
         })}
 
-        {/* 2. Clipped Elements Layer (strictly masked within panel boundaries) */}
+        {/* 2. Speed Lines Layer */}
+        {speedLines.map((line) => (
+          <SpeedLinesRenderer
+            key={line.id}
+            effect={line}
+            width={width}
+            height={height}
+            isSelected={selectedItemId === line.id}
+            onSelect={() => onSelectItem(line.id)}
+            onChange={(u) => onUpdateSpeedLines(line.id, u)}
+            onDelete={() => onDeleteSpeedLines(line.id)}
+          />
+        ))}
+
+        {/* 3. Clipped Elements Layer (Masked cleanly inside panel frames) */}
         {layout.panels.map((p) => {
           const panelElements = clippedElements.filter((el) => el.panelId === p.id);
           if (panelElements.length === 0) return null;
@@ -128,10 +169,10 @@ export function PageCanvas({
                 <div key={el.id} style={{ pointerEvents: "auto" }}>
                   <PanelTransformer
                     element={el}
-                    isSelected={selectedElementId === el.id}
+                    isSelected={selectedItemId === el.id}
                     onSelect={() => {
                       onSelectPanel(el.panelId);
-                      onSelectElement(el.id);
+                      onSelectItem(el.id);
                     }}
                     onChange={(updated) => onUpdateElement(el.id, updated)}
                     onDelete={() => onDeleteElement(el.id)}
@@ -142,7 +183,7 @@ export function PageCanvas({
           );
         })}
 
-        {/* 3. Panel Borders Re-draw (so borders sit crisply above clipped artwork) */}
+        {/* 4. Panel Borders Outline Re-draw */}
         <svg
           style={{
             position: "absolute",
@@ -171,7 +212,7 @@ export function PageCanvas({
           })}
         </svg>
 
-        {/* 4. Breakout Layer (Renders characters that pop-out past borders over gutters) */}
+        {/* 5. Breakout Characters (Overlaps Borders and Gutters!) */}
         <div
           style={{
             position: "absolute",
@@ -186,10 +227,10 @@ export function PageCanvas({
             <div key={el.id} style={{ pointerEvents: "auto" }}>
               <PanelTransformer
                 element={el}
-                isSelected={selectedElementId === el.id}
+                isSelected={selectedItemId === el.id}
                 onSelect={() => {
                   onSelectPanel(el.panelId);
-                  onSelectElement(el.id);
+                  onSelectItem(el.id);
                 }}
                 onChange={(updated) => onUpdateElement(el.id, updated)}
                 onDelete={() => onDeleteElement(el.id)}
@@ -197,6 +238,42 @@ export function PageCanvas({
             </div>
           ))}
         </div>
+
+        {/* 6. Comic Marks Layer */}
+        {comicMarks.map((mark) => (
+          <ComicMarkRenderer
+            key={mark.id}
+            mark={mark}
+            isSelected={selectedItemId === mark.id}
+            onSelect={() => onSelectItem(mark.id)}
+            onChange={(u) => onUpdateComicMark(mark.id, u)}
+            onDelete={() => onDeleteComicMark(mark.id)}
+          />
+        ))}
+
+        {/* 7. SFX Stamps (Sound Effects Onomatopoeia) */}
+        {sfxStamps.map((stamp) => (
+          <SFXStampRenderer
+            key={stamp.id}
+            stamp={stamp}
+            isSelected={selectedItemId === stamp.id}
+            onSelect={() => onSelectItem(stamp.id)}
+            onChange={(u) => onUpdateSFXStamp(stamp.id, u)}
+            onDelete={() => onDeleteSFXStamp(stamp.id)}
+          />
+        ))}
+
+        {/* 8. Speech Balloons Layer (Topmost Layer for Readability) */}
+        {balloons.map((b) => (
+          <SpeechBalloonRenderer
+            key={b.id}
+            balloon={b}
+            isSelected={selectedItemId === b.id}
+            onSelect={() => onSelectItem(b.id)}
+            onChange={(u) => onUpdateBalloon(b.id, u)}
+            onDelete={() => onDeleteBalloon(b.id)}
+          />
+        ))}
       </div>
     </div>
   );
