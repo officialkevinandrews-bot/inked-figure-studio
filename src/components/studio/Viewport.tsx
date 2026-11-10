@@ -5,6 +5,7 @@ import * as THREE from "three";
 import { OutlineEffect } from "three/examples/jsm/effects/OutlineEffect.js";
 import type { Rig } from "@/lib/rig";
 import { captureTransparentSnapshot, type SnapshotOptions, type SnapshotResult } from "@/lib/snapshot";
+import { type ActiveProp, type PropTransform, getPropById } from "@/lib/props";
 
 export interface ViewSettings {
   outline: number;
@@ -215,6 +216,86 @@ function CameraController({
   return <OrbitControls ref={controlsRef} makeDefault target={[0, 0.95, 0]} enableDamping />;
 }
 
+function PropItem({
+  prop,
+  rig,
+  isSelected,
+  onSelect,
+}: {
+  prop: ActiveProp;
+  rig: Rig | null;
+  isSelected: boolean;
+  onSelect: () => void;
+}) {
+  const groupRef = useRef<THREE.Group>(null);
+  const mesh = useMemo(() => {
+    const def = getPropById(prop.propDefId);
+    return def ? def.buildMesh() : new THREE.Group();
+  }, [prop.propDefId]);
+
+  const vPos = useMemo(() => new THREE.Vector3(), []);
+  const qRot = useMemo(() => new THREE.Quaternion(), []);
+
+  useFrame(() => {
+    if (!groupRef.current) return;
+    if (prop.attachedBone && prop.attachedBone !== "None" && rig) {
+      const bone = rig.bones.get(prop.attachedBone);
+      if (bone) {
+        bone.getWorldPosition(vPos);
+        bone.getWorldQuaternion(qRot);
+
+        groupRef.current.position.copy(vPos);
+        groupRef.current.quaternion.copy(qRot);
+
+        // Apply local translation offset
+        groupRef.current.translateX(prop.transform.position[0]);
+        groupRef.current.translateY(prop.transform.position[1]);
+        groupRef.current.translateZ(prop.transform.position[2]);
+
+        // Apply local Euler rotation
+        const rx = (prop.transform.rotation[0] * Math.PI) / 180;
+        const ry = (prop.transform.rotation[1] * Math.PI) / 180;
+        const rz = (prop.transform.rotation[2] * Math.PI) / 180;
+        const offsetQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, rz, "XYZ"));
+        groupRef.current.quaternion.multiply(offsetQ);
+
+        // Apply scale
+        groupRef.current.scale.set(...prop.transform.scale);
+        return;
+      }
+    }
+
+    // World placement (attachedBone === "None")
+    groupRef.current.position.set(...prop.transform.position);
+    groupRef.current.rotation.set(
+      (prop.transform.rotation[0] * Math.PI) / 180,
+      (prop.transform.rotation[1] * Math.PI) / 180,
+      (prop.transform.rotation[2] * Math.PI) / 180
+    );
+    groupRef.current.scale.set(...prop.transform.scale);
+  });
+
+  if (!prop.visible) return null;
+
+  return (
+    <group
+      ref={groupRef}
+      onClick={(e) => {
+        e.stopPropagation();
+        onSelect();
+      }}
+    >
+      <primitive object={mesh} />
+      {isSelected && (
+        <mesh userData={{ noOutline: true }}>
+          <boxGeometry args={[0.2, 0.2, 0.2]} />
+          <meshBasicMaterial wireframe color="#f59e0b" />
+        </mesh>
+      )}
+    </group>
+  );
+}
+
 export const Viewport = forwardRef<
   ViewportHandle,
   {
@@ -225,9 +306,23 @@ export const Viewport = forwardRef<
     onBoneDrag: () => void;
     settings: ViewSettings;
     cameraPose?: CameraPose | null;
+    propsList?: ActiveProp[];
+    selectedPropId?: string | null;
+    onSelectProp?: (id: string | null) => void;
   }
 >(function Viewport(
-  { model, rig, selected, onSelect, onBoneDrag, settings, cameraPose },
+  {
+    model,
+    rig,
+    selected,
+    onSelect,
+    onBoneDrag,
+    settings,
+    cameraPose,
+    propsList = [],
+    selectedPropId = null,
+    onSelectProp = () => {},
+  },
   ref
 ) {
   const bone = rig && selected ? rig.bones.get(selected) ?? null : null;
@@ -240,7 +335,10 @@ export const Viewport = forwardRef<
       shadows
       camera={{ position: [0, 1.3, 3.6], fov }}
       gl={{ antialias: true, preserveDrawingBuffer: true }}
-      onPointerMissed={() => onSelect(null)}
+      onPointerMissed={() => {
+        onSelect(null);
+        onSelectProp(null);
+      }}
       onCreated={({ gl }) => gl.setClearColor(new THREE.Color("#f7f4ec"))}
     >
       <SceneBridge handleRef={ref} outline={settings.outline} />
@@ -254,6 +352,18 @@ export const Viewport = forwardRef<
       />
       <directionalLight position={[-3, 2, -2]} intensity={0.5} />
       {model && <primitive object={model} />}
+
+      {/* 3D Props with Bone Parenting */}
+      {propsList.map((p) => (
+        <PropItem
+          key={p.id}
+          prop={p}
+          rig={rig}
+          isSelected={selectedPropId === p.id}
+          onSelect={() => onSelectProp(p.id)}
+        />
+      ))}
+
       <mesh rotation-x={-Math.PI / 2} receiveShadow userData={{ noOutline: true }} name="FloorShadowMesh">
         <planeGeometry args={[20, 20]} />
         <shadowMaterial opacity={0.18} />

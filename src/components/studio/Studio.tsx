@@ -29,7 +29,19 @@ import {
 import { SnapshotModal } from "./SnapshotModal";
 import { SavePoseModal } from "./SavePoseModal";
 import type { SnapshotResult } from "@/lib/snapshot";
-import { Camera, BookmarkPlus, Sparkles, Trash2, RotateCw } from "lucide-react";
+import {
+  Camera,
+  BookmarkPlus,
+  Sparkles,
+  Trash2,
+  RotateCw,
+  Eye,
+  EyeOff,
+  Copy,
+  Plus,
+  Sword,
+  Package,
+} from "lucide-react";
 import { PanelStudio } from "@/components/panels/PanelStudio";
 import {
   type PageLayout,
@@ -38,6 +50,14 @@ import {
   getPresetPanels,
   getPanelPixelBounds,
 } from "@/lib/manga-layout";
+import {
+  BUILTIN_PROPS,
+  createActiveProp,
+  ATTACHABLE_BONES,
+  type ActiveProp,
+  type PropTransform,
+  type PropCategory,
+} from "@/lib/props";
 
 const AXES = ["X", "Y", "Z"] as const;
 
@@ -60,6 +80,12 @@ export function Studio() {
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
 
+  // 3D Props state
+  const [propsList, setPropsList] = useState<ActiveProp[]>([]);
+  const [selectedPropId, setSelectedPropId] = useState<string | null>(null);
+  const [leftTab, setLeftTab] = useState<"poses" | "props">("poses");
+  const [propCategory, setPropCategory] = useState<PropCategory>("weapons");
+
   // Camera & Rendering Settings
   const [cameraPose, setCameraPose] = useState<CameraPose | null>(null);
   const [settings, setSettings] = useState<ViewSettings>({
@@ -81,19 +107,23 @@ export function Studio() {
     blink: 0,
   });
 
-  // Navigation & Page Layout State
+  // Navigation & Multi-Page Chapter State
   const [activeTab, setActiveTab] = useState<"pose" | "panels">("pose");
-  const [pageLayout, setPageLayout] = useState<PageLayout>({
-    id: "page-1",
-    pageNumber: 1,
-    format: PAGE_FORMATS[0],
-    panels: getPresetPanels("classic-6"),
-    elements: [],
-    balloons: [],
-    comicMarks: [],
-    speedLines: [],
-    sfxStamps: [],
-  });
+  const [pages, setPages] = useState<PageLayout[]>([
+    {
+      id: "page-1",
+      pageNumber: 1,
+      format: PAGE_FORMATS[0],
+      panels: getPresetPanels("classic-6"),
+      elements: [],
+      balloons: [],
+      comicMarks: [],
+      speedLines: [],
+      sfxStamps: [],
+    },
+  ]);
+  const [activePageIndex, setActivePageIndex] = useState<number>(0);
+  const currentPageLayout = pages[activePageIndex] || pages[0];
 
   // Snapshot & Save modals
   const [snapshotModalOpen, setSnapshotModalOpen] = useState(false);
@@ -200,6 +230,45 @@ export function Studio() {
     setPose((cur) => ({ ...cur, [selected]: r }));
   };
 
+  // 3D Props Handlers
+  const handleAddProp = (propDefId: string) => {
+    const newProp = createActiveProp(propDefId);
+    setPropsList((cur) => [...cur, newProp]);
+    setSelectedPropId(newProp.id);
+  };
+
+  const handleUpdateProp = (id: string, updated: Partial<ActiveProp>) => {
+    setPropsList((cur) => cur.map((p) => (p.id === id ? { ...p, ...updated } : p)));
+  };
+
+  const handleDeleteProp = (id: string) => {
+    setPropsList((cur) => cur.filter((p) => p.id !== id));
+    if (selectedPropId === id) setSelectedPropId(null);
+  };
+
+  const handleDuplicateProp = (id: string) => {
+    const source = propsList.find((p) => p.id === id);
+    if (!source) return;
+    const dup: ActiveProp = {
+      ...source,
+      id: `prop-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      name: `${source.name} (Copy)`,
+      transform: {
+        position: [
+          source.transform.position[0] + 0.1,
+          source.transform.position[1],
+          source.transform.position[2] + 0.1,
+        ],
+        rotation: [...source.transform.rotation],
+        scale: [...source.transform.scale],
+      },
+    };
+    setPropsList((cur) => [...cur, dup]);
+    setSelectedPropId(dup.id);
+  };
+
+  const selectedProp = propsList.find((p) => p.id === selectedPropId);
+
   // Snapshot triggers
   const handleCaptureSnapshot = (pixelRatio = 2) => {
     if (!viewportRef.current) return;
@@ -239,33 +308,92 @@ export function Studio() {
     return allAvailablePoses.filter((p) =>
       search ? p.name.toLowerCase().includes(search.toLowerCase()) : p.category === category
     );
-  }, [allAvailablePoses, category, search]);
+  }, [allAvailablePoses, search, category]);
 
-  const boneList = rig
-    ? Array.from(rig.bones.keys()).filter((b) => !/Hand(Thumb|Index|Middle|Ring|Pinky)[23]|ToeBase/.test(b))
-    : [];
   const sel = selected ? pose[selected] ?? [0, 0, 0] : null;
 
+  // Multi-Page Management Handlers
+  const handleUpdateCurrentPage = (updated: PageLayout) => {
+    setPages((cur) => cur.map((p, idx) => (idx === activePageIndex ? updated : p)));
+  };
+
+  const handleAddPage = () => {
+    const newPage: PageLayout = {
+      id: `page-${Date.now()}`,
+      pageNumber: pages.length + 1,
+      format: currentPageLayout.format,
+      panels: getPresetPanels("classic-6"),
+      elements: [],
+      balloons: [],
+      comicMarks: [],
+      speedLines: [],
+      sfxStamps: [],
+    };
+    setPages((cur) => [...cur, newPage]);
+    setActivePageIndex(pages.length);
+  };
+
+  const handleDuplicatePage = (index: number) => {
+    const target = pages[index];
+    if (!target) return;
+    const copy: PageLayout = {
+      ...target,
+      id: `page-${Date.now()}`,
+      pageNumber: index + 2,
+      elements: target.elements.map((el) => ({
+        ...el,
+        id: `el-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      })),
+    };
+    const updated = [...pages];
+    updated.splice(index + 1, 0, copy);
+    setPages(updated);
+    setActivePageIndex(index + 1);
+  };
+
+  const handleDeletePage = (index: number) => {
+    if (pages.length <= 1) return;
+    const updated = pages.filter((_, idx) => idx !== index);
+    setPages(updated);
+    setActivePageIndex((cur) => Math.min(cur, updated.length - 1));
+  };
+
+  const handleMovePage = (fromIndex: number, toIndex: number) => {
+    if (toIndex < 0 || toIndex >= pages.length) return;
+    const updated = [...pages];
+    const [moved] = updated.splice(fromIndex, 1);
+    updated.splice(toIndex, 0, moved);
+    setPages(updated);
+    setActivePageIndex(toIndex);
+  };
+
+  // If in 2D Panels Studio mode, render full Manga Studio
   if (activeTab === "panels") {
     return (
       <PanelStudio
-        layout={pageLayout}
-        onUpdateLayout={setPageLayout}
+        layout={currentPageLayout}
+        onUpdateLayout={handleUpdateCurrentPage}
         onOpen3dStudio={() => setActiveTab("pose")}
+        allPages={pages}
+        activePageIndex={activePageIndex}
+        onSelectPage={setActivePageIndex}
+        onAddPage={handleAddPage}
+        onDuplicatePage={handleDuplicatePage}
+        onDeletePage={handleDeletePage}
+        onMovePage={handleMovePage}
       />
     );
   }
 
   return (
     <div className="flex h-screen flex-col bg-background text-foreground select-none">
-      {/* Top bar */}
-      <header className="flex items-center gap-6 border-b-2 border-foreground px-4 py-2">
-        <h1 className="font-display text-2xl tracking-wide flex items-center gap-1.5">
-          <span>INKED</span>
-          <span className="text-primary">FIGURE</span>
+      {/* Top Bar */}
+      <header className="flex items-center gap-4 border-b-2 border-foreground px-4 py-2 bg-card">
+        <h1 className="font-display text-xl tracking-wide">
+          INKED<span className="text-primary">FIGURE</span>
         </h1>
 
-        <nav className="flex gap-1 text-sm">
+        <nav className="flex items-center gap-1 text-sm">
           <button
             onClick={() => setActiveTab("pose")}
             className="rounded-sm bg-foreground px-3 py-1 font-semibold text-background transition-colors"
@@ -276,17 +404,8 @@ export function Studio() {
             onClick={() => setActiveTab("panels")}
             className="rounded-sm px-3 py-1 font-semibold text-muted-foreground hover:text-foreground transition-colors"
           >
-            Manga Panels {pageLayout.elements.length > 0 && `(${pageLayout.elements.length})`}
+            Manga Panels {currentPageLayout.elements.length > 0 && `(${currentPageLayout.elements.length})`}
           </button>
-          {["Speech Balloons", "Export"].map((t) => (
-            <span
-              key={t}
-              title="Coming in Phase 3 & 5"
-              className="cursor-not-allowed px-3 py-1 text-muted-foreground/60"
-            >
-              {t}
-            </span>
-          ))}
         </nav>
 
         <div className="ml-auto flex items-center gap-2 text-sm">
@@ -321,109 +440,359 @@ export function Studio() {
 
       {/* Main Workspace */}
       <div className="flex min-h-0 flex-1">
-        {/* Left: Pose Library */}
+        {/* Left: Pose Presets OR 3D Props Library */}
         <aside className="flex w-76 flex-col border-r-2 border-foreground bg-card">
-          <div className="border-b border-border p-3">
-            <div className="flex items-center justify-between">
-              <h2 className="font-display text-lg">Pose Library</h2>
-              <button
-                disabled={!rig}
-                onClick={handleOpenSavePose}
-                title="Save current joint angles as a reusable pose preset"
-                className="flex items-center gap-1 text-xs font-semibold text-primary hover:underline disabled:opacity-40"
-              >
-                <BookmarkPlus className="h-3.5 w-3.5" />
-                Save Pose
-              </button>
-            </div>
+          {/* Tabs: Poser vs 3D Props */}
+          <div className="flex border-b-2 border-foreground bg-muted text-xs font-semibold">
+            <button
+              onClick={() => setLeftTab("poses")}
+              className={`flex-1 py-2 text-center transition-colors ${
+                leftTab === "poses"
+                  ? "border-b-2 border-primary bg-card text-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              🥋 Pose Presets
+            </button>
+            <button
+              onClick={() => setLeftTab("props")}
+              className={`flex-1 py-2 text-center transition-colors ${
+                leftTab === "props"
+                  ? "border-b-2 border-primary bg-card text-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              🗡️ 3D Props {propsList.length > 0 && `(${propsList.length})`}
+            </button>
+          </div>
 
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder={`Search ${allAvailablePoses.length} poses…`}
-              className="mt-2 w-full rounded-sm border border-input bg-background px-2 py-1.5 text-sm outline-none focus:border-foreground"
-            />
-
-            {!search && (
-              <div className="mt-2 flex flex-wrap gap-1">
-                {allCategories.map((c) => (
+          {leftTab === "poses" ? (
+            <>
+              <div className="border-b border-border p-3">
+                <div className="flex items-center justify-between">
+                  <h2 className="font-display text-lg">Pose Library</h2>
                   <button
-                    key={c}
-                    onClick={() => setCategory(c)}
-                    className={`rounded-sm border px-2 py-0.5 text-xs font-medium transition-colors ${
-                      c === category
-                        ? "border-foreground bg-foreground text-background"
-                        : "border-border hover:border-foreground"
-                    }`}
+                    disabled={!rig}
+                    onClick={handleOpenSavePose}
+                    title="Save current joint angles as a reusable pose preset"
+                    className="flex items-center gap-1 text-xs font-semibold text-primary hover:underline disabled:opacity-40"
                   >
-                    {c} {c === "Custom" && `(${customPoses.length})`}
+                    <BookmarkPlus className="h-3.5 w-3.5" />
+                    Save Pose
                   </button>
-                ))}
-              </div>
-            )}
-          </div>
+                </div>
 
-          {/* Preset Grid */}
-          <div className="grid flex-1 grid-cols-2 content-start gap-2 overflow-y-auto p-3">
-            {visiblePoses.map((p) => {
-              const isCustom = "createdAt" in p;
-              return (
-                <button
-                  key={p.id}
-                  onClick={() => applyPreset(p)}
-                  disabled={!rig}
-                  className={`relative screentone min-h-14 rounded-sm border-2 p-2 text-left text-xs font-semibold leading-tight transition-all disabled:opacity-40 group ${
-                    activePose === p.id
-                      ? "border-primary bg-primary/10"
-                      : "border-foreground hover:-translate-y-0.5 hover:shadow-ink"
-                  }`}
-                >
-                  <div className="flex justify-between items-start">
-                    <span className="truncate pr-1">{p.name}</span>
-                    {isCustom && (
+                <input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder={`Search ${allAvailablePoses.length} poses…`}
+                  className="mt-2 w-full rounded-sm border border-input bg-background px-2 py-1.5 text-sm outline-none focus:border-foreground"
+                />
+
+                {!search && (
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {allCategories.map((c) => (
                       <button
-                        onClick={(e) => handleDeleteCustomPose(p.id, e)}
-                        title="Delete custom pose"
-                        className="opacity-0 group-hover:opacity-100 hover:text-destructive p-0.5 transition-opacity"
+                        key={c}
+                        onClick={() => setCategory(c)}
+                        className={`rounded-sm border px-2 py-0.5 text-xs font-medium transition-colors ${
+                          c === category
+                            ? "border-foreground bg-foreground text-background"
+                            : "border-border hover:border-foreground"
+                        }`}
                       >
-                        <Trash2 className="h-3 w-3" />
+                        {c} {c === "Custom" && `(${customPoses.length})`}
                       </button>
-                    )}
+                    ))}
                   </div>
-                  {p.partial && (
-                    <span className="mt-1 block text-[10px] font-normal text-muted-foreground">
-                      adds to pose
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </div>
+                )}
+              </div>
 
-          {/* Quick Mirror & Reset Tools */}
-          <div className="flex gap-2 border-t border-border p-3">
-            <button
-              disabled={!rig}
-              onClick={() => {
-                setPose((c) => mirrorPose(c));
-                setSelected((s) => (s ? mirrorBoneName(s) : s));
-              }}
-              className="flex-1 rounded-sm border-2 border-foreground py-1.5 text-sm font-semibold hover:bg-accent transition-transform hover:-translate-y-0.5"
-            >
-              ⇋ Mirror
-            </button>
-            <button
-              disabled={!rig}
-              onClick={() => {
-                setPose({});
-                setHipsDrop(0);
-                setActivePose(null);
-              }}
-              className="flex-1 rounded-sm border-2 border-foreground py-1.5 text-sm font-semibold hover:bg-accent transition-transform hover:-translate-y-0.5"
-            >
-              Reset
-            </button>
-          </div>
+              {/* Preset Grid */}
+              <div className="grid flex-1 grid-cols-2 content-start gap-2 overflow-y-auto p-3">
+                {visiblePoses.map((p) => {
+                  const isCustom = "createdAt" in p;
+                  return (
+                    <button
+                      key={p.id}
+                      onClick={() => applyPreset(p)}
+                      disabled={!rig}
+                      className={`relative screentone min-h-14 rounded-sm border-2 p-2 text-left text-xs font-semibold leading-tight transition-all disabled:opacity-40 group ${
+                        activePose === p.id
+                          ? "border-primary bg-primary/10"
+                          : "border-foreground hover:-translate-y-0.5 hover:shadow-ink"
+                      }`}
+                    >
+                      <div className="flex justify-between items-start">
+                        <span className="truncate pr-1">{p.name}</span>
+                        {isCustom && (
+                          <button
+                            onClick={(e) => handleDeleteCustomPose(p.id, e)}
+                            title="Delete custom pose"
+                            className="opacity-0 group-hover:opacity-100 hover:text-destructive p-0.5 transition-opacity"
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </button>
+                        )}
+                      </div>
+                      {p.partial && (
+                        <span className="mt-1 block text-[10px] font-normal text-muted-foreground">
+                          adds to pose
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Quick Mirror & Reset Tools */}
+              <div className="flex gap-2 border-t border-border p-3">
+                <button
+                  disabled={!rig}
+                  onClick={() => {
+                    setPose((c) => mirrorPose(c));
+                    setSelected((s) => (s ? mirrorBoneName(s) : s));
+                  }}
+                  className="flex-1 rounded-sm border-2 border-foreground py-1.5 text-sm font-semibold hover:bg-accent transition-transform hover:-translate-y-0.5"
+                >
+                  ⇋ Mirror
+                </button>
+                <button
+                  disabled={!rig}
+                  onClick={() => {
+                    setPose({});
+                    setHipsDrop(0);
+                    setActivePose(null);
+                  }}
+                  className="flex-1 rounded-sm border-2 border-foreground py-1.5 text-sm font-semibold hover:bg-accent transition-transform hover:-translate-y-0.5"
+                >
+                  Reset
+                </button>
+              </div>
+            </>
+          ) : (
+            /* 3D Props Panel */
+            <div className="flex flex-1 flex-col overflow-y-auto">
+              <div className="border-b border-border p-3 space-y-2">
+                <h2 className="font-display text-base">Add Prop to Character</h2>
+                <div className="flex gap-1">
+                  {(["weapons", "items", "furniture", "primitives"] as const).map((cat) => (
+                    <button
+                      key={cat}
+                      onClick={() => setPropCategory(cat)}
+                      className={`flex-1 rounded border py-1 text-center text-[11px] font-semibold capitalize ${
+                        propCategory === cat
+                          ? "border-foreground bg-primary text-primary-foreground font-bold"
+                          : "border-border hover:bg-muted"
+                      }`}
+                    >
+                      {cat}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Built-in Catalog Grid */}
+                <div className="grid grid-cols-2 gap-1.5 pt-1">
+                  {BUILTIN_PROPS.filter((p) => p.category === propCategory).map((propDef) => (
+                    <button
+                      key={propDef.id}
+                      onClick={() => handleAddProp(propDef.id)}
+                      className="flex items-center gap-1.5 rounded border border-border p-1.5 text-xs font-semibold hover:border-foreground hover:bg-accent transition-colors text-left"
+                    >
+                      <span className="text-base">{propDef.icon}</span>
+                      <span className="truncate">{propDef.name}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Active Spawned Props List */}
+              <div className="p-3 border-b border-border space-y-2">
+                <span className="font-display text-xs text-muted-foreground uppercase tracking-wider block">
+                  Spawned Props ({propsList.length})
+                </span>
+                {propsList.length === 0 ? (
+                  <p className="text-[11px] text-muted-foreground italic">
+                    No props added yet. Click an item above to attach it to the character!
+                  </p>
+                ) : (
+                  <div className="space-y-1.5">
+                    {propsList.map((p) => (
+                      <div
+                        key={p.id}
+                        onClick={() => setSelectedPropId(p.id)}
+                        className={`flex items-center justify-between rounded border p-2 text-xs transition-colors cursor-pointer ${
+                          selectedPropId === p.id
+                            ? "border-primary bg-primary/10 font-bold"
+                            : "border-border hover:border-foreground"
+                        }`}
+                      >
+                        <div className="flex items-center gap-1.5 truncate">
+                          <span>{p.name}</span>
+                          <span className="rounded bg-muted px-1.5 py-0.2 text-[10px] text-muted-foreground font-normal">
+                            {p.attachedBone}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleUpdateProp(p.id, { visible: !p.visible });
+                            }}
+                            className="p-1 hover:text-primary"
+                          >
+                            {p.visible ? (
+                              <Eye className="h-3.5 w-3.5" />
+                            ) : (
+                              <EyeOff className="h-3.5 w-3.5 opacity-50" />
+                            )}
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDuplicateProp(p.id);
+                            }}
+                            className="p-1 hover:text-primary"
+                          >
+                            <Copy className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteProp(p.id);
+                            }}
+                            className="p-1 hover:text-destructive"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Selected Prop Inspector */}
+              {selectedProp && (
+                <div className="p-3 space-y-3 text-xs flex-1">
+                  <h3 className="font-display text-sm flex items-center justify-between">
+                    <span>Prop Settings</span>
+                    <span className="text-[11px] font-mono text-primary">{selectedProp.name}</span>
+                  </h3>
+
+                  {/* Bone Attachment */}
+                  <div>
+                    <label className="font-semibold block mb-1">Attached Bone</label>
+                    <select
+                      value={selectedProp.attachedBone}
+                      onChange={(e) =>
+                        handleUpdateProp(selectedProp.id, { attachedBone: e.target.value })
+                      }
+                      className="w-full rounded border border-input bg-background p-1.5 text-xs font-medium"
+                    >
+                      {ATTACHABLE_BONES.map((b) => (
+                        <option key={b.id} value={b.id}>
+                          {b.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Translation Sliders */}
+                  <div className="space-y-1.5 border-t border-border pt-2">
+                    <span className="font-semibold block">Position Offset</span>
+                    {AXES.map((axis, i) => (
+                      <label key={axis} className="block text-[11px]">
+                        <span className="flex justify-between">
+                          <span>{axis} Offset</span>
+                          <span className="font-mono">
+                            {selectedProp.transform.position[i].toFixed(2)}m
+                          </span>
+                        </span>
+                        <input
+                          type="range"
+                          min={-1}
+                          max={1}
+                          step={0.01}
+                          value={selectedProp.transform.position[i]}
+                          onChange={(e) => {
+                            const pos = [...selectedProp.transform.position] as [
+                              number,
+                              number,
+                              number,
+                            ];
+                            pos[i] = +e.target.value;
+                            handleUpdateProp(selectedProp.id, {
+                              transform: { ...selectedProp.transform, position: pos },
+                            });
+                          }}
+                          className="w-full accent-primary"
+                        />
+                      </label>
+                    ))}
+                  </div>
+
+                  {/* Rotation Sliders */}
+                  <div className="space-y-1.5 border-t border-border pt-2">
+                    <span className="font-semibold block">Rotation Offset</span>
+                    {AXES.map((axis, i) => (
+                      <label key={axis} className="block text-[11px]">
+                        <span className="flex justify-between">
+                          <span>R{axis} Angle</span>
+                          <span className="font-mono">{selectedProp.transform.rotation[i]}°</span>
+                        </span>
+                        <input
+                          type="range"
+                          min={-180}
+                          max={180}
+                          step={5}
+                          value={selectedProp.transform.rotation[i]}
+                          onChange={(e) => {
+                            const rot = [...selectedProp.transform.rotation] as [
+                              number,
+                              number,
+                              number,
+                            ];
+                            rot[i] = +e.target.value;
+                            handleUpdateProp(selectedProp.id, {
+                              transform: { ...selectedProp.transform, rotation: rot },
+                            });
+                          }}
+                          className="w-full accent-primary"
+                        />
+                      </label>
+                    ))}
+                  </div>
+
+                  {/* Scale Slider */}
+                  <div className="border-t border-border pt-2">
+                    <label className="block text-[11px]">
+                      <span className="flex justify-between">
+                        <span>Scale</span>
+                        <span className="font-mono">
+                          {selectedProp.transform.scale[0].toFixed(2)}x
+                        </span>
+                      </span>
+                      <input
+                        type="range"
+                        min={0.2}
+                        max={3}
+                        step={0.05}
+                        value={selectedProp.transform.scale[0]}
+                        onChange={(e) => {
+                          const s = +e.target.value;
+                          handleUpdateProp(selectedProp.id, {
+                            transform: { ...selectedProp.transform, scale: [s, s, s] },
+                          });
+                        }}
+                        className="w-full accent-primary"
+                      />
+                    </label>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </aside>
 
         {/* Center: 3D Viewport with Quick Camera Angles */}
@@ -469,13 +838,18 @@ export function Studio() {
               onBoneDrag={onBoneDrag}
               settings={settings}
               cameraPose={cameraPose}
+              propsList={propsList}
+              selectedPropId={selectedPropId}
+              onSelectProp={setSelectedPropId}
             />
           </div>
 
           {(dragOver || loading || error) && (
             <div className="pointer-events-none absolute inset-4 flex items-center justify-center bg-background/85 backdrop-blur-xs">
               <p className={`font-display text-2xl ${error ? "text-destructive" : ""}`}>
-                {loading ? "Loading 3D Model…" : error || "Drop a Mixamo .fbx, .vrm, or .glb model here"}
+                {loading
+                  ? "Loading 3D Model…"
+                  : error || "Drop a Mixamo .fbx, .vrm, or .glb model here"}
               </p>
             </div>
           )}
@@ -500,50 +874,25 @@ export function Studio() {
             </p>
             <button
               onClick={() => handleCaptureSnapshot(2)}
-              className="w-full flex items-center justify-center gap-2 rounded-sm border-2 border-foreground bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground shadow-ink transition-transform hover:-translate-y-0.5"
+              className="w-full flex items-center justify-center gap-2 rounded-sm border-2 border-foreground bg-primary py-2 text-xs font-bold text-primary-foreground shadow-ink transition-transform hover:-translate-y-0.5"
             >
               <Camera className="h-4 w-4" />
-              Capture Transparent Render
+              Capture Transparent 2D Render
             </button>
           </section>
 
-          {/* Camera & Perspective */}
-          <section className="border-b border-border p-3 space-y-2">
-            <h2 className="font-display text-base">Manga Perspective</h2>
-            <label className="block text-xs">
-              <span className="flex justify-between">
-                <span>Field of View (FOV)</span>
-                <span className="tabular-nums font-semibold">{settings.fov}°</span>
-              </span>
-              <input
-                type="range"
-                min={15}
-                max={90}
-                value={settings.fov}
-                onChange={(e) => setSettings((s) => ({ ...s, fov: +e.target.value }))}
-                className="w-full accent-primary"
-              />
-              <span className="text-[10px] text-muted-foreground">
-                High FOV creates dramatic anime foreshortening.
-              </span>
-            </label>
-          </section>
-
-          {/* Joint Articulation */}
+          {/* Bone Rotation Gizmo Sliders */}
           <section className="border-b border-border p-3">
             <h2 className="font-display text-base">Joint Rotation</h2>
-            <select
-              value={selected ?? ""}
-              onChange={(e) => setSelected(e.target.value || null)}
-              className="mt-2 w-full rounded-sm border border-input bg-background px-2 py-1.5 text-sm"
-            >
-              <option value="">— select a joint bone —</option>
-              {boneList.map((b) => (
-                <option key={b} value={b}>
-                  {b}
-                </option>
-              ))}
-            </select>
+            <p className="text-xs text-muted-foreground">
+              {selected ? (
+                <>
+                  Selected: <span className="font-semibold text-foreground">{selected}</span>
+                </>
+              ) : (
+                "Click a joint sphere in the viewport"
+              )}
+            </p>
 
             {selected && sel && (
               <div className="mt-3 space-y-2">
@@ -653,48 +1002,73 @@ export function Studio() {
               <input
                 type="range"
                 min={2}
-                max={5}
+                max={6}
                 value={settings.tones}
                 onChange={(e) => setSettings((s) => ({ ...s, tones: +e.target.value }))}
                 className="w-full accent-primary"
               />
             </label>
-            <label className="flex items-center gap-2">
+            <label className="block">
+              <span className="flex justify-between">
+                <span>Camera FOV (Foreshortening)</span>
+                <span>{settings.fov ?? 35}°</span>
+              </span>
               <input
-                type="checkbox"
-                checked={settings.mono}
-                onChange={(e) => setSettings((s) => ({ ...s, mono: e.target.checked }))}
-                className="accent-primary"
+                type="range"
+                min={15}
+                max={90}
+                value={settings.fov ?? 35}
+                onChange={(e) => setSettings((s) => ({ ...s, fov: +e.target.value }))}
+                className="w-full accent-primary"
               />
-              Monochrome Manga Ink
             </label>
-            <label className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={settings.showJoints}
-                onChange={(e) => setSettings((s) => ({ ...s, showJoints: e.target.checked }))}
-                className="accent-primary"
-              />
-              Show Joint Spheres
-            </label>
+            <div className="flex gap-4 pt-1">
+              <label className="flex items-center gap-1.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={settings.mono}
+                  onChange={(e) => setSettings((s) => ({ ...s, mono: e.target.checked }))}
+                  className="accent-primary"
+                />
+                <span>Manga Monochrome</span>
+              </label>
+              <label className="flex items-center gap-1.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={settings.showJoints}
+                  onChange={(e) => setSettings((s) => ({ ...s, showJoints: e.target.checked }))}
+                  className="accent-primary"
+                />
+                <span>Show Rig Joints</span>
+              </label>
+            </div>
           </section>
         </aside>
       </div>
 
-      {/* Snapshot Preview Modal */}
+      {/* Snapshot Modal */}
       <SnapshotModal
         isOpen={snapshotModalOpen}
         onClose={() => setSnapshotModalOpen(false)}
         snapshot={currentSnapshot}
-        onRecapture={(r) => handleCaptureSnapshot(r)}
-        onSendToPanel={(dataUrl) => {
-          const targetPanel = pageLayout.panels[0];
+        onReRender={(pixelRatio) => {
+          if (!viewportRef.current) return;
+          const res = viewportRef.current.captureSnapshot({
+            pixelRatio,
+            outlineThickness: settings.outline,
+          });
+          if (res) setCurrentSnapshot(res);
+        }}
+        panels={currentPageLayout.panels}
+        onAddToPanel={(panelId, dataUrl) => {
+          const targetPanel =
+            currentPageLayout.panels.find((p) => p.id === panelId) || currentPageLayout.panels[0];
           const bounds = getPanelPixelBounds(
             targetPanel,
-            pageLayout.format.width,
-            pageLayout.format.height,
-            pageLayout.format.margin,
-            pageLayout.format.gutter
+            currentPageLayout.format.width,
+            currentPageLayout.format.height,
+            currentPageLayout.format.margin,
+            currentPageLayout.format.gutter
           );
           const newEl: PlacedElement = {
             id: `el-${Date.now()}`,
@@ -708,7 +1082,7 @@ export function Studio() {
             rotation: 0,
             flipX: false,
             flipY: false,
-            zIndex: pageLayout.elements.length + 1,
+            zIndex: currentPageLayout.elements.length + 1,
             breakout: false,
             source3d: {
               modelName,
@@ -718,10 +1092,10 @@ export function Studio() {
               fov: settings.fov,
             },
           };
-          setPageLayout((cur) => ({
-            ...cur,
-            elements: [...cur.elements, newEl],
-          }));
+          handleUpdateCurrentPage({
+            ...currentPageLayout,
+            elements: [...currentPageLayout.elements, newEl],
+          });
           setActiveTab("panels");
         }}
       />

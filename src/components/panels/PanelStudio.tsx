@@ -17,6 +17,9 @@ import {
   COMIC_MARK_PRESETS,
 } from "@/lib/manga-effects";
 import { PageCanvas } from "./PageCanvas";
+import { PhotoFilterModal } from "./PhotoFilterModal";
+import { ExportModal } from "./ExportModal";
+import { PageManager } from "@/components/pages/PageManager";
 import {
   Scissors,
   SplitSquareVertical,
@@ -35,20 +38,41 @@ import {
   Zap,
   Smile,
   Volume2,
+  Download,
 } from "lucide-react";
 
-interface PanelStudioProps {
+export interface PanelStudioProps {
   layout: PageLayout;
   onUpdateLayout: (updated: PageLayout) => void;
   onOpen3dStudio: () => void;
+  allPages?: PageLayout[];
+  activePageIndex?: number;
+  onSelectPage?: (index: number) => void;
+  onAddPage?: () => void;
+  onDuplicatePage?: (index: number) => void;
+  onDeletePage?: (index: number) => void;
+  onMovePage?: (fromIndex: number, toIndex: number) => void;
 }
 
-export function PanelStudio({ layout, onUpdateLayout, onOpen3dStudio }: PanelStudioProps) {
+export function PanelStudio({
+  layout,
+  onUpdateLayout,
+  onOpen3dStudio,
+  allPages,
+  activePageIndex = 0,
+  onSelectPage,
+  onAddPage,
+  onDuplicatePage,
+  onDeletePage,
+  onMovePage,
+}: PanelStudioProps) {
   const [selectedPanelId, setSelectedPanelId] = useState<string | null>(
     layout.panels[0]?.id ?? null
   );
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [zoom, setZoom] = useState(0.8);
+  const [filterModalOpen, setFilterModalOpen] = useState(false);
+  const [exportModalOpen, setExportModalOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const selectedPanel = layout.panels.find((p) => p.id === selectedPanelId);
@@ -108,7 +132,7 @@ export function PanelStudio({ layout, onUpdateLayout, onOpen3dStudio }: PanelStu
     setSelectedPanelId(remaining[0].id);
   };
 
-  // --- Adders for Phase 3 features ---
+  // Adders for Speech Balloons
   const handleAddBalloon = (shape: BalloonShape = "oval") => {
     if (!selectedPanel) return;
     const bounds = getPanelPixelBounds(
@@ -123,20 +147,22 @@ export function PanelStudio({ layout, onUpdateLayout, onOpen3dStudio }: PanelStu
       id: `balloon-${Date.now()}`,
       panelId: selectedPanel.id,
       shape,
-      text: shape === "burst" ? "WHAT?!" : shape === "cloud" ? "(Thinking...)" : "Dialogue text here...",
-      x: bounds.minX + bounds.width * 0.2,
-      y: bounds.minY + 20,
-      width: 140,
-      height: 90,
-      tailX: 30,
-      tailY: 60,
-      hasTail: shape !== "box",
-      fontSize: 13,
-      fontFamily: "'Zen Kaku Gothic New', sans-serif",
-      isVertical: false,
-      borderWidth: 2.5,
-      borderColor: "#000000",
+      text: shape === "shout" ? "N-NANI?!" : shape === "thought" ? "..." : "Speech...",
+      x: bounds.minX + bounds.width * 0.25,
+      y: bounds.minY + bounds.height * 0.2,
+      width: Math.min(bounds.width * 0.5, 180),
+      height: Math.min(bounds.height * 0.35, 110),
+      tail: {
+        x: bounds.minX + bounds.width * 0.35,
+        y: bounds.minY + bounds.height * 0.55,
+      },
+      fontSize: 16,
+      fontWeight: shape === "shout" ? "bold" : "normal",
+      writingMode: "horizontal-tb",
       backgroundColor: "#ffffff",
+      strokeColor: "#000000",
+      strokeWidth: 2.5,
+      fontColor: "#000000",
       zIndex: (layout.balloons?.length ?? 0) + 100,
     };
 
@@ -147,7 +173,7 @@ export function PanelStudio({ layout, onUpdateLayout, onOpen3dStudio }: PanelStu
     setSelectedItemId(newBalloon.id);
   };
 
-  const handleAddComicMark = (type: ComicMark["type"]) => {
+  const handleAddComicMark = (type: string) => {
     if (!selectedPanel) return;
     const bounds = getPanelPixelBounds(
       selectedPanel,
@@ -275,10 +301,44 @@ export function PanelStudio({ layout, onUpdateLayout, onOpen3dStudio }: PanelStu
     setSelectedItemId(newEl.id);
   };
 
+  // Photo Filter Background Injection
+  const handleApplyPhotoFilter = (filteredUrl: string) => {
+    if (!selectedPanel) return;
+    const bounds = getPanelPixelBounds(
+      selectedPanel,
+      layout.format.width,
+      layout.format.height,
+      layout.format.margin,
+      layout.format.gutter
+    );
+
+    const newEl: PlacedElement = {
+      id: `bg-${Date.now()}`,
+      panelId: selectedPanel.id,
+      type: "background",
+      imageUrl: filteredUrl,
+      x: bounds.minX,
+      y: bounds.minY,
+      width: bounds.width,
+      height: bounds.height,
+      rotation: 0,
+      flipX: false,
+      flipY: false,
+      zIndex: 1, // behind characters
+      breakout: false,
+    };
+
+    onUpdateLayout({
+      ...layout,
+      elements: [newEl, ...layout.elements],
+    });
+    setSelectedItemId(newEl.id);
+  };
+
   return (
     <div className="flex h-screen flex-col bg-background text-foreground select-none">
       {/* Top Bar */}
-      <header className="flex items-center gap-4 border-b-2 border-foreground px-4 py-2 bg-card">
+      <header className="flex items-center gap-3 border-b-2 border-foreground px-4 py-2 bg-card">
         <button
           onClick={onOpen3dStudio}
           className="flex items-center gap-1.5 rounded-sm border-2 border-foreground bg-primary px-3 py-1 font-semibold text-primary-foreground shadow-ink text-xs transition-transform hover:-translate-y-0.5"
@@ -342,11 +402,20 @@ export function PanelStudio({ layout, onUpdateLayout, onOpen3dStudio }: PanelStu
             <ZoomIn className="h-4 w-4" />
           </button>
 
+          {/* Photo-to-Manga Filter Button */}
+          <button
+            onClick={() => setFilterModalOpen(true)}
+            className="flex items-center gap-1.5 rounded-sm border-2 border-foreground bg-accent px-3 py-1 font-semibold text-xs shadow-ink hover:-translate-y-0.5"
+          >
+            <Sparkles className="h-3.5 w-3.5 text-primary" />
+            Photo Filter
+          </button>
+
           <button
             onClick={() => fileInputRef.current?.click()}
-            className="rounded-sm border-2 border-foreground bg-accent px-3 py-1 font-semibold text-xs shadow-ink hover:-translate-y-0.5"
+            className="rounded-sm border border-border px-2.5 py-1 text-xs hover:border-foreground font-medium"
           >
-            + Add Image / Sprite
+            + Sprite
           </button>
           <input
             ref={fileInputRef}
@@ -355,6 +424,15 @@ export function PanelStudio({ layout, onUpdateLayout, onOpen3dStudio }: PanelStu
             hidden
             onChange={(e) => handleImportImage(e.target.files)}
           />
+
+          {/* Export Button */}
+          <button
+            onClick={() => setExportModalOpen(true)}
+            className="flex items-center gap-1.5 rounded-sm border-2 border-foreground bg-primary px-3.5 py-1 font-bold text-primary-foreground shadow-ink hover:-translate-y-0.5 text-xs"
+          >
+            <Download className="h-3.5 w-3.5" />
+            Export Manga
+          </button>
         </div>
       </header>
 
@@ -398,75 +476,85 @@ export function PanelStudio({ layout, onUpdateLayout, onOpen3dStudio }: PanelStu
               <MessageSquare className="h-4 w-4 text-primary" /> Speech Balloons
             </h2>
             <div className="grid grid-cols-2 gap-1.5">
-              {[
-                { shape: "oval" as const, label: "Oval" },
-                { shape: "burst" as const, label: "Shout / Spiky" },
-                { shape: "cloud" as const, label: "Thought Cloud" },
-                { shape: "box" as const, label: "Narration Box" },
-                { shape: "whisper" as const, label: "Whisper (Dash)" },
-                { shape: "electric" as const, label: "Electric / Radio" },
-              ].map((b) => (
+              {(
+                [
+                  { id: "oval", label: "Dialogue" },
+                  { id: "shout", label: "💥 Shout" },
+                  { id: "thought", label: "💭 Thought" },
+                  { id: "whisper", label: "⋯ Whisper" },
+                  { id: "square", label: "Narration" },
+                  { id: "radio", label: "⚡ Broadcast" },
+                ] as const
+              ).map((b) => (
                 <button
-                  key={b.shape}
+                  key={b.id}
                   disabled={!selectedPanel}
-                  onClick={() => handleAddBalloon(b.shape)}
-                  className="rounded-sm border border-border p-1.5 text-xs font-medium hover:border-foreground hover:bg-accent text-left disabled:opacity-40 truncate"
+                  onClick={() => handleAddBalloon(b.id as BalloonShape)}
+                  className="rounded-sm border border-border py-1.5 text-xs font-semibold hover:border-foreground hover:bg-accent disabled:opacity-40 text-center"
                 >
-                  + {b.label}
+                  {b.label}
                 </button>
               ))}
             </div>
           </div>
 
-          {/* Comic Marks & Emotion Symbols */}
+          {/* Comic Marks */}
           <div className="border-t border-border pt-3">
             <h2 className="font-display text-sm flex items-center gap-1.5 mb-2">
-              <Smile className="h-4 w-4 text-primary" /> Comic Marks
+              <Smile className="h-4 w-4 text-primary" /> Comic Emotion Marks
             </h2>
-            <div className="grid grid-cols-4 gap-1.5">
+            <div className="grid grid-cols-4 gap-1">
               {COMIC_MARK_PRESETS.map((m) => (
                 <button
-                  key={m.type}
+                  key={m.label}
                   disabled={!selectedPanel}
-                  onClick={() => handleAddComicMark(m.type)}
+                  onClick={() => handleAddComicMark(m.mark)}
                   title={m.label}
-                  className="rounded-sm border border-border p-1.5 text-base flex items-center justify-center hover:border-foreground hover:bg-accent disabled:opacity-40"
+                  className="rounded-sm border border-border py-1 text-base hover:border-foreground hover:bg-accent disabled:opacity-40 flex items-center justify-center"
                 >
-                  {m.symbol}
+                  {m.mark}
                 </button>
               ))}
             </div>
           </div>
 
-          {/* Speed Lines & Screentones */}
+          {/* Screentones & Speed Lines */}
           <div className="border-t border-border pt-3">
             <h2 className="font-display text-sm flex items-center gap-1.5 mb-2">
-              <Zap className="h-4 w-4 text-primary" /> Speed Lines
+              <Zap className="h-4 w-4 text-primary" /> Action Speed Lines
             </h2>
-            <button
-              disabled={!selectedPanel}
-              onClick={() => handleAddSpeedLines("radial")}
-              className="w-full flex items-center justify-center gap-1.5 rounded-sm border border-border py-1.5 text-xs font-semibold hover:border-foreground hover:bg-accent disabled:opacity-40"
-            >
-              + Radial Focus Burst
-            </button>
+            <div className="grid grid-cols-2 gap-1.5">
+              <button
+                disabled={!selectedPanel}
+                onClick={() => handleAddSpeedLines("radial")}
+                className="rounded-sm border border-border py-1.5 text-xs font-semibold hover:border-foreground hover:bg-accent disabled:opacity-40"
+              >
+                Radial Burst
+              </button>
+              <button
+                disabled={!selectedPanel}
+                onClick={() => handleAddSpeedLines("linear")}
+                className="rounded-sm border border-border py-1.5 text-xs font-semibold hover:border-foreground hover:bg-accent disabled:opacity-40"
+              >
+                Motion Lines
+              </button>
+            </div>
           </div>
 
-          {/* SFX / Onomatopoeia Stamps */}
+          {/* SFX Stamps */}
           <div className="border-t border-border pt-3">
             <h2 className="font-display text-sm flex items-center gap-1.5 mb-2">
-              <Volume2 className="h-4 w-4 text-primary" /> Manga SFX Stamps
+              <Volume2 className="h-4 w-4 text-primary" /> Onomatopoeia SFX
             </h2>
-            <div className="grid grid-cols-3 gap-1">
-              {SFX_PRESETS.map((s) => (
+            <div className="grid grid-cols-2 gap-1.5">
+              {SFX_PRESETS.map((sfx) => (
                 <button
-                  key={s.text}
+                  key={sfx.text}
                   disabled={!selectedPanel}
-                  onClick={() => handleAddSFX(s.text)}
-                  title={s.label}
-                  className="rounded-sm border border-border px-1 py-1 text-xs font-bold hover:border-foreground hover:bg-accent disabled:opacity-40 truncate"
+                  onClick={() => handleAddSFX(sfx.text)}
+                  className="rounded-sm border border-border py-1 text-xs font-black italic hover:border-foreground hover:bg-accent disabled:opacity-40"
                 >
-                  {s.text}
+                  {sfx.text}
                 </button>
               ))}
             </div>
@@ -521,52 +609,58 @@ export function PanelStudio({ layout, onUpdateLayout, onOpen3dStudio }: PanelStu
             onUpdateBalloon={(id, u) =>
               onUpdateLayout({
                 ...layout,
-                balloons: layout.balloons.map((b) => (b.id === id ? { ...b, ...u } : b)),
+                balloons: (layout.balloons ?? []).map((b) => (b.id === id ? { ...b, ...u } : b)),
               })
             }
             onDeleteBalloon={(id) => {
               onUpdateLayout({
                 ...layout,
-                balloons: layout.balloons.filter((b) => b.id !== id),
+                balloons: (layout.balloons ?? []).filter((b) => b.id !== id),
               });
               if (selectedItemId === id) setSelectedItemId(null);
             }}
             onUpdateComicMark={(id, u) =>
               onUpdateLayout({
                 ...layout,
-                comicMarks: layout.comicMarks.map((m) => (m.id === id ? { ...m, ...u } : m)),
+                comicMarks: (layout.comicMarks ?? []).map((m) =>
+                  m.id === id ? { ...m, ...u } : m
+                ),
               })
             }
             onDeleteComicMark={(id) => {
               onUpdateLayout({
                 ...layout,
-                comicMarks: layout.comicMarks.filter((m) => m.id !== id),
+                comicMarks: (layout.comicMarks ?? []).filter((m) => m.id !== id),
               });
               if (selectedItemId === id) setSelectedItemId(null);
             }}
             onUpdateSpeedLines={(id, u) =>
               onUpdateLayout({
                 ...layout,
-                speedLines: layout.speedLines.map((l) => (l.id === id ? { ...l, ...u } : l)),
+                speedLines: (layout.speedLines ?? []).map((l) =>
+                  l.id === id ? { ...l, ...u } : l
+                ),
               })
             }
             onDeleteSpeedLines={(id) => {
               onUpdateLayout({
                 ...layout,
-                speedLines: layout.speedLines.filter((l) => l.id !== id),
+                speedLines: (layout.speedLines ?? []).filter((l) => l.id !== id),
               });
               if (selectedItemId === id) setSelectedItemId(null);
             }}
             onUpdateSFXStamp={(id, u) =>
               onUpdateLayout({
                 ...layout,
-                sfxStamps: layout.sfxStamps.map((s) => (s.id === id ? { ...s, ...u } : s)),
+                sfxStamps: (layout.sfxStamps ?? []).map((s) =>
+                  s.id === id ? { ...s, ...u } : s
+                ),
               })
             }
             onDeleteSFXStamp={(id) => {
               onUpdateLayout({
                 ...layout,
-                sfxStamps: layout.sfxStamps.filter((s) => s.id !== id),
+                sfxStamps: (layout.sfxStamps ?? []).filter((s) => s.id !== id),
               });
               if (selectedItemId === id) setSelectedItemId(null);
             }}
@@ -574,13 +668,81 @@ export function PanelStudio({ layout, onUpdateLayout, onOpen3dStudio }: PanelStu
           />
         </main>
 
-        {/* Right Inspector Sidebar */}
+        {/* Right Inspector */}
         <aside className="flex w-72 flex-col border-l-2 border-foreground bg-card p-3 space-y-4 overflow-y-auto">
-          {/* 1. Character Element Selected */}
+          {/* Selected Panel Inspector */}
+          {selectedPanel && (
+            <div className="border-b border-border pb-3">
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="font-display text-sm">Panel Properties</h3>
+                {layout.panels.length > 1 && (
+                  <button
+                    onClick={handleDeletePanel}
+                    className="text-destructive hover:bg-destructive/10 p-1 rounded"
+                    title="Delete panel"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
+
+              <div className="space-y-2 text-xs">
+                <label className="block">
+                  <span className="flex justify-between">
+                    <span>Border Thickness</span>
+                    <span className="font-mono">{selectedPanel.borderWidth}px</span>
+                  </span>
+                  <input
+                    type="range"
+                    min={1}
+                    max={12}
+                    value={selectedPanel.borderWidth}
+                    onChange={(e) =>
+                      onUpdateLayout({
+                        ...layout,
+                        panels: layout.panels.map((p) =>
+                          p.id === selectedPanel.id ? { ...p, borderWidth: +e.target.value } : p
+                        ),
+                      })
+                    }
+                    className="w-full accent-primary mt-1"
+                  />
+                </label>
+
+                <div className="flex items-center justify-between">
+                  <span>Border Style</span>
+                  <div className="flex gap-1">
+                    {(["solid", "dashed", "none"] as const).map((style) => (
+                      <button
+                        key={style}
+                        onClick={() =>
+                          onUpdateLayout({
+                            ...layout,
+                            panels: layout.panels.map((p) =>
+                              p.id === selectedPanel.id ? { ...p, borderStyle: style } : p
+                            ),
+                          })
+                        }
+                        className={`px-2 py-0.5 rounded text-[11px] font-medium border ${
+                          selectedPanel.borderStyle === style
+                            ? "bg-foreground text-background border-foreground"
+                            : "border-border hover:border-foreground"
+                        }`}
+                      >
+                        {style}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Selected Element Inspector */}
           {selectedElement && (
-            <div className="space-y-4">
-              <div className="flex items-center justify-between border-b border-border pb-2">
-                <h2 className="font-display text-base">Figure Inspector</h2>
+            <div className="border-b border-border pb-3 space-y-3">
+              <div className="flex items-center justify-between">
+                <h3 className="font-display text-sm">Sprite / Character</h3>
                 <button
                   onClick={() => {
                     onUpdateLayout({
@@ -589,132 +751,94 @@ export function PanelStudio({ layout, onUpdateLayout, onOpen3dStudio }: PanelStu
                     });
                     setSelectedItemId(null);
                   }}
-                  className="text-destructive hover:bg-destructive/10 p-1 rounded-sm"
+                  className="text-destructive hover:bg-destructive/10 p-1 rounded"
                 >
                   <Trash2 className="h-4 w-4" />
                 </button>
               </div>
 
-              {/* Breakout Toggle */}
-              <div
-                onClick={() =>
-                  onUpdateLayout({
-                    ...layout,
-                    elements: layout.elements.map((el) =>
-                      el.id === selectedElement.id ? { ...el, breakout: !el.breakout } : el
-                    ),
-                  })
-                }
-                className={`p-3 rounded-sm border-2 cursor-pointer transition-all ${
-                  selectedElement.breakout
-                    ? "border-primary bg-primary/10 shadow-ink"
-                    : "border-border bg-background hover:border-foreground"
-                }`}
-              >
-                <div className="flex items-center justify-between">
-                  <span className="font-display text-xs flex items-center gap-1.5">
-                    <Maximize2 className="h-4 w-4 text-primary" /> Breakout / Pop-out
-                  </span>
-                  <span
-                    className={`text-[10px] font-bold px-1.5 py-0.5 rounded-xs ${
-                      selectedElement.breakout
-                        ? "bg-primary text-primary-foreground"
-                        : "bg-muted text-muted-foreground"
-                    }`}
-                  >
-                    {selectedElement.breakout ? "ENABLED" : "OFF"}
-                  </span>
-                </div>
-                <p className="text-[11px] text-muted-foreground mt-1.5">
-                  Pop out past panel borders and gutters!
-                </p>
-              </div>
-
-              {/* Dimensions */}
-              <div className="space-y-3 text-xs">
-                <label className="block">
-                  <span className="flex justify-between">
-                    <span>Width</span>
-                    <span className="font-mono">{Math.round(selectedElement.width)}px</span>
-                  </span>
+              {/* 1-Click Breakout Overlay Toggle */}
+              <div className="rounded border-2 border-primary bg-primary/10 p-2 text-xs">
+                <label className="flex items-center justify-between cursor-pointer font-semibold text-primary">
+                  <span>Breakout (Pop-out of border)</span>
                   <input
-                    type="range"
-                    min={40}
-                    max={1200}
-                    value={selectedElement.width}
-                    onChange={(e) => {
-                      const w = +e.target.value;
-                      const ratio = selectedElement.height / selectedElement.width;
-                      onUpdateLayout({
-                        ...layout,
-                        elements: layout.elements.map((el) =>
-                          el.id === selectedElement.id ? { ...el, width: w, height: Math.round(w * ratio) } : el
-                        ),
-                      });
-                    }}
-                    className="w-full accent-primary mt-1"
-                  />
-                </label>
-
-                <label className="block">
-                  <span className="flex justify-between">
-                    <span>Rotation</span>
-                    <span className="font-mono">{selectedElement.rotation}°</span>
-                  </span>
-                  <input
-                    type="range"
-                    min={-180}
-                    max={180}
-                    value={selectedElement.rotation}
+                    type="checkbox"
+                    checked={selectedElement.breakout}
                     onChange={(e) =>
                       onUpdateLayout({
                         ...layout,
                         elements: layout.elements.map((el) =>
-                          el.id === selectedElement.id ? { ...el, rotation: +e.target.value } : el
+                          el.id === selectedElement.id ? { ...el, breakout: e.target.checked } : el
                         ),
                       })
                     }
-                    className="w-full accent-primary mt-1"
+                    className="h-4 w-4 accent-primary"
                   />
                 </label>
+                <p className="text-[10px] text-muted-foreground mt-1">
+                  Allows character heads or weapons to boldly overlap gutters and borders.
+                </p>
               </div>
 
-              {selectedElement.source3d && (
-                <div className="border-t border-border pt-3">
-                  <button
-                    onClick={onOpen3dStudio}
-                    className="w-full flex items-center justify-center gap-1.5 rounded-sm border-2 border-foreground bg-accent py-2 text-xs font-semibold shadow-ink hover:-translate-y-0.5"
-                  >
-                    <RotateCw className="h-3.5 w-3.5 text-primary" />
-                    Re-pose Figure in 3D
-                  </button>
-                </div>
-              )}
+              {/* Quick Flip & Rotate */}
+              <div className="grid grid-cols-2 gap-1.5 text-xs">
+                <button
+                  onClick={() =>
+                    onUpdateLayout({
+                      ...layout,
+                      elements: layout.elements.map((el) =>
+                        el.id === selectedElement.id ? { ...el, flipX: !el.flipX } : el
+                      ),
+                    })
+                  }
+                  className={`flex items-center justify-center gap-1 py-1.5 rounded border ${
+                    selectedElement.flipX ? "bg-accent font-bold" : "border-border"
+                  }`}
+                >
+                  <FlipHorizontal className="h-3.5 w-3.5" /> Flip Horiz
+                </button>
+                <button
+                  onClick={() =>
+                    onUpdateLayout({
+                      ...layout,
+                      elements: layout.elements.map((el) =>
+                        el.id === selectedElement.id
+                          ? { ...el, rotation: (el.rotation + 90) % 360 }
+                          : el
+                      ),
+                    })
+                  }
+                  className="flex items-center justify-center gap-1 py-1.5 rounded border border-border hover:bg-accent"
+                >
+                  <RotateCw className="h-3.5 w-3.5" /> +90° Rot
+                </button>
+              </div>
             </div>
           )}
 
-          {/* 2. Speech Balloon Selected */}
+          {/* Selected Speech Balloon Inspector */}
           {selectedBalloon && (
-            <div className="space-y-4">
-              <div className="flex items-center justify-between border-b border-border pb-2">
-                <h2 className="font-display text-base">Speech Balloon</h2>
+            <div className="border-b border-border pb-3 space-y-3">
+              <div className="flex items-center justify-between">
+                <h3 className="font-display text-sm">Speech Balloon</h3>
                 <button
                   onClick={() => {
                     onUpdateLayout({
                       ...layout,
-                      balloons: layout.balloons.filter((b) => b.id !== selectedBalloon.id),
+                      balloons: layout.balloons?.filter((b) => b.id !== selectedBalloon.id),
                     });
                     setSelectedItemId(null);
                   }}
-                  className="text-destructive hover:bg-destructive/10 p-1 rounded-sm"
+                  className="text-destructive hover:bg-destructive/10 p-1 rounded"
                 >
                   <Trash2 className="h-4 w-4" />
                 </button>
               </div>
 
               <div>
-                <label className="block text-xs font-semibold mb-1">Dialogue Text</label>
+                <label className="text-xs font-semibold block mb-1">Dialogue Text</label>
                 <textarea
+                  rows={2}
                   value={selectedBalloon.text}
                   onChange={(e) =>
                     onUpdateLayout({
@@ -724,7 +848,29 @@ export function PanelStudio({ layout, onUpdateLayout, onOpen3dStudio }: PanelStu
                       ),
                     })
                   }
-                  className="w-full h-24 p-2 text-xs rounded-sm border border-input bg-background"
+                  className="w-full p-2 text-xs rounded-sm border border-input bg-background"
+                />
+              </div>
+
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-semibold">Vertical Japanese Mode</span>
+                <input
+                  type="checkbox"
+                  checked={selectedBalloon.writingMode === "vertical-rl"}
+                  onChange={(e) =>
+                    onUpdateLayout({
+                      ...layout,
+                      balloons: layout.balloons.map((b) =>
+                        b.id === selectedBalloon.id
+                          ? {
+                              ...b,
+                              writingMode: e.target.checked ? "vertical-rl" : "horizontal-tb",
+                            }
+                          : b
+                      ),
+                    })
+                  }
+                  className="h-4 w-4 accent-primary"
                 />
               </div>
 
@@ -736,7 +882,7 @@ export function PanelStudio({ layout, onUpdateLayout, onOpen3dStudio }: PanelStu
                   </span>
                   <input
                     type="range"
-                    min={9}
+                    min={11}
                     max={36}
                     value={selectedBalloon.fontSize}
                     onChange={(e) =>
@@ -750,48 +896,31 @@ export function PanelStudio({ layout, onUpdateLayout, onOpen3dStudio }: PanelStu
                     className="w-full accent-primary mt-1"
                   />
                 </label>
-
-                <label className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={selectedBalloon.isVertical}
-                    onChange={(e) =>
-                      onUpdateLayout({
-                        ...layout,
-                        balloons: layout.balloons.map((b) =>
-                          b.id === selectedBalloon.id ? { ...b, isVertical: e.target.checked } : b
-                        ),
-                      })
-                    }
-                    className="accent-primary"
-                  />
-                  Vertical Reading (Japanese)
-                </label>
               </div>
             </div>
           )}
 
-          {/* 3. SFX Stamp Selected */}
+          {/* Selected SFX Stamp Inspector */}
           {selectedSFX && (
-            <div className="space-y-4">
-              <div className="flex items-center justify-between border-b border-border pb-2">
-                <h2 className="font-display text-base">SFX Stamp</h2>
+            <div className="border-b border-border pb-3 space-y-3">
+              <div className="flex items-center justify-between">
+                <h3 className="font-display text-sm">SFX Onomatopoeia</h3>
                 <button
                   onClick={() => {
                     onUpdateLayout({
                       ...layout,
-                      sfxStamps: layout.sfxStamps.filter((s) => s.id !== selectedSFX.id),
+                      sfxStamps: layout.sfxStamps?.filter((s) => s.id !== selectedSFX.id),
                     });
                     setSelectedItemId(null);
                   }}
-                  className="text-destructive hover:bg-destructive/10 p-1 rounded-sm"
+                  className="text-destructive hover:bg-destructive/10 p-1 rounded"
                 >
                   <Trash2 className="h-4 w-4" />
                 </button>
               </div>
 
               <div>
-                <label className="block text-xs font-semibold mb-1">Sound Word</label>
+                <label className="text-xs font-semibold block mb-1">SFX Word</label>
                 <input
                   type="text"
                   value={selectedSFX.text}
@@ -855,17 +984,49 @@ export function PanelStudio({ layout, onUpdateLayout, onOpen3dStudio }: PanelStu
             </div>
           )}
 
-          {!selectedElement && !selectedBalloon && !selectedSFX && !selectedComicMark && !selectedSpeedLine && (
-            <div className="flex flex-col items-center justify-center h-full text-center text-muted-foreground p-4">
-              <Layers className="h-8 w-8 mb-2 opacity-50" />
-              <p className="text-xs font-semibold">Select an Element</p>
-              <p className="text-[11px] mt-1">
-                Click any character, balloon, or effect on the canvas to configure its properties.
-              </p>
-            </div>
-          )}
+          {!selectedElement &&
+            !selectedBalloon &&
+            !selectedSFX &&
+            !selectedComicMark &&
+            !selectedSpeedLine && (
+              <div className="flex flex-col items-center justify-center h-full text-center text-muted-foreground p-4">
+                <Layers className="h-8 w-8 mb-2 opacity-50" />
+                <p className="text-xs font-semibold">Select an Element</p>
+                <p className="text-[11px] mt-1">
+                  Click any character, balloon, or effect on the canvas to configure its properties.
+                </p>
+              </div>
+            )}
         </aside>
       </div>
+
+      {/* Chapter Page Manager Filmstrip */}
+      {allPages && allPages.length > 0 && onSelectPage && (
+        <PageManager
+          pages={allPages}
+          activePageIndex={activePageIndex}
+          onSelectPage={onSelectPage}
+          onAddPage={onAddPage || (() => {})}
+          onDuplicatePage={onDuplicatePage || (() => {})}
+          onDeletePage={onDeletePage || (() => {})}
+          onMovePage={onMovePage || (() => {})}
+        />
+      )}
+
+      {/* Photo-to-Manga Filter Modal */}
+      <PhotoFilterModal
+        isOpen={filterModalOpen}
+        onClose={() => setFilterModalOpen(false)}
+        onApplyToPanel={handleApplyPhotoFilter}
+      />
+
+      {/* Export Chapter & Page Modal */}
+      <ExportModal
+        isOpen={exportModalOpen}
+        onClose={() => setExportModalOpen(false)}
+        currentPage={layout}
+        allPages={allPages || [layout]}
+      />
     </div>
   );
 }
