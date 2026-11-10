@@ -30,6 +30,14 @@ import { SnapshotModal } from "./SnapshotModal";
 import { SavePoseModal } from "./SavePoseModal";
 import type { SnapshotResult } from "@/lib/snapshot";
 import { Camera, BookmarkPlus, Sparkles, Trash2, RotateCw } from "lucide-react";
+import { PanelStudio } from "@/components/panels/PanelStudio";
+import {
+  type PageLayout,
+  type PlacedElement,
+  PAGE_FORMATS,
+  getPresetPanels,
+  getPanelPixelBounds,
+} from "@/lib/manga-layout";
 
 const AXES = ["X", "Y", "Z"] as const;
 
@@ -71,6 +79,16 @@ export function Studio() {
     relaxed: 0,
     surprised: 0,
     blink: 0,
+  });
+
+  // Navigation & Page Layout State
+  const [activeTab, setActiveTab] = useState<"pose" | "panels">("pose");
+  const [pageLayout, setPageLayout] = useState<PageLayout>({
+    id: "page-1",
+    pageNumber: 1,
+    format: PAGE_FORMATS[0],
+    panels: getPresetPanels("classic-6"),
+    elements: [],
   });
 
   // Snapshot & Save modals
@@ -224,6 +242,16 @@ export function Studio() {
     : [];
   const sel = selected ? pose[selected] ?? [0, 0, 0] : null;
 
+  if (activeTab === "panels") {
+    return (
+      <PanelStudio
+        layout={pageLayout}
+        onUpdateLayout={setPageLayout}
+        onOpen3dStudio={() => setActiveTab("pose")}
+      />
+    );
+  }
+
   return (
     <div className="flex h-screen flex-col bg-background text-foreground select-none">
       {/* Top bar */}
@@ -234,14 +262,23 @@ export function Studio() {
         </h1>
 
         <nav className="flex gap-1 text-sm">
-          <span className="rounded-sm bg-foreground px-3 py-1 font-semibold text-background">
+          <button
+            onClick={() => setActiveTab("pose")}
+            className="rounded-sm bg-foreground px-3 py-1 font-semibold text-background transition-colors"
+          >
             3D Pose Studio
-          </span>
-          {["Manga Panels", "Page Layout", "Speech Balloons", "Export"].map((t) => (
+          </button>
+          <button
+            onClick={() => setActiveTab("panels")}
+            className="rounded-sm px-3 py-1 font-semibold text-muted-foreground hover:text-foreground transition-colors"
+          >
+            Manga Panels {pageLayout.elements.length > 0 && `(${pageLayout.elements.length})`}
+          </button>
+          {["Speech Balloons", "Export"].map((t) => (
             <span
               key={t}
-              title="Coming in Phase 2 & 3"
-              className="cursor-not-allowed px-3 py-1 text-muted-foreground hover:text-foreground/70"
+              title="Coming in Phase 3 & 5"
+              className="cursor-not-allowed px-3 py-1 text-muted-foreground/60"
             >
               {t}
             </span>
@@ -647,8 +684,41 @@ export function Studio() {
         snapshot={currentSnapshot}
         onRecapture={(r) => handleCaptureSnapshot(r)}
         onSendToPanel={(dataUrl) => {
-          // This will connect directly into the Phase 2 Page Layout Engine!
-          alert("Transparent render saved! Manga Panel Compositor is ready in Phase 2.");
+          const targetPanel = pageLayout.panels[0];
+          const bounds = getPanelPixelBounds(
+            targetPanel,
+            pageLayout.format.width,
+            pageLayout.format.height,
+            pageLayout.format.margin,
+            pageLayout.format.gutter
+          );
+          const newEl: PlacedElement = {
+            id: `el-${Date.now()}`,
+            panelId: targetPanel.id,
+            type: "character",
+            imageUrl: dataUrl,
+            x: bounds.minX + 30,
+            y: bounds.minY + 30,
+            width: Math.min(bounds.width * 0.75, 320),
+            height: Math.min(bounds.height * 0.75, 420),
+            rotation: 0,
+            flipX: false,
+            flipY: false,
+            zIndex: pageLayout.elements.length + 1,
+            breakout: false,
+            source3d: {
+              modelName,
+              pose: { ...pose },
+              hipsDrop,
+              cameraPose,
+              fov: settings.fov,
+            },
+          };
+          setPageLayout((cur) => ({
+            ...cur,
+            elements: [...cur.elements, newEl],
+          }));
+          setActiveTab("panels");
         }}
       />
 
