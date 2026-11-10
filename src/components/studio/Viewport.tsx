@@ -32,7 +32,7 @@ export function toonify(root: THREE.Object3D, tones: number, mono: boolean) {
     if (!m.isMesh) return;
     m.castShadow = true;
     m.frustumCulled = false;
-    const orig = (m.userData.origMat ??= m.material) as THREE.Material | THREE.Material[];
+    const orig = (m.userData["origMat"] ??= m.material) as THREE.Material | THREE.Material[];
     const conv = (mat: THREE.Material) => {
       const src = mat as THREE.MeshStandardMaterial;
       const color = src.color ? src.color.clone() : new THREE.Color(0xdddddd);
@@ -56,9 +56,9 @@ function MangaRenderer({ outline }: { outline: number }) {
     scene.traverse((o) => {
       const m = o as THREE.Mesh;
       if (!m.isMesh && !(o as THREE.Line).isLine) return;
-      const show = outline > 0 && !m.userData.noOutline && m.isMesh;
+      const show = outline > 0 && !m.userData["noOutline"] && m.isMesh;
       const mats = Array.isArray(m.material) ? m.material : [m.material];
-      mats.forEach((mat) => (mat.userData.outlineParameters = { thickness: outline * 0.0015, color: [0.05, 0.05, 0.05], visible: show }));
+      mats.forEach((mat) => (mat.userData["outlineParameters"] = { thickness: outline * 0.0015, color: [0.05, 0.05, 0.05], visible: show }));
     });
     gl.autoClear = true;
     gl.clear();
