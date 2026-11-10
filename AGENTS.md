@@ -28,3 +28,6 @@ use the editor.
   own key and store it in Secrets.
 - **Secrets.** Lovable manages them. Do not put secret values in the repo.
 <!-- LOVABLE:END -->
+
+- Pose offsets are Euler degrees in the character's model frame (Y up, faces +Z, left = +X) applied over the rest pose via `src/lib/rig.ts`; this keeps presets rig-agnostic across Mixamo bone rolls and makes mirroring a simple (x,-y,-z) swap.
+- The viewport renders through three's OutlineEffect in a priority-1 useFrame (with manual clear); don't add a second renderer or EffectComposer without replacing it.
