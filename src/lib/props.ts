@@ -601,3 +601,4 @@ export function createActiveProp(propDefId: string, customName?: string): Active
     visible: true,
   };
 }
+

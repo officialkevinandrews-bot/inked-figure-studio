@@ -1,8 +1,10 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import {
   type PageLayout,
   type PlacedElement,
+  type PanelPolygon,
   PAGE_FORMATS,
+  PRESET_LAYOUT_CATALOG,
   getPresetPanels,
   splitPanel,
   getPanelPixelBounds,
@@ -16,6 +18,8 @@ import {
   SFX_PRESETS,
   COMIC_MARK_PRESETS,
 } from "@/lib/manga-effects";
+import { MANGA_BACKGROUNDS, getMangaBackgroundDataUrl, type MangaBackground } from "@/lib/manga-backgrounds";
+import { PRESET_ROSTER, loadSavedRoster, type RosterCharacter } from "@/lib/character-roster";
 import { PageCanvas } from "./PageCanvas";
 import { PhotoFilterModal } from "./PhotoFilterModal";
 import { ExportModal } from "./ExportModal";
@@ -39,12 +43,24 @@ import {
   Smile,
   Volume2,
   Download,
+  Image as ImageIcon,
+  User,
+  Copy,
+  ArrowUp,
+  ArrowDown,
+  AlignCenter,
+  AlignVerticalJustifyCenter,
+  Palette,
+  Eye,
+  Camera,
+  Compass,
 } from "lucide-react";
 
 export interface PanelStudioProps {
   layout: PageLayout;
   onUpdateLayout: (updated: PageLayout) => void;
   onOpen3dStudio: () => void;
+  onRePoseIn3D?: (source3d: any) => void;
   allPages?: PageLayout[];
   activePageIndex?: number;
   onSelectPage?: (index: number) => void;
@@ -54,10 +70,13 @@ export interface PanelStudioProps {
   onMovePage?: (fromIndex: number, toIndex: number) => void;
 }
 
+type LeftTrayTab = "panels" | "backgrounds" | "characters" | "balloons";
+
 export function PanelStudio({
   layout,
   onUpdateLayout,
   onOpen3dStudio,
+  onRePoseIn3D,
   allPages,
   activePageIndex = 0,
   onSelectPage,
@@ -70,10 +89,15 @@ export function PanelStudio({
     layout.panels[0]?.id ?? null
   );
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
-  const [zoom, setZoom] = useState(0.8);
+  const [zoom, setZoom] = useState(0.65);
+  const [leftTab, setLeftTab] = useState<LeftTrayTab>("panels");
+  const [bgCategory, setBgCategory] = useState<"scenery" | "action" | "mood" | "screentone">("scenery");
+  const [customSfxText, setCustomSfxText] = useState("ドンッ!!");
   const [filterModalOpen, setFilterModalOpen] = useState(false);
   const [exportModalOpen, setExportModalOpen] = useState(false);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const canvasContainerRef = useRef<HTMLDivElement>(null);
 
   const selectedPanel = layout.panels.find((p) => p.id === selectedPanelId);
 
@@ -83,6 +107,27 @@ export function PanelStudio({
   const selectedComicMark = layout.comicMarks?.find((m) => m.id === selectedItemId);
   const selectedSpeedLine = layout.speedLines?.find((l) => l.id === selectedItemId);
   const selectedSFX = layout.sfxStamps?.find((s) => s.id === selectedItemId);
+
+  // Dynamic Auto-Fit calculation
+  const fitToScreen = useCallback(() => {
+    if (!canvasContainerRef.current) return;
+    const { clientWidth, clientHeight } = canvasContainerRef.current;
+    const paddingX = 48;
+    const paddingY = 48;
+    const availW = Math.max(150, clientWidth - paddingX);
+    const availH = Math.max(150, clientHeight - paddingY);
+    const scale = Math.min(availW / layout.format.width, availH / layout.format.height);
+    // Round to 2 decimal places, clamped comfortably
+    setZoom(Math.max(0.2, Math.min(1.2, Math.round(scale * 100) / 100)));
+  }, [layout.format.width, layout.format.height]);
+
+  // Run auto-fit on initial mount and when layout dimensions change
+  useEffect(() => {
+    fitToScreen();
+    const handleResize = () => fitToScreen();
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, [fitToScreen]);
 
   // Template change
   const handleApplyTemplate = (templateName: string) => {
@@ -147,17 +192,18 @@ export function PanelStudio({
       id: `balloon-${Date.now()}`,
       panelId: selectedPanel.id,
       shape,
-      text: shape === "shout" ? "N-NANI?!" : shape === "thought" ? "..." : "Speech...",
+      text: shape === "burst" || shape === "double_burst" ? "N-NANI?!" : shape === "cloud" ? "..." : "Speech...",
       x: bounds.minX + bounds.width * 0.25,
       y: bounds.minY + bounds.height * 0.2,
-      width: Math.min(bounds.width * 0.5, 180),
-      height: Math.min(bounds.height * 0.35, 110),
+      width: Math.min(bounds.width * 0.55, 200),
+      height: Math.min(bounds.height * 0.4, 120),
       tail: {
         x: bounds.minX + bounds.width * 0.35,
         y: bounds.minY + bounds.height * 0.55,
       },
+      hasTail: true,
       fontSize: 16,
-      fontWeight: shape === "shout" ? "bold" : "normal",
+      fontWeight: shape === "burst" || shape === "double_burst" ? "bold" : "normal",
       writingMode: "horizontal-tb",
       backgroundColor: "#ffffff",
       strokeColor: "#000000",
@@ -189,7 +235,7 @@ export function PanelStudio({
       type,
       x: bounds.minX + bounds.width * 0.4,
       y: bounds.minY + bounds.height * 0.2,
-      size: 36,
+      size: 38,
       rotation: 0,
       zIndex: (layout.comicMarks?.length ?? 0) + 50,
     };
@@ -219,8 +265,8 @@ export function PanelStudio({
       centerY: bounds.minY + bounds.height / 2,
       angle: 0,
       density: 55,
-      innerRadius: Math.min(bounds.width, bounds.height) * 0.2,
-      outerRadius: Math.max(bounds.width, bounds.height) * 0.9,
+      innerRadius: Math.min(bounds.width, bounds.height) * 0.22,
+      outerRadius: Math.max(bounds.width, bounds.height) * 0.95,
       strokeWidth: 1.5,
       color: "#000000",
       zIndex: 2,
@@ -247,12 +293,12 @@ export function PanelStudio({
       id: `sfx-${Date.now()}`,
       panelId: selectedPanel.id,
       text,
-      x: bounds.minX + bounds.width * 0.3,
-      y: bounds.minY + bounds.height * 0.4,
-      fontSize: 48,
+      x: bounds.minX + bounds.width * 0.25,
+      y: bounds.minY + bounds.height * 0.35,
+      fontSize: 50,
       fillColor: "#ffffff",
       strokeColor: "#000000",
-      strokeWidth: 4,
+      strokeWidth: 4.5,
       rotation: -12,
       skewX: -10,
       zIndex: 80,
@@ -263,6 +309,80 @@ export function PanelStudio({
       sfxStamps: [...(layout.sfxStamps ?? []), newSFX],
     });
     setSelectedItemId(newSFX.id);
+  };
+
+  // Stamp a Manga Background Plate into the Active Panel
+  const handleApplyBackground = (bg: MangaBackground) => {
+    if (!selectedPanel) return;
+    const bounds = getPanelPixelBounds(
+      selectedPanel,
+      layout.format.width,
+      layout.format.height,
+      layout.format.margin,
+      layout.format.gutter
+    );
+
+    const dataUrl = getMangaBackgroundDataUrl(bg, Math.round(bounds.width), Math.round(bounds.height));
+
+    const newEl: PlacedElement = {
+      id: `bg-${Date.now()}`,
+      panelId: selectedPanel.id,
+      type: "background",
+      imageUrl: dataUrl,
+      x: bounds.minX,
+      y: bounds.minY,
+      width: bounds.width,
+      height: bounds.height,
+      rotation: 0,
+      flipX: false,
+      flipY: false,
+      zIndex: 1, // Base background layer
+      breakout: false,
+    };
+
+    // Remove existing background in this panel if user wants to replace it
+    const remaining = layout.elements.filter((el) => !(el.panelId === selectedPanel.id && el.type === "background"));
+
+    onUpdateLayout({
+      ...layout,
+      elements: [newEl, ...remaining],
+    });
+    setSelectedItemId(newEl.id);
+  };
+
+  // Stamp a Character from Roster onto the Active Panel
+  const handleAddCharacterFromRoster = (char: RosterCharacter) => {
+    if (!selectedPanel) return;
+    const bounds = getPanelPixelBounds(
+      selectedPanel,
+      layout.format.width,
+      layout.format.height,
+      layout.format.margin,
+      layout.format.gutter
+    );
+
+    const newEl: PlacedElement = {
+      id: `char-${Date.now()}`,
+      panelId: selectedPanel.id,
+      type: "character",
+      imageUrl: char.previewUrl,
+      x: bounds.minX + bounds.width * 0.1,
+      y: bounds.minY + bounds.height * 0.1,
+      width: Math.min(bounds.width * 0.8, 320),
+      height: Math.min(bounds.height * 0.85, 460),
+      rotation: 0,
+      flipX: false,
+      flipY: false,
+      zIndex: layout.elements.length + 10,
+      breakout: false,
+      source3d: char.source3d ? { ...char.source3d, hipsDrop: char.source3d.hipsDrop ?? 0 } : undefined,
+    };
+
+    onUpdateLayout({
+      ...layout,
+      elements: [...layout.elements, newEl],
+    });
+    setSelectedItemId(newEl.id);
   };
 
   // Image import onto panel
@@ -335,10 +455,71 @@ export function PanelStudio({
     setSelectedItemId(newEl.id);
   };
 
+  // Element Layer Ordering Helpers
+  const handleReorderElement = (id: string, direction: "up" | "down" | "top" | "bottom") => {
+    const el = layout.elements.find((e) => e.id === id);
+    if (!el) return;
+
+    let updatedElements = [...layout.elements];
+    const index = updatedElements.findIndex((e) => e.id === id);
+
+    if (direction === "top") {
+      const maxZ = Math.max(...updatedElements.map((e) => e.zIndex), 1);
+      updatedElements[index] = { ...el, zIndex: maxZ + 1 };
+    } else if (direction === "bottom") {
+      const minZ = Math.min(...updatedElements.map((e) => e.zIndex), 1);
+      updatedElements[index] = { ...el, zIndex: Math.max(1, minZ - 1) };
+    } else if (direction === "up") {
+      updatedElements[index] = { ...el, zIndex: el.zIndex + 1 };
+    } else if (direction === "down") {
+      updatedElements[index] = { ...el, zIndex: Math.max(1, el.zIndex - 1) };
+    }
+
+    onUpdateLayout({ ...layout, elements: updatedElements });
+  };
+
+  // 1-Click Duplicate Element
+  const handleDuplicateElement = (el: PlacedElement) => {
+    const dup: PlacedElement = {
+      ...el,
+      id: `el-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      x: el.x + 25,
+      y: el.y + 25,
+      zIndex: el.zIndex + 1,
+    };
+    onUpdateLayout({ ...layout, elements: [...layout.elements, dup] });
+    setSelectedItemId(dup.id);
+  };
+
+  // Center Element in Panel
+  const handleCenterInPanel = (el: PlacedElement) => {
+    const panel = layout.panels.find((p) => p.id === el.panelId);
+    if (!panel) return;
+    const bounds = getPanelPixelBounds(
+      panel,
+      layout.format.width,
+      layout.format.height,
+      layout.format.margin,
+      layout.format.gutter
+    );
+    onUpdateLayout({
+      ...layout,
+      elements: layout.elements.map((e) =>
+        e.id === el.id
+          ? {
+              ...e,
+              x: bounds.minX + (bounds.width - e.width) / 2,
+              y: bounds.minY + (bounds.height - e.height) / 2,
+            }
+          : e
+      ),
+    });
+  };
+
   return (
-    <div className="flex h-screen flex-col bg-background text-foreground select-none">
+    <div className="flex h-screen flex-col bg-background text-foreground select-none overflow-hidden">
       {/* Top Bar */}
-      <header className="flex items-center gap-3 border-b-2 border-foreground px-4 py-2 bg-card">
+      <header className="flex items-center gap-3 border-b-2 border-foreground px-4 py-2 bg-card shrink-0">
         <button
           onClick={onOpen3dStudio}
           className="flex items-center gap-1.5 rounded-sm border-2 border-foreground bg-primary px-3 py-1 font-semibold text-primary-foreground shadow-ink text-xs transition-transform hover:-translate-y-0.5"
@@ -348,64 +529,64 @@ export function PanelStudio({
         </button>
 
         <h1 className="font-display text-lg tracking-wide hidden sm:block">
-          MANGA<span className="text-primary">PANELS</span>
+          MANGA<span className="text-primary">STUDIO</span>
         </h1>
 
-        {/* Templates Selector */}
-        <div className="flex items-center gap-1 text-xs">
-          <span className="font-semibold text-muted-foreground hidden md:inline">Layout:</span>
-          {[
-            { id: "1-splash", label: "1-Splash" },
-            { id: "2-vert", label: "2-Panel" },
-            { id: "4-koma", label: "4-Koma" },
-            { id: "action-5", label: "Action 5" },
-            { id: "classic-6", label: "Classic 6" },
-          ].map((t) => (
-            <button
-              key={t.id}
-              onClick={() => handleApplyTemplate(t.id)}
-              className="rounded-sm border border-border px-2 py-1 hover:border-foreground hover:bg-accent text-xs"
-            >
-              {t.label}
-            </button>
-          ))}
+        {/* Format Selector */}
+        <div className="flex items-center gap-1.5 text-xs">
+          <span className="font-semibold text-muted-foreground hidden lg:inline">Paper:</span>
+          <select
+            value={layout.format.id}
+            onChange={(e) => handleFormatChange(e.target.value)}
+            className="rounded-sm border border-input bg-background px-2 py-1 text-xs font-medium"
+          >
+            {PAGE_FORMATS.map((f) => (
+              <option key={f.id} value={f.id}>
+                {f.name} ({f.width}×{f.height})
+              </option>
+            ))}
+          </select>
         </div>
 
-        {/* Format Selector */}
-        <select
-          value={layout.format.id}
-          onChange={(e) => handleFormatChange(e.target.value)}
-          className="rounded-sm border border-input bg-background px-2 py-1 text-xs"
-        >
-          {PAGE_FORMATS.map((f) => (
-            <option key={f.id} value={f.id}>
-              {f.name} ({f.width}×{f.height})
-            </option>
-          ))}
-        </select>
-
-        {/* Zoom Controls */}
-        <div className="ml-auto flex items-center gap-2 text-xs">
+        {/* Viewport Zoom & Fit Controls */}
+        <div className="ml-auto flex items-center gap-1.5 text-xs">
           <button
-            onClick={() => setZoom((z) => Math.max(0.4, z - 0.1))}
+            onClick={fitToScreen}
+            title="Auto-Fit Page to Screen (no cutoffs)"
+            className="rounded-sm border-2 border-foreground bg-accent px-2 py-1 font-semibold text-xs shadow-ink hover:bg-accent/80 flex items-center gap-1"
+          >
+            <Maximize2 className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Fit Screen</span>
+          </button>
+          <button
+            onClick={() => setZoom(1.0)}
+            title="100% Actual Size"
+            className={`rounded-sm border px-2 py-1 text-xs font-semibold ${
+              zoom === 1.0 ? "border-foreground bg-foreground text-background" : "border-border hover:border-foreground"
+            }`}
+          >
+            100%
+          </button>
+          <button
+            onClick={() => setZoom((z) => Math.max(0.25, Math.round((z - 0.1) * 10) / 10))}
             className="rounded-sm border border-border p-1 hover:border-foreground"
           >
             <ZoomOut className="h-4 w-4" />
           </button>
-          <span className="w-12 text-center tabular-nums font-mono">
+          <span className="w-12 text-center tabular-nums font-mono font-semibold">
             {Math.round(zoom * 100)}%
           </span>
           <button
-            onClick={() => setZoom((z) => Math.min(1.5, z + 0.1))}
+            onClick={() => setZoom((z) => Math.min(1.5, Math.round((z + 0.1) * 10) / 10))}
             className="rounded-sm border border-border p-1 hover:border-foreground"
           >
             <ZoomIn className="h-4 w-4" />
           </button>
 
-          {/* Photo-to-Manga Filter Button */}
+          {/* Quick Photo Filter */}
           <button
             onClick={() => setFilterModalOpen(true)}
-            className="flex items-center gap-1.5 rounded-sm border-2 border-foreground bg-accent px-3 py-1 font-semibold text-xs shadow-ink hover:-translate-y-0.5"
+            className="hidden md:flex items-center gap-1.5 rounded-sm border-2 border-foreground bg-accent px-3 py-1 font-semibold text-xs shadow-ink hover:-translate-y-0.5"
           >
             <Sparkles className="h-3.5 w-3.5 text-primary" />
             Photo Filter
@@ -413,7 +594,7 @@ export function PanelStudio({
 
           <button
             onClick={() => fileInputRef.current?.click()}
-            className="rounded-sm border border-border px-2.5 py-1 text-xs hover:border-foreground font-medium"
+            className="hidden sm:inline rounded-sm border border-border px-2.5 py-1 text-xs hover:border-foreground font-medium"
           >
             + Sprite
           </button>
@@ -428,165 +609,383 @@ export function PanelStudio({
           {/* Export Button */}
           <button
             onClick={() => setExportModalOpen(true)}
-            className="flex items-center gap-1.5 rounded-sm border-2 border-foreground bg-primary px-3.5 py-1 font-bold text-primary-foreground shadow-ink hover:-translate-y-0.5 text-xs"
+            className="flex items-center gap-1.5 rounded-sm border-2 border-foreground bg-primary px-3.5 py-1 font-bold text-primary-foreground shadow-ink hover:-translate-y-0.5 text-xs ml-1"
           >
             <Download className="h-3.5 w-3.5" />
-            Export Manga
+            Export Chapter
           </button>
         </div>
       </header>
 
-      {/* Main Workspace */}
-      <div className="flex min-h-0 flex-1">
-        {/* Left Toolbar: Knife Cut & Manga Adders */}
-        <aside className="flex w-64 flex-col border-r-2 border-foreground bg-card p-3 space-y-4 overflow-y-auto">
-          {/* Knife Tools */}
-          <div>
-            <h2 className="font-display text-sm flex items-center gap-1.5 mb-1.5">
-              <Scissors className="h-4 w-4 text-primary" /> Knife Split
-            </h2>
-            <div className="grid grid-cols-2 gap-1.5">
-              <button
-                disabled={!selectedPanel}
-                onClick={() => handleKnifeSplit("horizontal")}
-                className="flex items-center justify-center gap-1 rounded-sm border border-border py-1.5 text-xs font-semibold hover:border-foreground hover:bg-accent disabled:opacity-40"
-              >
-                <SplitSquareHorizontal className="h-3.5 w-3.5" /> Horiz Cut
-              </button>
-              <button
-                disabled={!selectedPanel}
-                onClick={() => handleKnifeSplit("vertical")}
-                className="flex items-center justify-center gap-1 rounded-sm border border-border py-1.5 text-xs font-semibold hover:border-foreground hover:bg-accent disabled:opacity-40"
-              >
-                <SplitSquareVertical className="h-3.5 w-3.5" /> Vert Cut
-              </button>
-              <button
-                disabled={!selectedPanel}
-                onClick={() => handleKnifeSplit("diagonal")}
-                className="col-span-2 flex items-center justify-center gap-1.5 rounded-sm border-2 border-primary bg-primary/10 py-1.5 text-xs font-semibold hover:bg-primary/20 disabled:opacity-40"
-              >
-                <Scissors className="h-3.5 w-3.5 text-primary" /> Action Slash (Diagonal)
-              </button>
-            </div>
+      {/* Main Workspace Body */}
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        {/* Left Toolbar: 4 Creative Trays (Panels, Backgrounds, Characters, Dialogue) */}
+        <aside className="flex w-76 flex-col border-r-2 border-foreground bg-card overflow-hidden shrink-0">
+          {/* Tray Tab Bar */}
+          <div className="grid grid-cols-4 border-b-2 border-foreground bg-muted text-[11px] font-semibold text-center">
+            <button
+              onClick={() => setLeftTab("panels")}
+              className={`py-2 transition-colors border-r border-border ${
+                leftTab === "panels" ? "border-b-2 border-primary bg-card text-foreground font-bold" : "text-muted-foreground hover:text-foreground"
+              }`}
+              title="Panels, Knife Cut & Grid Layouts"
+            >
+              📐 Panels
+            </button>
+            <button
+              onClick={() => setLeftTab("backgrounds")}
+              className={`py-2 transition-colors border-r border-border ${
+                leftTab === "backgrounds" ? "border-b-2 border-primary bg-card text-foreground font-bold" : "text-muted-foreground hover:text-foreground"
+              }`}
+              title="Manga Background Plates & Screentones"
+            >
+              🖼️ Backs
+            </button>
+            <button
+              onClick={() => setLeftTab("characters")}
+              className={`py-2 transition-colors border-r border-border ${
+                leftTab === "characters" ? "border-b-2 border-primary bg-card text-foreground font-bold" : "text-muted-foreground hover:text-foreground"
+              }`}
+              title="Character Staging Shelf & Poses"
+            >
+              👤 Chars
+            </button>
+            <button
+              onClick={() => setLeftTab("balloons")}
+              className={`py-2 transition-colors ${
+                leftTab === "balloons" ? "border-b-2 border-primary bg-card text-foreground font-bold" : "text-muted-foreground hover:text-foreground"
+              }`}
+              title="Speech Balloons, Comic Marks & SFX"
+            >
+              💬 SFX
+            </button>
           </div>
 
-          {/* Speech Balloons Adder */}
-          <div className="border-t border-border pt-3">
-            <h2 className="font-display text-sm flex items-center gap-1.5 mb-2">
-              <MessageSquare className="h-4 w-4 text-primary" /> Speech Balloons
-            </h2>
-            <div className="grid grid-cols-2 gap-1.5">
-              {(
-                [
-                  { id: "oval", label: "Dialogue" },
-                  { id: "shout", label: "💥 Shout" },
-                  { id: "thought", label: "💭 Thought" },
-                  { id: "whisper", label: "⋯ Whisper" },
-                  { id: "square", label: "Narration" },
-                  { id: "radio", label: "⚡ Broadcast" },
-                ] as const
-              ).map((b) => (
+          {/* Tray 1: Panels, Knife Tools & Templates */}
+          {leftTab === "panels" && (
+            <div className="flex-1 overflow-y-auto p-3 space-y-4 text-xs">
+              {/* Knife Slash Tools */}
+              <div>
+                <h2 className="font-display text-sm flex items-center gap-1.5 mb-1.5">
+                  <Scissors className="h-4 w-4 text-primary" /> Knife Split
+                </h2>
+                <p className="text-[11px] text-muted-foreground mb-2">
+                  Slice selected panel into dynamic action cuts with automatic gutters.
+                </p>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <button
+                    disabled={!selectedPanel}
+                    onClick={() => handleKnifeSplit("horizontal")}
+                    className="flex items-center justify-center gap-1 rounded-sm border border-border py-1.5 text-xs font-semibold hover:border-foreground hover:bg-accent disabled:opacity-40"
+                  >
+                    <SplitSquareHorizontal className="h-3.5 w-3.5" /> Horiz Cut
+                  </button>
+                  <button
+                    disabled={!selectedPanel}
+                    onClick={() => handleKnifeSplit("vertical")}
+                    className="flex items-center justify-center gap-1 rounded-sm border border-border py-1.5 text-xs font-semibold hover:border-foreground hover:bg-accent disabled:opacity-40"
+                  >
+                    <SplitSquareVertical className="h-3.5 w-3.5" /> Vert Cut
+                  </button>
+                  <button
+                    disabled={!selectedPanel}
+                    onClick={() => handleKnifeSplit("diagonal")}
+                    className="col-span-2 flex items-center justify-center gap-1.5 rounded-sm border-2 border-primary bg-primary/10 py-1.5 text-xs font-bold hover:bg-primary/20 disabled:opacity-40"
+                  >
+                    <Scissors className="h-3.5 w-3.5 text-primary" /> Action Slash (Diagonal)
+                  </button>
+                </div>
+              </div>
+
+              {/* Layout Template Gallery */}
+              <div className="border-t border-border pt-3">
+                <h2 className="font-display text-sm flex items-center gap-1.5 mb-2">
+                  <Compass className="h-4 w-4 text-primary" /> Manga Grid Templates
+                </h2>
+                <div className="grid grid-cols-2 gap-1.5">
+                  {PRESET_LAYOUT_CATALOG.map((tmpl) => (
+                    <button
+                      key={tmpl.id}
+                      onClick={() => handleApplyTemplate(tmpl.id)}
+                      className="rounded border border-border p-2 text-left hover:border-foreground hover:bg-accent/40 transition-all group"
+                    >
+                      <div className="font-semibold text-foreground group-hover:text-primary">
+                        {tmpl.label}
+                      </div>
+                      <div className="text-[10px] text-muted-foreground line-clamp-1">
+                        {tmpl.description}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Gutters & Margins Settings */}
+              <div className="space-y-2 border-t border-border pt-3">
+                <h3 className="font-display text-xs">Gutters & Margins</h3>
+                <label className="block">
+                  <span className="flex justify-between">
+                    <span>Gutter Width:</span>
+                    <span className="font-semibold">{layout.format.gutter}px</span>
+                  </span>
+                  <input
+                    type="range"
+                    min={4}
+                    max={40}
+                    value={layout.format.gutter}
+                    onChange={(e) =>
+                      onUpdateLayout({
+                        ...layout,
+                        format: { ...layout.format, gutter: +e.target.value },
+                      })
+                    }
+                    className="w-full accent-primary"
+                  />
+                </label>
+                <label className="block">
+                  <span className="flex justify-between">
+                    <span>Outer Page Margin:</span>
+                    <span className="font-semibold">{layout.format.margin}px</span>
+                  </span>
+                  <input
+                    type="range"
+                    min={8}
+                    max={60}
+                    value={layout.format.margin}
+                    onChange={(e) =>
+                      onUpdateLayout({
+                        ...layout,
+                        format: { ...layout.format, margin: +e.target.value },
+                      })
+                    }
+                    className="w-full accent-primary"
+                  />
+                </label>
+              </div>
+            </div>
+          )}
+
+          {/* Tray 2: Manga Background Plates & Screentones */}
+          {leftTab === "backgrounds" && (
+            <div className="flex-1 overflow-y-auto p-3 space-y-3 text-xs">
+              {/* Photo-to-Manga Filter Hero Button */}
+              <button
+                onClick={() => setFilterModalOpen(true)}
+                className="w-full flex items-center justify-center gap-2 rounded border-2 border-foreground bg-primary py-2 font-bold text-primary-foreground shadow-ink hover:opacity-90 transition-transform hover:-translate-y-0.5"
+              >
+                <Sparkles className="h-4 w-4" />
+                Photo-to-Manga Inking Filter
+              </button>
+
+              {/* Category tabs */}
+              <div className="flex gap-1 border-b border-border pb-2">
+                {(["scenery", "action", "mood", "screentone"] as const).map((cat) => (
+                  <button
+                    key={cat}
+                    onClick={() => setBgCategory(cat)}
+                    className={`flex-1 py-1 rounded text-center text-[10px] font-semibold capitalize ${
+                      bgCategory === cat ? "bg-foreground text-background" : "bg-muted text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    {cat}
+                  </button>
+                ))}
+              </div>
+
+              {/* Backgrounds Grid */}
+              <div className="grid grid-cols-2 gap-2">
+                {MANGA_BACKGROUNDS.filter((b) => b.category === bgCategory).map((bg) => (
+                  <button
+                    key={bg.id}
+                    disabled={!selectedPanel}
+                    onClick={() => handleApplyBackground(bg)}
+                    className="flex flex-col items-center rounded border border-border p-2 hover:border-foreground hover:bg-accent/30 transition-all text-center group disabled:opacity-40"
+                    title={`Stamp ${bg.name} to active panel`}
+                  >
+                    <span className="text-2xl mb-1">{bg.thumbnail}</span>
+                    <span className="font-semibold text-[11px] line-clamp-2 leading-tight">
+                      {bg.name}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Tray 3: Character Staging Shelf */}
+          {leftTab === "characters" && (
+            <div className="flex-1 overflow-y-auto p-3 space-y-3 text-xs">
+              <div className="flex items-center justify-between">
+                <h3 className="font-display text-sm flex items-center gap-1.5">
+                  <User className="h-4 w-4 text-primary" /> Preset Characters
+                </h3>
                 <button
-                  key={b.id}
-                  disabled={!selectedPanel}
-                  onClick={() => handleAddBalloon(b.id as BalloonShape)}
-                  className="rounded-sm border border-border py-1.5 text-xs font-semibold hover:border-foreground hover:bg-accent disabled:opacity-40 text-center"
+                  onClick={onOpen3dStudio}
+                  className="text-[11px] font-semibold text-primary hover:underline flex items-center gap-1"
                 >
-                  {b.label}
+                  <Camera className="h-3 w-3" /> Pose 3D
                 </button>
-              ))}
-            </div>
-          </div>
+              </div>
 
-          {/* Comic Marks */}
-          <div className="border-t border-border pt-3">
-            <h2 className="font-display text-sm flex items-center gap-1.5 mb-2">
-              <Smile className="h-4 w-4 text-primary" /> Comic Emotion Marks
-            </h2>
-            <div className="grid grid-cols-4 gap-1">
-              {COMIC_MARK_PRESETS.map((m) => (
+              {/* Built-in Roster Figures */}
+              <div className="grid grid-cols-2 gap-2">
+                {PRESET_ROSTER.map((char) => (
+                  <button
+                    key={char.id}
+                    disabled={!selectedPanel}
+                    onClick={() => handleAddCharacterFromRoster(char)}
+                    className="flex flex-col items-center rounded border border-border p-2.5 hover:border-foreground hover:bg-accent/40 text-center transition-all group disabled:opacity-40"
+                    title={`Stamp ${char.name} to selected panel`}
+                  >
+                    <div className="w-12 h-16 rounded bg-muted/60 border border-foreground/30 flex items-center justify-center font-bold text-xs mb-1.5">
+                      🧍
+                    </div>
+                    <span className="font-bold text-[11px] line-clamp-1">{char.name}</span>
+                    <span className="text-[10px] text-muted-foreground">{char.role}</span>
+                  </button>
+                ))}
+              </div>
+
+              {/* Upload Custom Sprite */}
+              <div className="border-t border-border pt-3">
                 <button
-                  key={m.label}
-                  disabled={!selectedPanel}
-                  onClick={() => handleAddComicMark(m.mark)}
-                  title={m.label}
-                  className="rounded-sm border border-border py-1 text-base hover:border-foreground hover:bg-accent disabled:opacity-40 flex items-center justify-center"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="w-full flex items-center justify-center gap-1.5 rounded border-2 border-dashed border-foreground/40 bg-muted/40 py-2 font-medium hover:border-primary hover:bg-primary/5 transition-colors"
                 >
-                  {m.mark}
+                  <ImageIcon className="h-4 w-4" />
+                  Upload Custom Transparent Sprite
                 </button>
-              ))}
+              </div>
             </div>
-          </div>
+          )}
 
-          {/* Screentones & Speed Lines */}
-          <div className="border-t border-border pt-3">
-            <h2 className="font-display text-sm flex items-center gap-1.5 mb-2">
-              <Zap className="h-4 w-4 text-primary" /> Action Speed Lines
-            </h2>
-            <div className="grid grid-cols-2 gap-1.5">
-              <button
-                disabled={!selectedPanel}
-                onClick={() => handleAddSpeedLines("radial")}
-                className="rounded-sm border border-border py-1.5 text-xs font-semibold hover:border-foreground hover:bg-accent disabled:opacity-40"
-              >
-                Radial Burst
-              </button>
-              <button
-                disabled={!selectedPanel}
-                onClick={() => handleAddSpeedLines("linear")}
-                className="rounded-sm border border-border py-1.5 text-xs font-semibold hover:border-foreground hover:bg-accent disabled:opacity-40"
-              >
-                Motion Lines
-              </button>
+          {/* Tray 4: Dialogue, Comic Marks & SFX */}
+          {leftTab === "balloons" && (
+            <div className="flex-1 overflow-y-auto p-3 space-y-4 text-xs">
+              {/* Speech Balloons */}
+              <div>
+                <h2 className="font-display text-sm flex items-center gap-1.5 mb-2">
+                  <MessageSquare className="h-4 w-4 text-primary" /> Speech Balloons
+                </h2>
+                <div className="grid grid-cols-2 gap-1.5">
+                  {(
+                    [
+                      { id: "oval", label: "💬 Dialogue" },
+                      { id: "burst", label: "💥 Shout / Scream" },
+                      { id: "double_burst", label: "⚡ Mega Explosion" },
+                      { id: "cloud", label: "💭 Thought" },
+                      { id: "whisper", label: "⋯ Whisper" },
+                      { id: "box", label: "📜 Narration Box" },
+                      { id: "electric", label: "📻 Broadcast" },
+                      { id: "heart", label: "❤️ Idol / Heart" },
+                    ] as const
+                  ).map((b) => (
+                    <button
+                      key={b.id}
+                      disabled={!selectedPanel}
+                      onClick={() => handleAddBalloon(b.id as BalloonShape)}
+                      className="rounded-sm border border-border py-1.5 text-[11px] font-semibold hover:border-foreground hover:bg-accent disabled:opacity-40 text-center"
+                    >
+                      {b.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Comic Marks */}
+              <div className="border-t border-border pt-3">
+                <h2 className="font-display text-sm flex items-center gap-1.5 mb-2">
+                  <Smile className="h-4 w-4 text-primary" /> Comic Emotion Marks
+                </h2>
+                <div className="grid grid-cols-4 gap-1">
+                  {COMIC_MARK_PRESETS.map((m) => (
+                    <button
+                      key={m.label}
+                      disabled={!selectedPanel}
+                      onClick={() => handleAddComicMark(m.mark)}
+                      title={m.label}
+                      className="rounded-sm border border-border py-1.5 text-base hover:border-foreground hover:bg-accent disabled:opacity-40 flex items-center justify-center transition-transform hover:scale-110"
+                    >
+                      {m.mark}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Speed Lines */}
+              <div className="border-t border-border pt-3">
+                <h2 className="font-display text-sm flex items-center gap-1.5 mb-2">
+                  <Zap className="h-4 w-4 text-primary" /> Action Speed Lines
+                </h2>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <button
+                    disabled={!selectedPanel}
+                    onClick={() => handleAddSpeedLines("radial")}
+                    className="rounded-sm border border-border py-1.5 text-xs font-semibold hover:border-foreground hover:bg-accent disabled:opacity-40"
+                  >
+                    Radial Burst
+                  </button>
+                  <button
+                    disabled={!selectedPanel}
+                    onClick={() => handleAddSpeedLines("linear")}
+                    className="rounded-sm border border-border py-1.5 text-xs font-semibold hover:border-foreground hover:bg-accent disabled:opacity-40"
+                  >
+                    Motion Lines
+                  </button>
+                </div>
+              </div>
+
+              {/* SFX Stamps */}
+              <div className="border-t border-border pt-3">
+                <h2 className="font-display text-sm flex items-center gap-1.5 mb-2">
+                  <Volume2 className="h-4 w-4 text-primary" /> Onomatopoeia SFX
+                </h2>
+                <div className="grid grid-cols-2 gap-1.5">
+                  {SFX_PRESETS.map((sfx) => (
+                    <button
+                      key={sfx.text}
+                      disabled={!selectedPanel}
+                      onClick={() => handleAddSFX(sfx.text)}
+                      className="rounded-sm border border-border py-1 text-xs font-black italic hover:border-foreground hover:bg-accent disabled:opacity-40"
+                    >
+                      {sfx.text}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Custom SFX Creator */}
+                <div className="flex gap-1.5 mt-2">
+                  <input
+                    type="text"
+                    value={customSfxText}
+                    onChange={(e) => setCustomSfxText(e.target.value)}
+                    placeholder="Custom SFX..."
+                    className="flex-1 rounded border border-input bg-background px-2 py-1 text-xs font-bold"
+                  />
+                  <button
+                    disabled={!selectedPanel || !customSfxText}
+                    onClick={() => handleAddSFX(customSfxText)}
+                    className="rounded bg-primary px-3 py-1 text-xs font-bold text-primary-foreground shadow-ink disabled:opacity-40"
+                  >
+                    Stamp
+                  </button>
+                </div>
+              </div>
             </div>
-          </div>
-
-          {/* SFX Stamps */}
-          <div className="border-t border-border pt-3">
-            <h2 className="font-display text-sm flex items-center gap-1.5 mb-2">
-              <Volume2 className="h-4 w-4 text-primary" /> Onomatopoeia SFX
-            </h2>
-            <div className="grid grid-cols-2 gap-1.5">
-              {SFX_PRESETS.map((sfx) => (
-                <button
-                  key={sfx.text}
-                  disabled={!selectedPanel}
-                  onClick={() => handleAddSFX(sfx.text)}
-                  className="rounded-sm border border-border py-1 text-xs font-black italic hover:border-foreground hover:bg-accent disabled:opacity-40"
-                >
-                  {sfx.text}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Gutter & Margins Settings */}
-          <div className="space-y-2 border-t border-border pt-3 text-xs">
-            <h3 className="font-display text-xs">Gutters & Margins</h3>
-            <label className="block">
-              <span className="flex justify-between">
-                <span>Gutter:</span>
-                <span className="font-semibold">{layout.format.gutter}px</span>
-              </span>
-              <input
-                type="range"
-                min={4}
-                max={40}
-                value={layout.format.gutter}
-                onChange={(e) =>
-                  onUpdateLayout({
-                    ...layout,
-                    format: { ...layout.format, gutter: +e.target.value },
-                  })
-                }
-                className="w-full accent-primary"
-              />
-            </label>
-          </div>
+          )}
         </aside>
 
-        {/* Center Canvas */}
-        <main className="flex-1 overflow-auto p-8 flex items-center justify-center bg-muted/40">
+        {/* Center Canvas Viewport with Auto-Fit Scrolling */}
+        <main
+          ref={canvasContainerRef}
+          className="flex-1 overflow-auto p-6 flex items-center justify-center bg-muted/30"
+          onWheel={(e) => {
+            if (e.ctrlKey) {
+              e.preventDefault();
+              setZoom((z) => Math.max(0.2, Math.min(1.5, z - e.deltaY * 0.0015)));
+            }
+          }}
+        >
           <PageCanvas
             layout={layout}
             selectedPanelId={selectedPanelId}
@@ -664,12 +1063,13 @@ export function PanelStudio({
               });
               if (selectedItemId === id) setSelectedItemId(null);
             }}
+            onRePoseIn3D={onRePoseIn3D}
             zoom={zoom}
           />
         </main>
 
-        {/* Right Inspector */}
-        <aside className="flex w-72 flex-col border-l-2 border-foreground bg-card p-3 space-y-4 overflow-y-auto">
+        {/* Right Inspector: Panels, Characters, Balloons, Layers */}
+        <aside className="flex w-76 flex-col border-l-2 border-foreground bg-card p-3 space-y-4 overflow-y-auto shrink-0">
           {/* Selected Panel Inspector */}
           {selectedPanel && (
             <div className="border-b border-border pb-3">
@@ -687,6 +1087,7 @@ export function PanelStudio({
               </div>
 
               <div className="space-y-2 text-xs">
+                {/* Border thickness */}
                 <label className="block">
                   <span className="flex justify-between">
                     <span>Border Thickness</span>
@@ -694,7 +1095,7 @@ export function PanelStudio({
                   </span>
                   <input
                     type="range"
-                    min={1}
+                    min={0}
                     max={12}
                     value={selectedPanel.borderWidth}
                     onChange={(e) =>
@@ -709,10 +1110,11 @@ export function PanelStudio({
                   />
                 </label>
 
+                {/* Border Style */}
                 <div className="flex items-center justify-between">
                   <span>Border Style</span>
                   <div className="flex gap-1">
-                    {(["solid", "dashed", "none"] as const).map((style) => (
+                    {(["solid", "dashed", "dotted", "none"] as const).map((style) => (
                       <button
                         key={style}
                         onClick={() =>
@@ -723,9 +1125,9 @@ export function PanelStudio({
                             ),
                           })
                         }
-                        className={`px-2 py-0.5 rounded text-[11px] font-medium border ${
+                        className={`px-1.5 py-0.5 rounded text-[10px] font-medium border capitalize ${
                           selectedPanel.borderStyle === style
-                            ? "bg-foreground text-background border-foreground"
+                            ? "bg-foreground text-background border-foreground font-bold"
                             : "border-border hover:border-foreground"
                         }`}
                       >
@@ -734,32 +1136,75 @@ export function PanelStudio({
                     ))}
                   </div>
                 </div>
+
+                {/* Panel Background Color */}
+                <div>
+                  <span className="block mb-1 font-semibold">Background Fill</span>
+                  <div className="flex gap-1.5">
+                    {[
+                      { color: "#ffffff", label: "White" },
+                      { color: "#09090b", label: "Night Black" },
+                      { color: "#e4e4e7", label: "Gray" },
+                      { color: "#fef3c7", label: "Warm" },
+                    ].map((c) => (
+                      <button
+                        key={c.color}
+                        onClick={() =>
+                          onUpdateLayout({
+                            ...layout,
+                            panels: layout.panels.map((p) =>
+                              p.id === selectedPanel.id ? { ...p, backgroundColor: c.color } : p
+                            ),
+                          })
+                        }
+                        className={`flex-1 py-1 rounded text-[10px] border font-medium ${
+                          selectedPanel.backgroundColor === c.color ? "border-primary ring-1 ring-primary font-bold" : "border-border"
+                        }`}
+                        style={{ backgroundColor: c.color, color: c.color === "#09090b" ? "#ffffff" : "#000000" }}
+                      >
+                        {c.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
             </div>
           )}
 
-          {/* Selected Element Inspector */}
+          {/* Selected Character / Sprite Inspector */}
           {selectedElement && (
             <div className="border-b border-border pb-3 space-y-3">
               <div className="flex items-center justify-between">
-                <h3 className="font-display text-sm">Sprite / Character</h3>
-                <button
-                  onClick={() => {
-                    onUpdateLayout({
-                      ...layout,
-                      elements: layout.elements.filter((el) => el.id !== selectedElement.id),
-                    });
-                    setSelectedItemId(null);
-                  }}
-                  className="text-destructive hover:bg-destructive/10 p-1 rounded"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </button>
+                <h3 className="font-display text-sm">
+                  {selectedElement.type === "character" ? "Character Figure" : "Background / Prop"}
+                </h3>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => handleDuplicateElement(selectedElement)}
+                    className="p-1 hover:text-primary rounded"
+                    title="Clone / Duplicate"
+                  >
+                    <Copy className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    onClick={() => {
+                      onUpdateLayout({
+                        ...layout,
+                        elements: layout.elements.filter((el) => el.id !== selectedElement.id),
+                      });
+                      setSelectedItemId(null);
+                    }}
+                    className="text-destructive hover:bg-destructive/10 p-1 rounded"
+                    title="Delete element"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </div>
               </div>
 
               {/* 1-Click Breakout Overlay Toggle */}
               <div className="rounded border-2 border-primary bg-primary/10 p-2 text-xs">
-                <label className="flex items-center justify-between cursor-pointer font-semibold text-primary">
+                <label className="flex items-center justify-between cursor-pointer font-bold text-primary">
                   <span>Breakout (Pop-out of border)</span>
                   <input
                     type="checkbox"
@@ -776,42 +1221,123 @@ export function PanelStudio({
                   />
                 </label>
                 <p className="text-[10px] text-muted-foreground mt-1">
-                  Allows character heads or weapons to boldly overlap gutters and borders.
+                  Allows character heads, weapons, or action blasts to boldly overlap borders and gutters!
                 </p>
               </div>
 
-              {/* Quick Flip & Rotate */}
-              <div className="grid grid-cols-2 gap-1.5 text-xs">
+              {/* Non-Destructive Re-Pose in 3D Button */}
+              {selectedElement.source3d && onRePoseIn3D && (
                 <button
-                  onClick={() =>
-                    onUpdateLayout({
-                      ...layout,
-                      elements: layout.elements.map((el) =>
-                        el.id === selectedElement.id ? { ...el, flipX: !el.flipX } : el
-                      ),
-                    })
-                  }
-                  className={`flex items-center justify-center gap-1 py-1.5 rounded border ${
-                    selectedElement.flipX ? "bg-accent font-bold" : "border-border"
-                  }`}
+                  onClick={() => onRePoseIn3D(selectedElement.source3d)}
+                  className="w-full flex items-center justify-center gap-1.5 rounded border-2 border-foreground bg-accent py-1.5 font-bold shadow-ink text-xs hover:bg-accent/80 transition-transform hover:-translate-y-0.5"
                 >
-                  <FlipHorizontal className="h-3.5 w-3.5" /> Flip Horiz
+                  <Camera className="h-3.5 w-3.5 text-primary" />
+                  Re-Pose in 3D Studio
                 </button>
-                <button
-                  onClick={() =>
-                    onUpdateLayout({
-                      ...layout,
-                      elements: layout.elements.map((el) =>
-                        el.id === selectedElement.id
-                          ? { ...el, rotation: (el.rotation + 90) % 360 }
-                          : el
-                      ),
-                    })
-                  }
-                  className="flex items-center justify-center gap-1 py-1.5 rounded border border-border hover:bg-accent"
-                >
-                  <RotateCw className="h-3.5 w-3.5" /> +90° Rot
-                </button>
+              )}
+
+              {/* Layer Ordering (Bring to Front, Send to Back) */}
+              <div className="space-y-1 text-xs">
+                <span className="font-semibold block">Layer Order</span>
+                <div className="grid grid-cols-4 gap-1">
+                  <button
+                    onClick={() => handleReorderElement(selectedElement.id, "top")}
+                    className="rounded border border-border py-1 hover:border-foreground text-[10px] font-semibold"
+                    title="Bring to absolute front"
+                  >
+                    Front
+                  </button>
+                  <button
+                    onClick={() => handleReorderElement(selectedElement.id, "up")}
+                    className="rounded border border-border py-1 hover:border-foreground text-[10px]"
+                    title="Move up one layer"
+                  >
+                    Up +1
+                  </button>
+                  <button
+                    onClick={() => handleReorderElement(selectedElement.id, "down")}
+                    className="rounded border border-border py-1 hover:border-foreground text-[10px]"
+                    title="Move down one layer"
+                  >
+                    Down -1
+                  </button>
+                  <button
+                    onClick={() => handleReorderElement(selectedElement.id, "bottom")}
+                    className="rounded border border-border py-1 hover:border-foreground text-[10px] font-semibold"
+                    title="Send to back"
+                  >
+                    Back
+                  </button>
+                </div>
+              </div>
+
+              {/* Alignment & Flip */}
+              <div className="space-y-1.5 text-xs">
+                <span className="font-semibold block">Position & Transforms</span>
+                <div className="grid grid-cols-3 gap-1">
+                  <button
+                    onClick={() => handleCenterInPanel(selectedElement)}
+                    className="rounded border border-border py-1 hover:border-foreground text-[10px] flex items-center justify-center gap-1"
+                  >
+                    <AlignCenter className="h-3 w-3" /> Center
+                  </button>
+                  <button
+                    onClick={() =>
+                      onUpdateLayout({
+                        ...layout,
+                        elements: layout.elements.map((el) =>
+                          el.id === selectedElement.id ? { ...el, flipX: !el.flipX } : el
+                        ),
+                      })
+                    }
+                    className={`rounded border py-1 text-[10px] flex items-center justify-center gap-1 ${
+                      selectedElement.flipX ? "bg-accent font-bold" : "border-border"
+                    }`}
+                  >
+                    <FlipHorizontal className="h-3 w-3" /> Flip H
+                  </button>
+                  <button
+                    onClick={() =>
+                      onUpdateLayout({
+                        ...layout,
+                        elements: layout.elements.map((el) =>
+                          el.id === selectedElement.id ? { ...el, flipY: !el.flipY } : el
+                        ),
+                      })
+                    }
+                    className={`rounded border py-1 text-[10px] flex items-center justify-center gap-1 ${
+                      selectedElement.flipY ? "bg-accent font-bold" : "border-border"
+                    }`}
+                  >
+                    <FlipVertical className="h-3 w-3" /> Flip V
+                  </button>
+                </div>
+              </div>
+
+              {/* Opacity Slider */}
+              <div>
+                <label className="block text-xs">
+                  <span className="flex justify-between">
+                    <span>Opacity</span>
+                    <span className="font-mono">{Math.round((selectedElement.opacity ?? 1) * 100)}%</span>
+                  </span>
+                  <input
+                    type="range"
+                    min={0.1}
+                    max={1}
+                    step={0.05}
+                    value={selectedElement.opacity ?? 1}
+                    onChange={(e) =>
+                      onUpdateLayout({
+                        ...layout,
+                        elements: layout.elements.map((el) =>
+                          el.id === selectedElement.id ? { ...el, opacity: +e.target.value } : el
+                        ),
+                      })
+                    }
+                    className="w-full accent-primary mt-1"
+                  />
+                </label>
               </div>
             </div>
           )}
@@ -848,7 +1374,7 @@ export function PanelStudio({
                       ),
                     })
                   }
-                  className="w-full p-2 text-xs rounded-sm border border-input bg-background"
+                  className="w-full p-2 text-xs rounded-sm border border-input bg-background font-medium"
                 />
               </div>
 
@@ -874,6 +1400,43 @@ export function PanelStudio({
                 />
               </div>
 
+              {/* Balloon Color Fill & Dark Demon Voice */}
+              <div>
+                <span className="block mb-1 text-xs font-semibold">Balloon Style</span>
+                <div className="flex gap-1.5 text-xs">
+                  <button
+                    onClick={() =>
+                      onUpdateLayout({
+                        ...layout,
+                        balloons: layout.balloons.map((b) =>
+                          b.id === selectedBalloon.id
+                            ? { ...b, backgroundColor: "#ffffff", fontColor: "#000000", strokeColor: "#000000" }
+                            : b
+                        ),
+                      })
+                    }
+                    className="flex-1 py-1 rounded border border-border bg-white text-black font-semibold text-[11px]"
+                  >
+                    Standard White
+                  </button>
+                  <button
+                    onClick={() =>
+                      onUpdateLayout({
+                        ...layout,
+                        balloons: layout.balloons.map((b) =>
+                          b.id === selectedBalloon.id
+                            ? { ...b, backgroundColor: "#09090b", fontColor: "#ffffff", strokeColor: "#ffffff" }
+                            : b
+                        ),
+                      })
+                    }
+                    className="flex-1 py-1 rounded border border-foreground bg-black text-white font-semibold text-[11px]"
+                  >
+                    Dark / Demon
+                  </button>
+                </div>
+              </div>
+
               <div className="space-y-2 text-xs">
                 <label className="block">
                   <span className="flex justify-between">
@@ -883,7 +1446,7 @@ export function PanelStudio({
                   <input
                     type="range"
                     min={11}
-                    max={36}
+                    max={42}
                     value={selectedBalloon.fontSize}
                     onChange={(e) =>
                       onUpdateLayout({
@@ -945,7 +1508,7 @@ export function PanelStudio({
                   <input
                     type="range"
                     min={20}
-                    max={120}
+                    max={140}
                     value={selectedSFX.fontSize}
                     onChange={(e) =>
                       onUpdateLayout({
@@ -980,6 +1543,28 @@ export function PanelStudio({
                     className="w-full accent-primary mt-1"
                   />
                 </label>
+
+                <label className="block">
+                  <span className="flex justify-between">
+                    <span>Perspective Skew</span>
+                    <span className="font-mono">{selectedSFX.skewX}°</span>
+                  </span>
+                  <input
+                    type="range"
+                    min={-45}
+                    max={45}
+                    value={selectedSFX.skewX}
+                    onChange={(e) =>
+                      onUpdateLayout({
+                        ...layout,
+                        sfxStamps: layout.sfxStamps.map((s) =>
+                          s.id === selectedSFX.id ? { ...s, skewX: +e.target.value } : s
+                        ),
+                      })
+                    }
+                    className="w-full accent-primary mt-1"
+                  />
+                </label>
               </div>
             </div>
           )}
@@ -993,7 +1578,7 @@ export function PanelStudio({
                 <Layers className="h-8 w-8 mb-2 opacity-50" />
                 <p className="text-xs font-semibold">Select an Element</p>
                 <p className="text-[11px] mt-1">
-                  Click any character, balloon, or effect on the canvas to configure its properties.
+                  Click any panel, character, balloon, or effect to configure properties, re-pose in 3D, or adjust layer depths.
                 </p>
               </div>
             )}

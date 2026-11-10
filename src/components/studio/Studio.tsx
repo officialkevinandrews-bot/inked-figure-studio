@@ -58,6 +58,7 @@ import {
   type PropTransform,
   type PropCategory,
 } from "@/lib/props";
+import { saveRosterItem } from "@/lib/character-roster";
 
 const AXES = ["X", "Y", "Z"] as const;
 
@@ -374,6 +375,13 @@ export function Studio() {
         layout={currentPageLayout}
         onUpdateLayout={handleUpdateCurrentPage}
         onOpen3dStudio={() => setActiveTab("pose")}
+        onRePoseIn3D={(source3d) => {
+          if (source3d.pose) setPose(source3d.pose);
+          if (source3d.hipsDrop !== undefined) setHipsDrop(source3d.hipsDrop);
+          if (source3d.cameraPose) setCameraPose(source3d.cameraPose);
+          if (source3d.fov) setSettings((s) => ({ ...s, fov: source3d.fov }));
+          setActiveTab("pose");
+        }}
         allPages={pages}
         activePageIndex={activePageIndex}
         onSelectPage={setActivePageIndex}
@@ -1092,6 +1100,18 @@ export function Studio() {
               fov: settings.fov,
             },
           };
+          saveRosterItem({
+            id: `roster-${Date.now()}`,
+            name: `${modelName || "Figure"} Pose`,
+            role: "Posed Figure",
+            previewUrl: dataUrl,
+            source3d: {
+              modelName,
+              pose: { ...pose },
+              hipsDrop,
+              fov: settings.fov,
+            },
+          });
           handleUpdateCurrentPage({
             ...currentPageLayout,
             elements: [...currentPageLayout.elements, newEl],

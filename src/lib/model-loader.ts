@@ -171,3 +171,4 @@ export async function loadCharacterModel(
     hasSkeleton: rig.bones.size >= 10,
   };
 }
+

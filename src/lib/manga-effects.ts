@@ -4,7 +4,17 @@ export type BalloonShape =
   | "cloud" // Thought
   | "box" // Narration
   | "whisper" // Dashed outline
-  | "electric"; // Radio / mechanical broadcast
+  | "electric" // Radio / mechanical broadcast
+  | "heart" // Romance / idol speech
+  | "double_burst"; // Mega impact explosion
+
+export interface BalloonTail {
+  x: number; // tip X relative to balloon top-left
+  y: number; // tip Y relative to balloon top-left
+  curved?: boolean;
+  curveX?: number; // control point for quadratic bezier
+  curveY?: number;
+}
 
 export interface SpeechBalloon {
   id: string;
@@ -15,26 +25,51 @@ export interface SpeechBalloon {
   y: number;
   width: number;
   height: number;
-  tailX: number; // Tail tip coordinates relative to balloon center
-  tailY: number;
+  tail?: BalloonTail;
+  tailX?: number;
+  tailY?: number;
+  secondaryTail?: BalloonTail; // For 2-person group dialogue
   hasTail: boolean;
+  hasSecondaryTail?: boolean;
   fontSize: number;
-  fontFamily: string;
-  isVertical: boolean; // Traditional Japanese vertical text
-  borderWidth: number;
-  borderColor: string;
+  fontFamily?: string;
+  fontWeight?: "normal" | "bold";
+  fontColor?: string;
+  writingMode?: "horizontal-tb" | "vertical-rl"; // Traditional Japanese vertical text
+  isVertical?: boolean;
+  borderWidth?: number;
+  borderColor?: string;
+  strokeWidth?: number;
+  strokeColor?: string;
   backgroundColor: string;
+  opacity?: number;
   zIndex: number;
 }
+
+export type ComicMarkType =
+  | "sweat"
+  | "anger"
+  | "sparkles"
+  | "shock"
+  | "question"
+  | "exclamation"
+  | "heart"
+  | "spiral"
+  | "tears"
+  | "sleep"
+  | "skull"
+  | "impact";
 
 export interface ComicMark {
   id: string;
   panelId: string;
-  type: "sweat" | "anger" | "sparkles" | "shock" | "question" | "exclamation" | "heart" | "spiral";
+  type: string;
+  markType?: ComicMarkType;
   x: number;
   y: number;
   size: number;
   rotation: number;
+  opacity?: number;
   zIndex: number;
 }
 
@@ -42,7 +77,7 @@ export interface SpeedLinesEffect {
   id: string;
   panelId: string;
   type: "radial" | "linear";
-  centerX: number; // in px or %
+  centerX: number;
   centerY: number;
   angle: number; // for linear lines
   density: number; // 20 to 120 lines
@@ -50,21 +85,24 @@ export interface SpeedLinesEffect {
   outerRadius: number;
   strokeWidth: number;
   color: string;
+  opacity?: number;
   zIndex: number;
 }
 
 export interface SFXStamp {
   id: string;
   panelId: string;
-  text: string; // e.g. "ドドド", "BOOM!"
+  text: string;
   x: number;
   y: number;
   fontSize: number;
+  fontFamily?: string;
   fillColor: string;
   strokeColor: string;
   strokeWidth: number;
   rotation: number;
   skewX: number;
+  opacity?: number;
   zIndex: number;
 }
 
@@ -74,31 +112,43 @@ export const SFX_PRESETS = [
   { text: "ドン!", label: "DON! (Dramatic Impact)" },
   { text: "バキッ", label: "BAKI! (Punch / Crack)" },
   { text: "ザッ", label: "ZASH! (Dash / Rapid Step)" },
-  { text: "BOOM!", label: "BOOM! (Explosion)" },
+  { text: "ガーン", label: "GAAN! (Deep Shock)" },
+  { text: "ドキドキ", label: "DOKI-DOKI (Heart Pounding)" },
+  { text: "バシッ!", label: "BASHI! (Slap / Deflect)" },
+  { text: "BOOM!", label: "BOOM! (Heavy Explosion)" },
   { text: "WHAM!", label: "WHAM! (Heavy Strike)" },
   { text: "SLASH!", label: "SLASH! (Blade Cut)" },
-  { text: "WHOOSH!", label: "WHOOSH! (Air Gust / Speed)" },
+  { text: "WHOOSH!", label: "WHOOSH! (Air Gust)" },
+  { text: "CRASH!", label: "CRASH! (Destruction)" },
+  { text: "BANG!", label: "BANG! (Gunshot / Impact)" },
 ];
 
 export const COMIC_MARK_PRESETS = [
-  { type: "sweat" as const, label: "Sweat Drop 💧", symbol: "💧" },
-  { type: "anger" as const, label: "Anger Mark 💢", symbol: "💢" },
-  { type: "sparkles" as const, label: "Sparkles ✨", symbol: "✨" },
-  { type: "shock" as const, label: "Shock Lines ⚡", symbol: "///" },
-  { type: "question" as const, label: "Question ❓", symbol: "❓" },
-  { type: "exclamation" as const, label: "Exclamation ❗", symbol: "❗" },
-  { type: "heart" as const, label: "Love Heart ❤️", symbol: "❤️" },
-  { type: "spiral" as const, label: "Dizziness 💫", symbol: "🌀" },
+  { mark: "💧", label: "Sweat Drop (Nervous)", type: "sweat" },
+  { mark: "💢", label: "Anger Vein (Fury)", type: "anger" },
+  { mark: "✨", label: "Sparkles (Aura / Idol)", type: "sparkles" },
+  { mark: "///", label: "Blush Lines (Embarrassed)", type: "shock" },
+  { mark: "❓", label: "Question (Confusion)", type: "question" },
+  { mark: "❗", label: "Exclamation (Surprise)", type: "exclamation" },
+  { mark: "❤️", label: "Love Heart", type: "heart" },
+  { mark: "🌀", label: "Dizziness Spiral", type: "spiral" },
+  { mark: "😭", label: "Tear Streams (Crying)", type: "tears" },
+  { mark: "💤", label: "Sleep Bubbles", type: "sleep" },
+  { mark: "💀", label: "Skull / Doom", type: "skull" },
+  { mark: "💥", label: "Impact Star Burst", type: "impact" },
 ];
 
-/** Generates SVG path data for speech balloon bodies */
+/**
+ * Generates an SVG path string for speech balloon contours with curved tail attachment.
+ * Supports both object tail { x, y, curved, curveX, curveY } and numeric (tailX, tailY, hasTail).
+ */
 export function generateBalloonPath(
   shape: BalloonShape,
   w: number,
   h: number,
-  tailX: number,
-  tailY: number,
-  hasTail: boolean
+  tailArg?: BalloonTail | { x: number; y: number } | number,
+  tailYArg?: number,
+  hasTailArg?: boolean
 ): string {
   const rx = w / 2;
   const ry = h / 2;
@@ -121,8 +171,20 @@ export function generateBalloonPath(
       pts.push(`${i === 0 ? "M" : "L"} ${x.toFixed(1)} ${y.toFixed(1)}`);
     }
     bodyPath = pts.join(" ") + " Z";
+  } else if (shape === "double_burst") {
+    // Extreme double explosion burst
+    const points = 24;
+    const pts: string[] = [];
+    for (let i = 0; i < points * 2; i++) {
+      const angle = (i * Math.PI) / points;
+      const radius = i % 3 === 0 ? 1.08 : i % 2 === 0 ? 0.65 : 0.95;
+      const x = cx + rx * radius * Math.cos(angle);
+      const y = cy + ry * radius * Math.sin(angle);
+      pts.push(`${i === 0 ? "M" : "L"} ${x.toFixed(1)} ${y.toFixed(1)}`);
+    }
+    bodyPath = pts.join(" ") + " Z";
   } else if (shape === "cloud") {
-    // Thought cloud with multiple circular arcs
+    // Thought cloud with circular arcs
     const arcs = 10;
     const pts: string[] = [];
     for (let i = 0; i < arcs; i++) {
@@ -133,34 +195,86 @@ export function generateBalloonPath(
       const x2 = cx + rx * Math.cos(a2);
       const y2 = cy + ry * Math.sin(a2);
       const r = (w / arcs) * 1.1;
-      pts.push(`${i === 0 ? `M ${x1.toFixed(1)} ${y1.toFixed(1)}` : ""} A ${r.toFixed(1)} ${r.toFixed(1)} 0 0 1 ${x2.toFixed(1)} ${y2.toFixed(1)}`);
+      pts.push(
+        `${i === 0 ? `M ${x1.toFixed(1)} ${y1.toFixed(1)}` : ""} A ${r.toFixed(1)} ${r.toFixed(1)} 0 0 1 ${x2.toFixed(1)} ${y2.toFixed(1)}`
+      );
     }
     bodyPath = pts.join(" ") + " Z";
   } else if (shape === "electric") {
-    // Jagged electric radio balloon
+    // Jagged electric broadcast balloon
     const jagged = 24;
     const pts: string[] = [];
     for (let i = 0; i < jagged; i++) {
       const angle = (i * 2 * Math.PI) / jagged;
-      const variance = (i % 3 === 0 ? 1.15 : i % 2 === 0 ? 0.9 : 1.05);
+      const variance = i % 3 === 0 ? 1.15 : i % 2 === 0 ? 0.88 : 1.05;
       const x = cx + rx * variance * Math.cos(angle);
       const y = cy + ry * variance * Math.sin(angle);
       pts.push(`${i === 0 ? "M" : "L"} ${x.toFixed(1)} ${y.toFixed(1)}`);
     }
     bodyPath = pts.join(" ") + " Z";
+  } else if (shape === "heart") {
+    // Soft heart balloon
+    bodyPath = `
+      M ${cx} ${h * 0.85}
+      C ${w * 0.15} ${h * 0.6}, ${w * 0.05} ${h * 0.25}, ${cx * 0.6} ${h * 0.12}
+      C ${cx * 0.85} ${h * 0.05}, ${cx} ${h * 0.25}, ${cx} ${h * 0.3}
+      C ${cx} ${h * 0.25}, ${cx * 1.15} ${h * 0.05}, ${w - cx * 0.6} ${h * 0.12}
+      C ${w * 0.95} ${h * 0.25}, ${w * 0.85} ${h * 0.6}, ${cx} ${h * 0.85} Z
+    `;
   } else {
     // Standard Oval & Whisper
     bodyPath = `M ${cx} 2 A ${rx - 2} ${ry - 2} 0 1 1 ${cx} ${h - 2} A ${rx - 2} ${ry - 2} 0 1 1 ${cx} 2 Z`;
   }
 
-  // Tail path attachment
-  if (!hasTail || shape === "box") return bodyPath;
+  // Determine tail parameters
+  if (shape === "box") return bodyPath;
 
-  const tailRootX = cx + Math.sign(tailX) * Math.min(rx * 0.4, 25);
-  const tailRootY = cy + Math.sign(tailY) * Math.min(ry * 0.4, 25);
-  const tailWidth = 14;
+  let hasTail = true;
+  let tipX = 0;
+  let tipY = 0;
+  let isCurved = false;
+  let curveX: number | undefined;
+  let curveY: number | undefined;
 
-  const tailPath = `M ${tailRootX - tailWidth / 2} ${tailRootY} Q ${tailRootX + tailX * 0.4} ${tailRootY + tailY * 0.4} ${cx + tailX} ${cy + tailY} Q ${tailRootX + tailX * 0.6} ${tailRootY + tailY * 0.6} ${tailRootX + tailWidth / 2} ${tailRootY}`;
+  if (typeof tailArg === "number") {
+    // Numeric signature (w, h, tailX, tailY, hasTail)
+    if (hasTailArg === false) return bodyPath;
+    tipX = cx + tailArg;
+    tipY = cy + (tailYArg ?? 0);
+  } else if (tailArg && typeof tailArg === "object") {
+    // Object signature
+    tipX = tailArg.x;
+    tipY = tailArg.y;
+    isCurved = Boolean(tailArg.curved);
+    curveX = tailArg.curveX;
+    curveY = tailArg.curveY;
+  } else {
+    return bodyPath;
+  }
+
+  const rootAngle = Math.atan2(tipY - cy, tipX - cx);
+  const rootX = cx + rx * 0.8 * Math.cos(rootAngle);
+  const rootY = cy + ry * 0.8 * Math.sin(rootAngle);
+  const perpX = -Math.sin(rootAngle) * 12;
+  const perpY = Math.cos(rootAngle) * 12;
+
+  let tailPath = "";
+  if (isCurved && curveX !== undefined && curveY !== undefined) {
+    tailPath = `
+      M ${rootX + perpX} ${rootY + perpY}
+      Q ${curveX} ${curveY} ${tipX} ${tipY}
+      Q ${curveX + perpX * 0.5} ${curveY + perpY * 0.5} ${rootX - perpX} ${rootY - perpY}
+    `;
+  } else {
+    // Quadratic smooth tapered tail
+    const midX = (rootX + tipX) / 2 + perpX * 0.3;
+    const midY = (rootY + tipY) / 2 + perpY * 0.3;
+    tailPath = `
+      M ${rootX + perpX} ${rootY + perpY}
+      Q ${midX} ${midY} ${tipX} ${tipY}
+      Q ${midX - perpX * 0.5} ${midY - perpY * 0.5} ${rootX - perpX} ${rootY - perpY}
+    `;
+  }
 
   return `${bodyPath} ${tailPath}`;
 }
@@ -179,9 +293,9 @@ export function generateRadialSpeedLines(
   const count = Math.max(10, density);
 
   for (let i = 0; i < count; i++) {
-    const angle = (i * 2 * Math.PI) / count + (Math.random() - 0.5) * (Math.PI / count) * 0.5;
-    const startR = innerR + Math.random() * (innerR * 0.35);
-    const endR = outerR + Math.random() * 50;
+    const angle = (i * 2 * Math.PI) / count + (Math.sin(i * 3.1) * 0.35 * Math.PI) / count;
+    const startR = innerR + Math.random() * (innerR * 0.3);
+    const endR = outerR + Math.random() * 40;
 
     const x1 = cx + startR * Math.cos(angle);
     const y1 = cy + startR * Math.sin(angle);

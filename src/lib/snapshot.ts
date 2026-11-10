@@ -92,3 +92,4 @@ export function downloadDataUrl(dataUrl: string, filename = "manga-pose-render.p
   link.click();
   document.body.removeChild(link);
 }
+

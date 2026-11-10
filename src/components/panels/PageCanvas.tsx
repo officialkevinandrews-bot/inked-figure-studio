@@ -26,6 +26,7 @@ interface PageCanvasProps {
   onDeleteSpeedLines: (id: string) => void;
   onUpdateSFXStamp: (id: string, updated: Partial<SFXStamp>) => void;
   onDeleteSFXStamp: (id: string) => void;
+  onRePoseIn3D?: (source3d: any) => void;
   zoom?: number;
 }
 
@@ -45,6 +46,7 @@ export function PageCanvas({
   onDeleteSpeedLines,
   onUpdateSFXStamp,
   onDeleteSFXStamp,
+  onRePoseIn3D,
   zoom = 1,
 }: PageCanvasProps) {
   const { width, height, margin, gutter } = layout.format;
@@ -58,22 +60,25 @@ export function PageCanvas({
   const sfxStamps = layout.sfxStamps ?? [];
 
   return (
+    /* Outer layout box precisely scaled so parent flex scroll container fits without overflowing */
     <div
       style={{
-        transform: `scale(${zoom})`,
-        transformOrigin: "top center",
+        width: `${Math.round(width * zoom)}px`,
+        height: `${Math.round(height * zoom)}px`,
       }}
-      className="relative transition-transform duration-100 ease-out select-none shadow-2xl"
+      className="relative shrink-0 flex items-center justify-center my-auto transition-[width,height] duration-75"
     >
-      {/* Physical Manga Page */}
+      {/* Physical Manga Page Canvas */}
       <div
         id="manga-page-container"
         style={{
           width: `${width}px`,
           height: `${height}px`,
+          transform: `scale(${zoom})`,
+          transformOrigin: "top left",
           backgroundColor: "#ffffff",
         }}
-        className="relative overflow-hidden border-2 border-foreground bg-white text-black"
+        className="relative overflow-hidden border-2 border-foreground bg-white text-black shadow-2xl select-none"
         onClick={() => {
           onSelectItem(null);
         }}
@@ -104,6 +109,13 @@ export function PageCanvas({
           const isSelected = selectedPanelId === p.id;
           const svgPoints = bounds.points.map((pt) => `${pt.x},${pt.y}`).join(" ");
 
+          const strokeDash =
+            p.borderStyle === "dashed"
+              ? "8,6"
+              : p.borderStyle === "dotted"
+              ? "3,4"
+              : undefined;
+
           return (
             <svg
               key={`bg-${p.id}`}
@@ -114,6 +126,7 @@ export function PageCanvas({
                 width: `${width}px`,
                 height: `${height}px`,
                 pointerEvents: "auto",
+                opacity: p.opacity ?? 1,
               }}
               onClick={(e) => {
                 e.stopPropagation();
@@ -124,9 +137,15 @@ export function PageCanvas({
               <polygon
                 points={svgPoints}
                 fill={p.backgroundColor || "#ffffff"}
-                stroke={isSelected ? "#e11d2e" : p.borderColor}
-                strokeWidth={isSelected ? Math.max(3, p.borderWidth + 1) : p.borderWidth}
-                strokeDasharray={p.borderStyle === "dashed" ? "6,4" : undefined}
+                stroke={isSelected ? "#e11d2e" : p.borderStyle === "none" ? "none" : p.borderColor}
+                strokeWidth={
+                  isSelected
+                    ? Math.max(3.5, p.borderWidth + 1.5)
+                    : p.borderStyle === "none"
+                    ? 0
+                    : p.borderWidth
+                }
+                strokeDasharray={strokeDash}
                 className="cursor-pointer transition-all hover:fill-muted/20"
               />
             </svg>
@@ -166,7 +185,15 @@ export function PageCanvas({
               }}
             >
               {panelElements.map((el) => (
-                <div key={el.id} style={{ pointerEvents: "auto" }}>
+                <div
+                  key={el.id}
+                  style={{ pointerEvents: "auto", opacity: el.opacity ?? 1 }}
+                  onDoubleClick={() => {
+                    if (el.source3d && onRePoseIn3D) {
+                      onRePoseIn3D(el.source3d);
+                    }
+                  }}
+                >
                   <PanelTransformer
                     element={el}
                     isSelected={selectedItemId === el.id}
@@ -183,7 +210,7 @@ export function PageCanvas({
           );
         })}
 
-        {/* 4. Panel Borders Outline Re-draw */}
+        {/* 4. Panel Borders Outline Re-draw (Ensures crisp strokes above in-panel content) */}
         <svg
           style={{
             position: "absolute",
@@ -199,14 +226,27 @@ export function PageCanvas({
             const isSelected = selectedPanelId === p.id;
             const svgPoints = bounds.points.map((pt) => `${pt.x},${pt.y}`).join(" ");
 
+            const strokeDash =
+              p.borderStyle === "dashed"
+                ? "8,6"
+                : p.borderStyle === "dotted"
+                ? "3,4"
+                : undefined;
+
             return (
               <polygon
                 key={`border-${p.id}`}
                 points={svgPoints}
                 fill="none"
-                stroke={isSelected ? "#e11d2e" : p.borderColor}
-                strokeWidth={isSelected ? Math.max(3, p.borderWidth + 1) : p.borderWidth}
-                strokeDasharray={p.borderStyle === "dashed" ? "6,4" : undefined}
+                stroke={isSelected ? "#e11d2e" : p.borderStyle === "none" ? "none" : p.borderColor}
+                strokeWidth={
+                  isSelected
+                    ? Math.max(3.5, p.borderWidth + 1.5)
+                    : p.borderStyle === "none"
+                    ? 0
+                    : p.borderWidth
+                }
+                strokeDasharray={strokeDash}
               />
             );
           })}
@@ -224,7 +264,15 @@ export function PageCanvas({
           }}
         >
           {breakoutElements.map((el) => (
-            <div key={el.id} style={{ pointerEvents: "auto" }}>
+            <div
+              key={el.id}
+              style={{ pointerEvents: "auto", opacity: el.opacity ?? 1 }}
+              onDoubleClick={() => {
+                if (el.source3d && onRePoseIn3D) {
+                  onRePoseIn3D(el.source3d);
+                }
+              }}
+            >
               <PanelTransformer
                 element={el}
                 isSelected={selectedItemId === el.id}
@@ -251,27 +299,27 @@ export function PageCanvas({
           />
         ))}
 
-        {/* 7. SFX Stamps (Sound Effects Onomatopoeia) */}
-        {sfxStamps.map((stamp) => (
+        {/* 7. SFX Stamps Layer */}
+        {sfxStamps.map((sfx) => (
           <SFXStampRenderer
-            key={stamp.id}
-            stamp={stamp}
-            isSelected={selectedItemId === stamp.id}
-            onSelect={() => onSelectItem(stamp.id)}
-            onChange={(u) => onUpdateSFXStamp(stamp.id, u)}
-            onDelete={() => onDeleteSFXStamp(stamp.id)}
+            key={sfx.id}
+            stamp={sfx}
+            isSelected={selectedItemId === sfx.id}
+            onSelect={() => onSelectItem(sfx.id)}
+            onChange={(u) => onUpdateSFXStamp(sfx.id, u)}
+            onDelete={() => onDeleteSFXStamp(sfx.id)}
           />
         ))}
 
-        {/* 8. Speech Balloons Layer (Topmost Layer for Readability) */}
-        {balloons.map((b) => (
+        {/* 8. Speech Balloons Layer */}
+        {balloons.map((balloon) => (
           <SpeechBalloonRenderer
-            key={b.id}
-            balloon={b}
-            isSelected={selectedItemId === b.id}
-            onSelect={() => onSelectItem(b.id)}
-            onChange={(u) => onUpdateBalloon(b.id, u)}
-            onDelete={() => onDeleteBalloon(b.id)}
+            key={balloon.id}
+            balloon={balloon}
+            isSelected={selectedItemId === balloon.id}
+            onSelect={() => onSelectItem(balloon.id)}
+            onChange={(u) => onUpdateBalloon(balloon.id, u)}
+            onDelete={() => onDeleteBalloon(balloon.id)}
           />
         ))}
       </div>

@@ -55,3 +55,4 @@ describe("Phase 1: Camera & Perspective Presets", () => {
     expect(CAMERA_PRESETS["3/4 Dynamic"]).toBeDefined();
   });
 });
+

@@ -195,3 +195,4 @@ export async function applyPhotoToMangaFilter(
 
   return canvas.toDataURL("image/png");
 }
+

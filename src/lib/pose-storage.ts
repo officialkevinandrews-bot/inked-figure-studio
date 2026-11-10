@@ -58,3 +58,4 @@ export function deleteCustomPose(id: string): CustomPose[] {
   }
   return updated;
 }
+

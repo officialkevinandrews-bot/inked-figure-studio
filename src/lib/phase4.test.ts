@@ -130,3 +130,4 @@ describe("Phase 4: Photo-to-Manga Inking & Screentone Filter", () => {
     expect(posterize.length).toBe(width * height * 4);
   });
 });
+
