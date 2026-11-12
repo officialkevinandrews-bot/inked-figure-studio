@@ -92,7 +92,7 @@ export function Studio() {
   const [cameraPose, setCameraPose] = useState<CameraPose | null>(null);
   const [settings, setSettings] = useState<ViewSettings>({
     outline: 3,
-    mono: true,
+    mono: false,
     tones: 3,
     showJoints: true,
     fov: 35,

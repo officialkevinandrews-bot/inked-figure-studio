@@ -131,8 +131,27 @@ export async function loadCharacterModel(
   }
 
   if (cleanExt === "fbx") {
-    const loader = new FBXLoader();
+    // Wait for embedded textures (decoded asynchronously as blobs) before continuing.
+    const manager = new THREE.LoadingManager();
+    let pending = 0;
+    const texturesDone = new Promise<void>((resolve) => {
+      manager.onStart = () => { pending++; };
+      manager.onLoad = () => resolve();
+      manager.onError = (u) => console.warn("FBX texture failed:", u);
+    });
+    const loader = new FBXLoader(manager);
     const obj = await loader.loadAsync(url);
+    if (pending > 0) await Promise.race([texturesDone, new Promise((r) => setTimeout(r, 8000))]);
+    obj.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh) return;
+      const mats = Array.isArray(m.material) ? m.material : [m.material];
+      mats.forEach((mat) => {
+        const mm = mat as THREE.MeshPhongMaterial;
+        if (mm.map) { mm.map.colorSpace = THREE.SRGBColorSpace; mm.map.needsUpdate = true; }
+        if (mm.emissiveMap) mm.emissiveMap.colorSpace = THREE.SRGBColorSpace;
+      });
+    });
     const scale = normaliseModel(obj);
     const rig = buildRig(obj, scale);
     return {

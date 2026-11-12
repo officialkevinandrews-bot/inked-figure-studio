@@ -58,7 +58,11 @@ export function toonify(root: THREE.Object3D, tones: number, mono: boolean) {
     const orig = (m.userData["origMat"] ??= m.material) as THREE.Material | THREE.Material[];
     const conv = (mat: THREE.Material) => {
       const src = mat as THREE.MeshStandardMaterial;
-      const color = src.color ? src.color.clone() : new THREE.Color(0xdddddd);
+      const hasMap = !!src.map;
+      const color = hasMap
+        ? new THREE.Color(0xffffff)
+        : src.color ? src.color.clone() : new THREE.Color(0xdddddd);
+      if (src.map) src.map.colorSpace = THREE.SRGBColorSpace;
       if (mono) {
         const l = color.getHSL({ h: 0, s: 0, l: 0 }).l;
         color.setHSL(0, 0, 0.55 + l * 0.45);
