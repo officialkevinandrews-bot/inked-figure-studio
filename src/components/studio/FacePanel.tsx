@@ -40,10 +40,13 @@ const SLIDERS: [keyof FaceCalibration, string, number, number, number][] = [
   ["mouthY", "Mouth height", 300, 470, 1], ["partScale", "Feature size", 0.5, 1.8, 0.01],
 ];
 
-export function FacePanel({ face, onChange, hasHead, onAutoFit, packs = [], onPacksChange = () => {} }: {
+export function FacePanel({ face, onChange, hasHead, onAutoFit, packs = [], onPacksChange = () => {}, mode = "all" }: {
   face: FaceConfig; onChange: (f: FaceConfig) => void; hasHead: boolean; onAutoFit: () => void;
   packs?: FacePack[]; onPacksChange?: (p: FacePack[]) => void;
+  /** create = neutral design only; pose = expressions only; all = everything */
+  mode?: "create" | "pose" | "all";
 }) {
+  const showExpr = mode !== "create", showDesign = mode !== "pose";
   const [part, setPart] = useState<"eye" | "brow" | "mouth">("eye");
   const [slicer, setSlicer] = useState(false);
   const pack = packs.find((p) => p.id === face.pack) ?? null;
@@ -65,6 +68,7 @@ export function FacePanel({ face, onChange, hasHead, onAutoFit, packs = [], onPa
         </div>
       </div>
 
+      {showExpr && <>
       <Section title="Expressions">
         <div className="grid grid-cols-3 gap-1.5">
           {Object.keys(EXPRESSIONS).map((name) => (
@@ -100,6 +104,8 @@ export function FacePanel({ face, onChange, hasHead, onAutoFit, packs = [], onPa
         </div>
       </Section>
 
+      </>}
+      {showDesign && <>
       <Section title="Face Colours">
         {(Object.keys(FACE_COLOR_LABELS) as (keyof FaceColors)[]).map((k) => (
           <ColorPicker key={k} label={FACE_COLOR_LABELS[k]} value={r.colors[k]} swatches={SWATCHES.face}
@@ -142,6 +148,8 @@ export function FacePanel({ face, onChange, hasHead, onAutoFit, packs = [], onPa
           </label>
         ))}
       </Section>
+      </>}
+      {mode === "pose" && <p className="border-b border-border p-3 text-[11px] text-muted-foreground">Face parts and colours are designed in Create Character. Expressions here only affect this pose.</p>}
 
       <Section title="Fit to Model">
         <p className="text-[11px] text-muted-foreground">Line the face up once per model; it's saved and follows every pose.</p>
