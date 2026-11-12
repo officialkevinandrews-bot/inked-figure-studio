@@ -2,6 +2,7 @@ import { Canvas, useFrame, useThree, type ThreeEvent } from "@react-three/fiber"
 import { OrbitControls, TransformControls, Grid } from "@react-three/drei";
 import { useEffect, useImperativeHandle, useMemo, useRef, useState, forwardRef } from "react";
 import * as THREE from "three";
+import "@/lib/r3f-devtools-shim";
 import { OutlineEffect } from "three/examples/jsm/effects/OutlineEffect.js";
 import type { Rig } from "@/lib/rig";
 import { IK_EFFECTORS, effectorForBone } from "@/lib/ik";
