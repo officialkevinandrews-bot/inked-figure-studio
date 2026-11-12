@@ -2,6 +2,13 @@ import { FacePanel } from "./FacePanel";
 import { loadPacks, savePacks, type FacePack } from "@/lib/face-parts";
 import { ExtractOutfitModal } from "./ExtractOutfitModal";
 import { WardrobePanel } from "./WardrobePanel";
+import { CharacterPanel } from "./CharacterPanel";
+import {
+  DUMMY_MODEL, activeOutfitOf, addOutfit, customItemIds, deleteOutfit, duplicateCharacter, loadCharacters, newCharacter,
+  renameOutfit, saveCharacters, updateActiveOutfit, upsertCharacter, type Character,
+} from "@/lib/characters";
+import { getFile, putFile } from "@/lib/file-store";
+import { loadWardrobeAsset } from "./WardrobeRig";
 import type { CustomAsset } from "./WardrobeRig";
 import { equip, loadOutfit, saveOutfit, type Outfit } from "@/lib/wardrobe";
 import { DEFAULT_FACE, loadFace, saveFace, type FaceConfig } from "@/lib/face-library";
@@ -125,13 +132,15 @@ export function Studio() {
   const activeFacePack = facePacks.find((p) => p.id === face.pack) ?? null;
   const [extractOpen, setExtractOpen] = useState(false);
   const faceModelRef = useRef<string>("");
+  // When a saved character is loaded its own face/outfit win over the per-model defaults.
+  const charRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!modelName) return;
+    if (!modelName || charRef.current) return;
     faceModelRef.current = modelName;
     setFace(loadFace(modelName));
   }, [modelName]);
   useEffect(() => {
-    if (faceModelRef.current === modelName && modelName) saveFace(modelName, face);
+    if (faceModelRef.current === modelName && modelName && !charRef.current) saveFace(modelName, face);
   }, [face, modelName]);
   // First time a model is seen, line the face up with its skin automatically.
   useEffect(() => {
@@ -142,14 +151,14 @@ export function Studio() {
   const [wardrobeAssets, setWardrobeAssets] = useState<Record<string, CustomAsset>>({});
   const outfitModelRef = useRef<string>("");
   useEffect(() => {
-    if (!modelName) return;
+    if (!modelName || charRef.current) return;
     outfitModelRef.current = modelName;
     setOutfit(loadOutfit(modelName));
   }, [modelName]);
   useEffect(() => {
-    if (outfitModelRef.current === modelName && modelName) saveOutfit(modelName, outfit);
+    if (outfitModelRef.current === modelName && modelName && !charRef.current) saveOutfit(modelName, outfit);
   }, [outfit, modelName]);
-  const [activeTab, setActiveTab] = useState<"pose" | "panels">("pose");
+  const [activeTab, setActiveTab] = useState<"create" | "pose" | "panels">("create");
   const [pages, setPages] = useState<PageLayout[]>([
     {
       id: "page-1",
@@ -194,18 +203,121 @@ export function Studio() {
       setPose({});
       setHipsDrop(0);
       setActivePose(null);
+      return true;
     } catch (e) {
       console.error(e);
       setError(e instanceof Error ? e.message : "Could not load 3D model.");
+      return false;
     } finally {
       setLoading(false);
     }
   }, []);
 
   // Default demo model
+  const loadedModelKey = useRef<string>("");
   useEffect(() => {
+    loadedModelKey.current = DUMMY_MODEL;
     load("/models/xbot.glb", "glb", "X Bot (demo)");
   }, [load]);
+
+  // ---------- Characters ----------
+  const [characters, setCharacters] = useState<Character[]>([]);
+  const [activeCharId, setActiveCharId] = useState<string | null>(null);
+  const [charLoaded, setCharLoaded] = useState<string | null>(null);
+  useEffect(() => { setCharacters(loadCharacters()); }, []);
+  const activeChar = characters.find((c) => c.id === activeCharId) ?? null;
+  const commitChars = (fn: (list: Character[]) => Character[]) =>
+    setCharacters((list) => { const n = fn(list); if (!saveCharacters(n)) alert("Browser storage is full; recent character changes may not be saved."); return n; });
+  const patchChar = (id: string, fn: (c: Character) => Character) =>
+    commitChars((list) => list.map((c) => (c.id === id ? { ...fn(c), updatedAt: Date.now() } : c)));
+
+  /** Loads a character's body (only if different), its saved clothing files, face, and the chosen outfit. */
+  const showCharacter = useCallback(async (c: Character | null, outfitId?: string) => {
+    charRef.current = c?.id ?? null;
+    setCharLoaded(null);
+    setActiveCharId(c?.id ?? null);
+    const key = c?.model ?? DUMMY_MODEL;
+    if (loadedModelKey.current !== key) {
+      let ok = false;
+      if (key === DUMMY_MODEL) ok = await load("/models/xbot.glb", "glb", "X Bot (demo)");
+      else {
+        const f = await getFile(key).catch(() => null);
+        if (f) ok = await load(URL.createObjectURL(f.blob), f.name.split(".").pop()?.toLowerCase() ?? "glb", f.name);
+        else setError("This character's body file is missing from this browser. Upload it again in Create Character.");
+      }
+      if (ok) loadedModelKey.current = key;
+    }
+    if (!c) {
+      // Back to the plain test dummy with its own saved face/outfit.
+      faceModelRef.current = ""; outfitModelRef.current = "";
+      setFace(loadFace("X Bot (demo)")); setOutfit(loadOutfit("X Bot (demo)")); setPropsList([]);
+      faceModelRef.current = "X Bot (demo)"; outfitModelRef.current = "X Bot (demo)";
+      return;
+    }
+    const needed = customItemIds(c);
+    const found: Record<string, CustomAsset> = {};
+    await Promise.all(needed.map(async (id) => {
+      const f = await getFile(id).catch(() => null);
+      if (!f) return;
+      try {
+        const a = await loadWardrobeAsset(new File([f.blob], f.name), (f.slot ?? "top") as CustomAsset["slot"]);
+        found[id] = { ...a, id, name: f.name.replace(/\.[^.]+$/, "") };
+      } catch { /* skip broken file */ }
+    }));
+    setWardrobeAssets((m) => ({ ...found, ...m }));
+    const o = c.outfits.find((x) => x.id === (outfitId ?? c.activeOutfit)) ?? activeOutfitOf(c);
+    const outfitClean = Object.fromEntries(Object.entries(o.outfit).filter(([, v]) => v && (!v.itemId.startsWith("custom:") || found[v.itemId])));
+    setFace(c.face);
+    setOutfit(outfitClean);
+    setPropsList(o.props.map((p) => ({ ...p })));
+    setSelectedPropId(null);
+    setCharLoaded(c.id);
+  }, [load]);
+
+  // Create tab: every face / outfit / prop edit saves straight into the character.
+  useEffect(() => {
+    if (activeTab !== "create" || !activeCharId || charLoaded !== activeCharId) return;
+    patchChar(activeCharId, (c) => updateActiveOutfit({ ...c, face: { ...face, expression: "Neutral", overrides: {}, fx: [] } }, { outfit, props: propsList }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [face, outfit, propsList]);
+
+  useEffect(() => {
+    if (activeTab === "create" && leftTab === "poses") setLeftTab("outfit");
+    if (activeTab === "pose" && activeChar && leftTab === "outfit") setLeftTab("poses");
+  }, [activeTab, leftTab, activeChar]);
+
+  const goTab = (t: "create" | "pose" | "panels") => {
+    // Returning to the creator restores the character's saved master look (pose-only tweaks are dropped).
+    if (t === "create" && activeTab !== "create" && activeChar) showCharacter(activeChar);
+    setActiveTab(t);
+  };
+
+  const createCharacter = () => {
+    const c = newCharacter(`Character ${characters.length + 1}`);
+    // Start from whatever is on the dummy now so nothing is lost.
+    const seeded = loadedModelKey.current === DUMMY_MODEL && !activeChar
+      ? updateActiveOutfit({ ...c, face: { ...face, expression: "Neutral", overrides: {}, fx: [] } }, { outfit, props: propsList })
+      : c;
+    commitChars((l) => upsertCharacter(l, seeded));
+    showCharacter(seeded);
+  };
+
+  const setCharacterBody = async (f: File | null) => {
+    if (!activeChar) return;
+    let model = DUMMY_MODEL, modelName = "X Bot (demo)";
+    if (f) {
+      model = `file:${crypto.randomUUID()}`; modelName = f.name;
+      try { await putFile(model, f, f.name); } catch { setError("Could not save that file in this browser."); return; }
+    }
+    // A new body needs the face lined up again.
+    const updated: Character = { ...activeChar, model, modelName, face: { ...activeChar.face, fitted: false } };
+    commitChars((l) => upsertCharacter(l, updated));
+    showCharacter(updated);
+  };
+
+  const storeAssetFile = (a: CustomAsset, file?: File) => {
+    if (file) putFile(a.id, file, file.name, a.slot).catch(() => {});
+  };
 
   // Toon shading updates
   useEffect(() => {
@@ -214,8 +326,8 @@ export function Studio() {
 
   // Apply pose to rig
   useEffect(() => {
-    if (rig) applyPose(rig, pose, hipsDrop);
-  }, [rig, pose, hipsDrop]);
+    if (rig) applyPose(rig, activeTab === "create" ? {} : pose, activeTab === "create" ? 0 : hipsDrop);
+  }, [rig, pose, hipsDrop, activeTab]);
 
   // Update VRM expressions
   useEffect(() => {
@@ -467,19 +579,39 @@ export function Studio() {
         </h1>
 
         <nav className="flex items-center gap-1 text-sm">
+          {([["create", "Create Character"], ["pose", "3D Pose Studio"]] as const).map(([t, label]) => (
+            <button key={t} onClick={() => goTab(t)} aria-pressed={activeTab === t}
+              className={`rounded-sm px-3 py-1 font-semibold transition-colors ${activeTab === t ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground"}`}>
+              {label}
+            </button>
+          ))}
           <button
-            onClick={() => setActiveTab("pose")}
-            className="rounded-sm bg-foreground px-3 py-1 font-semibold text-background transition-colors"
-          >
-            3D Pose Studio
-          </button>
-          <button
-            onClick={() => setActiveTab("panels")}
+            onClick={() => goTab("panels")}
             className="rounded-sm px-3 py-1 font-semibold text-muted-foreground hover:text-foreground transition-colors"
           >
             Manga Panels {currentPageLayout.elements.length > 0 && `(${currentPageLayout.elements.length})`}
           </button>
         </nav>
+
+        {activeTab === "pose" && (
+          <div className="flex items-center gap-1.5 text-xs" data-testid="pose-character-picker">
+            <label className="font-semibold">Character
+              <select aria-label="Character" value={activeCharId ?? ""} className="ml-1 rounded-sm border border-input bg-background p-1"
+                onChange={(e) => showCharacter(characters.find((c) => c.id === e.target.value) ?? null)}>
+                <option value="">Test dummy</option>
+                {characters.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </label>
+            {activeChar && (
+              <label className="font-semibold">Outfit
+                <select aria-label="Outfit" key={activeChar.id} defaultValue={activeChar.activeOutfit} className="ml-1 rounded-sm border border-input bg-background p-1"
+                  onChange={(e) => showCharacter(activeChar, e.target.value)}>
+                  {activeChar.outfits.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+                </select>
+              </label>
+            )}
+          </div>
+        )}
 
         <div className="ml-auto flex items-center gap-2 text-sm">
           <span className="text-muted-foreground text-xs hidden sm:inline">
@@ -496,6 +628,7 @@ export function Studio() {
           </button>
 
           <button
+            hidden={activeTab === "create" || !!activeChar}
             onClick={() => fileRef.current?.click()}
             className="rounded-sm border-2 border-foreground bg-primary px-3 py-1 font-semibold text-primary-foreground shadow-ink transition-transform hover:-translate-y-0.5 text-xs"
           >
@@ -516,8 +649,28 @@ export function Studio() {
         {/* Left: Pose Presets OR 3D Props Library */}
         <aside className="flex w-76 flex-col border-r-2 border-foreground bg-card">
           {/* Tabs: Poser vs 3D Props */}
+          {activeTab === "create" && (
+            <CharacterPanel
+              characters={characters}
+              active={activeChar}
+              onSelect={(id) => showCharacter(characters.find((c) => c.id === id) ?? null)}
+              onNew={createCharacter}
+              onRename={(name) => activeChar && patchChar(activeChar.id, (c) => ({ ...c, name }))}
+              onDuplicate={() => { if (!activeChar) return; const d = duplicateCharacter(activeChar); commitChars((l) => upsertCharacter(l, d)); showCharacter(d); }}
+              onDelete={() => { if (!activeChar) return; const id = activeChar.id; commitChars((l) => l.filter((c) => c.id !== id)); showCharacter(null); }}
+              onModelFile={(f) => setCharacterBody(f)}
+              onUseDummy={() => setCharacterBody(null)}
+              onSelectOutfit={(id) => { if (!activeChar) return; const u = { ...activeChar, activeOutfit: id }; patchChar(u.id, () => u); showCharacter(u); }}
+              onAddOutfit={() => { if (!activeChar) return; const u = addOutfit(activeChar); patchChar(u.id, () => u); showCharacter(u); }}
+              onDuplicateOutfit={() => { if (!activeChar) return; const u = addOutfit(activeChar, activeChar.activeOutfit); patchChar(u.id, () => u); showCharacter(u); }}
+              onRenameOutfit={(id, name) => activeChar && patchChar(activeChar.id, (c) => renameOutfit(c, id, name))}
+              onDeleteOutfit={(id) => { if (!activeChar) return; const u = deleteOutfit(activeChar, id); patchChar(u.id, () => u); showCharacter(u); }}
+              onPose={() => goTab("pose")}
+            />
+          )}
           <div className="flex border-b-2 border-foreground bg-muted text-xs font-semibold">
             <button
+              hidden={activeTab === "create"}
               onClick={() => setLeftTab("poses")}
               className={`flex-1 py-2 text-center transition-colors ${
                 leftTab === "poses"
@@ -548,6 +701,7 @@ export function Studio() {
               😠 Face
             </button>
             <button
+              hidden={activeTab === "pose" && !!activeChar}
               onClick={() => setLeftTab("outfit")}
               className={`flex-1 py-2 text-center transition-colors ${
                 leftTab === "outfit"
@@ -564,7 +718,7 @@ export function Studio() {
               outfit={outfit}
               onChange={setOutfit}
               assets={wardrobeAssets}
-              onAddAsset={(a) => setWardrobeAssets((m) => ({ ...m, [a.id]: a }))}
+              onAddAsset={(a, file) => { setWardrobeAssets((m) => ({ ...m, [a.id]: a })); storeAssetFile(a, file); }}
               hasRig={!!rig}
               onOpenExtractor={() => setExtractOpen(true)}
             />
@@ -576,6 +730,7 @@ export function Studio() {
               onAutoFit={() => setFaceFitRequest((n) => n + 1)}
               packs={facePacks}
               onPacksChange={updateFacePacks}
+              mode={activeTab === "create" ? "create" : activeChar ? "pose" : "all"}
             />
           ) : leftTab === "poses" ? (
             <>
@@ -985,7 +1140,7 @@ export function Studio() {
               propsList={propsList}
               selectedPropId={selectedPropId}
               onSelectProp={setSelectedPropId}
-              face={face}
+              face={activeTab === "create" ? { ...face, expression: "Neutral", overrides: {}, fx: [] } : face}
               facePack={activeFacePack}
               faceFitRequest={faceFitRequest}
               outfit={outfit}
@@ -999,6 +1154,16 @@ export function Studio() {
               onClose={() => setExtractOpen(false)}
               onExtract={(items) => {
                 setWardrobeAssets((m) => { const n = { ...m }; items.forEach((a) => { n[a.id] = a; }); return n; });
+                // Keep extracted pieces as files so saved characters can bring them back after a reload.
+                (async () => {
+                  const { GLTFExporter } = await import("three/examples/jsm/exporters/GLTFExporter.js");
+                  for (const a of items) {
+                    try {
+                      const buf = (await new GLTFExporter().parseAsync(a.object, { binary: true })) as ArrayBuffer;
+                      await putFile(a.id, new Blob([buf], { type: "model/gltf-binary" }), `${a.name}.glb`, a.slot);
+                    } catch (e) { console.warn("Could not store extracted piece", a.name, e); }
+                  }
+                })();
                 setOutfit((o) => { let n = { ...o }; items.forEach((a) => { n = equip(n, a.slot, a.id); }); return n; });
                 setExtractOpen(false);
               }}
@@ -1023,7 +1188,7 @@ export function Studio() {
         </main>
 
         {/* Right: Inspector & Controls */}
-        <aside className="flex w-76 flex-col overflow-y-auto border-l-2 border-foreground bg-card">
+        <aside className={`${activeTab === "create" ? "hidden" : "flex"} w-76 flex-col overflow-y-auto border-l-2 border-foreground bg-card`}>
           {/* Quick Capture Panel Card */}
           <section className="border-b border-border p-3 bg-accent/40">
             <h2 className="font-display text-base mb-1 flex items-center gap-1.5">

@@ -14,7 +14,7 @@ const FIT: [keyof SlotFit, string, number, number, number][] = [
 
 export function WardrobePanel({ outfit, onChange, assets, onAddAsset, hasRig, onOpenExtractor }: {
   outfit: Outfit; onChange: (o: Outfit) => void; assets: Record<string, CustomAsset>;
-  onAddAsset: (a: CustomAsset) => void; hasRig: boolean; onOpenExtractor?: () => void;
+  onAddAsset: (a: CustomAsset, file?: File) => void; hasRig: boolean; onOpenExtractor?: () => void;
 }) {
   const [slot, setSlot] = useState<SlotId>("hair");
   const [busy, setBusy] = useState(""); const [err, setErr] = useState("");
@@ -29,7 +29,7 @@ export function WardrobePanel({ outfit, onChange, assets, onAddAsset, hasRig, on
     setErr(""); setBusy(f.name);
     try {
       const a = await loadWardrobeAsset(f, slot);
-      onAddAsset(a); onChange(equip(outfit, slot, a.id));
+      onAddAsset(a, f); onChange(equip(outfit, slot, a.id));
     } catch (e) { setErr(e instanceof Error ? e.message : "Could not load that file."); }
     finally { setBusy(""); }
   };
