@@ -31,3 +31,4 @@ use the editor.
 
 - Pose offsets are Euler degrees in the character's model frame (Y up, faces +Z, left = +X) applied over the rest pose via `src/lib/rig.ts`; this keeps presets rig-agnostic across Mixamo bone rolls and makes mirroring a simple (x,-y,-z) swap.
 - The viewport renders through three's OutlineEffect in a priority-1 useFrame (with manual clear); don't add a second renderer or EffectComposer without replacing it.
+- Facial expressions are one procedurally drawn 512px canvas decal (`src/lib/face-draw.ts`) on a bent plane that follows the Head bone with its rest rotation removed (`FaceRig.tsx`); expressions map to per-part states in `src/lib/face-library.ts`, so single-mesh models need no face bones or blendshapes.

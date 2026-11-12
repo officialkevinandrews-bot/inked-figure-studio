@@ -1,3 +1,5 @@
+import { FacePanel } from "./FacePanel";
+import { DEFAULT_FACE, loadFace, saveFace, type FaceConfig } from "@/lib/face-library";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import {
@@ -85,7 +87,7 @@ export function Studio() {
   // 3D Props state
   const [propsList, setPropsList] = useState<ActiveProp[]>([]);
   const [selectedPropId, setSelectedPropId] = useState<string | null>(null);
-  const [leftTab, setLeftTab] = useState<"poses" | "props">("poses");
+  const [leftTab, setLeftTab] = useState<"poses" | "props" | "face">("poses");
   const [propCategory, setPropCategory] = useState<PropCategory>("weapons");
 
   // Camera & Rendering Settings
@@ -110,6 +112,21 @@ export function Studio() {
   });
 
   // Navigation & Multi-Page Chapter State
+  const [face, setFace] = useState<FaceConfig>(DEFAULT_FACE);
+  const [faceFitRequest, setFaceFitRequest] = useState(0);
+  const faceModelRef = useRef<string>("");
+  useEffect(() => {
+    if (!modelName) return;
+    faceModelRef.current = modelName;
+    setFace(loadFace(modelName));
+  }, [modelName]);
+  useEffect(() => {
+    if (faceModelRef.current === modelName && modelName) saveFace(modelName, face);
+  }, [face, modelName]);
+  // First time a model is seen, line the face up with its skin automatically.
+  useEffect(() => {
+    if (rig && !face.fitted && faceModelRef.current === modelName) setFaceFitRequest((n) => n + 1);
+  }, [rig, face.fitted, modelName]);
   const [activeTab, setActiveTab] = useState<"pose" | "panels">("pose");
   const [pages, setPages] = useState<PageLayout[]>([
     {
@@ -498,9 +515,26 @@ export function Studio() {
             >
               🗡️ 3D Props {propsList.length > 0 && `(${propsList.length})`}
             </button>
+            <button
+              onClick={() => setLeftTab("face")}
+              className={`flex-1 py-2 text-center transition-colors ${
+                leftTab === "face"
+                  ? "border-b-2 border-primary bg-card text-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              😠 Face
+            </button>
           </div>
 
-          {leftTab === "poses" ? (
+          {leftTab === "face" ? (
+            <FacePanel
+              face={face}
+              onChange={setFace}
+              hasHead={!!rig?.bones.get("Head")}
+              onAutoFit={() => setFaceFitRequest((n) => n + 1)}
+            />
+          ) : leftTab === "poses" ? (
             <>
               <div className="border-b border-border p-3">
                 <div className="flex items-center justify-between">
@@ -908,6 +942,9 @@ export function Studio() {
               propsList={propsList}
               selectedPropId={selectedPropId}
               onSelectProp={setSelectedPropId}
+              face={face}
+              faceFitRequest={faceFitRequest}
+              onFaceFit={(offsetZ, offsetY) => setFace((f) => ({ ...f, fitted: true, calib: { ...f.calib, offsetZ, offsetY } }))}
             />
           </div>
 

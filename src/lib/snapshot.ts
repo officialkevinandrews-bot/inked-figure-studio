@@ -25,7 +25,9 @@ export function captureTransparentSnapshot(
   // 1. Hide UI helpers, grid, joints, and floor shadows during snapshot
   const hiddenObjects: THREE.Object3D[] = [];
   scene.traverse((obj) => {
-    if (obj.userData?.["noOutline"] || obj.name.includes("Grid") || obj.name.includes("Joint")) {
+    // Helpers are flagged noOutline; the face decal opts back in. (Name matching on "Joint" hid real model meshes such as Beta_Joints.)
+    const helper = (obj.userData?.["noOutline"] && !obj.userData?.["keepInSnapshot"]) || obj.name === "GridHelper" || obj.name === "JointsHelperGroup";
+    if (helper) {
       if (obj.visible) {
         obj.visible = false;
         hiddenObjects.push(obj);
