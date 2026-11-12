@@ -7,6 +7,7 @@ import * as THREE from "three";
  */
 const KEY = "data-tsd-source";
 for (const proto of [
+  THREE.EventDispatcher.prototype,
   THREE.Object3D.prototype,
   THREE.Material.prototype,
   THREE.BufferGeometry.prototype,
