@@ -4,6 +4,7 @@ import { useEffect, useImperativeHandle, useMemo, useRef, forwardRef } from "rea
 import * as THREE from "three";
 import { OutlineEffect } from "three/examples/jsm/effects/OutlineEffect.js";
 import type { Rig } from "@/lib/rig";
+import { IK_EFFECTORS } from "@/lib/ik";
 import { captureTransparentSnapshot, type SnapshotOptions, type SnapshotResult } from "@/lib/snapshot";
 import { type ActiveProp, type PropTransform, getPropById } from "@/lib/props";
 
@@ -216,6 +217,27 @@ function CameraController({
   return <OrbitControls ref={controlsRef} makeDefault target={[0, 0.95, 0]} enableDamping />;
 }
 
+function IkHandle({ bone, onDrag }: { bone: THREE.Bone; onDrag: (p: THREE.Vector3) => void }) {
+  const target = useMemo(() => new THREE.Object3D(), []);
+  const dragging = useRef(false);
+  useFrame(() => {
+    if (!dragging.current) bone.getWorldPosition(target.position);
+  });
+  return (
+    <>
+      <primitive object={target} />
+      <TransformControls
+        object={target}
+        mode="translate"
+        size={0.7}
+        onMouseDown={() => (dragging.current = true)}
+        onMouseUp={() => (dragging.current = false)}
+        onObjectChange={() => dragging.current && onDrag(target.position.clone())}
+      />
+    </>
+  );
+}
+
 function PropItem({
   prop,
   rig,
@@ -309,6 +331,8 @@ export const Viewport = forwardRef<
     propsList?: ActiveProp[];
     selectedPropId?: string | null;
     onSelectProp?: (id: string | null) => void;
+    ikMode?: boolean;
+    onIkDrag?: (effector: string, world: THREE.Vector3) => void;
   }
 >(function Viewport(
   {
@@ -322,6 +346,8 @@ export const Viewport = forwardRef<
     propsList = [],
     selectedPropId = null,
     onSelectProp = () => {},
+    ikMode = false,
+    onIkDrag = () => {},
   },
   ref
 ) {
@@ -378,8 +404,11 @@ export const Viewport = forwardRef<
         name="GridHelper"
       />
       {rig && settings.showJoints && <Joints rig={rig} selected={selected} onSelect={onSelect} />}
-      {bone && (
+      {bone && (!ikMode || !IK_EFFECTORS.includes(selected!)) && (
         <TransformControls object={bone} mode="rotate" space="local" size={0.6} onObjectChange={onBoneDrag} />
+      )}
+      {bone && ikMode && IK_EFFECTORS.includes(selected!) && (
+        <IkHandle key={selected!} bone={bone} onDrag={(p) => onIkDrag(selected!, p)} />
       )}
       <CameraController cameraPose={cameraPose} fov={fov} />
     </Canvas>

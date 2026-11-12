@@ -59,6 +59,7 @@ import {
   type PropCategory,
 } from "@/lib/props";
 import { saveRosterItem } from "@/lib/character-roster";
+import { solveCCD, chainOffsets, pinFeet } from "@/lib/ik";
 
 const AXES = ["X", "Y", "Z"] as const;
 
@@ -225,6 +226,30 @@ export function Studio() {
       return { ...cur, [bone]: r };
     });
 
+  const [ikMode, setIkMode] = useState(true);
+  const [pinFeetOn, setPinFeetOn] = useState(true);
+  const onIkDrag = (effector: string, world: THREE.Vector3) => {
+    if (!rig) return;
+    if (effector === "Hips") {
+      if (!rig.hipsRestWorld) return;
+      const feet = pinFeetOn
+        ? {
+            LeftFoot: rig.bones.get("LeftFoot")?.getWorldPosition(new THREE.Vector3()),
+            RightFoot: rig.bones.get("RightFoot")?.getWorldPosition(new THREE.Vector3()),
+          }
+        : {};
+      const drop = Math.max(-0.3, Math.min(1.2, (rig.hipsRestWorld.y - world.y) / rig.scale));
+      applyPose(rig, pose, drop);
+      const legs = pinFeet(rig, feet as Record<string, THREE.Vector3>);
+      setHipsDrop(drop);
+      setPose((cur) => ({ ...cur, ...legs }));
+      return;
+    }
+    solveCCD(rig, effector, world);
+    const offs = chainOffsets(rig, effector);
+    setPose((cur) => ({ ...cur, ...offs }));
+  };
+
   const onBoneDrag = () => {
     if (!rig || !selected) return;
     const r = offsetFromBone(rig, selected);
@@ -369,8 +394,7 @@ export function Studio() {
   };
 
   // If in 2D Panels Studio mode, render full Manga Studio
-  if (activeTab === "panels") {
-    return (
+  const panelsView = activeTab === "panels" && (
       <PanelStudio
         layout={currentPageLayout}
         onUpdateLayout={handleUpdateCurrentPage}
@@ -390,11 +414,12 @@ export function Studio() {
         onDeletePage={handleDeletePage}
         onMovePage={handleMovePage}
       />
-    );
-  }
+  );
 
   return (
-    <div className="flex h-screen flex-col bg-background text-foreground select-none">
+    <>
+    {panelsView}
+    <div className={`${activeTab === "panels" ? "hidden" : "flex"} h-screen flex-col bg-background text-foreground select-none`}>
       {/* Top Bar */}
       <header className="flex items-center gap-4 border-b-2 border-foreground px-4 py-2 bg-card">
         <h1 className="font-display text-xl tracking-wide">
@@ -551,6 +576,32 @@ export function Studio() {
                     </button>
                   );
                 })}
+              </div>
+
+              {/* Posing mode */}
+              <div className="space-y-2 border-t border-border p-3 text-sm">
+                <div className="flex gap-1">
+                  {([["Drag Limbs", true], ["Rotate Joints", false]] as const).map(([label, v]) => (
+                    <button
+                      key={label}
+                      onClick={() => setIkMode(v)}
+                      className={`flex-1 rounded-sm border-2 border-foreground py-1 font-semibold ${ikMode === v ? "bg-foreground text-background" : "hover:bg-accent"}`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                {ikMode && (
+                  <>
+                    <p className="text-[11px] text-muted-foreground">
+                      Click a hand, foot, head or hip joint, then drag the arrows — the arms, legs and spine bend to follow.
+                    </p>
+                    <label className="flex items-center gap-2 text-xs">
+                      <input type="checkbox" checked={pinFeetOn} onChange={(e) => setPinFeetOn(e.target.checked)} />
+                      Keep feet planted when moving hips
+                    </label>
+                  </>
+                )}
               </div>
 
               {/* Quick Mirror & Reset Tools */}
@@ -844,6 +895,8 @@ export function Studio() {
               selected={selected}
               onSelect={setSelected}
               onBoneDrag={onBoneDrag}
+              ikMode={ikMode}
+              onIkDrag={onIkDrag}
               settings={settings}
               cameraPose={cameraPose}
               propsList={propsList}
@@ -1128,5 +1181,6 @@ export function Studio() {
         onSave={handleSavePose}
       />
     </div>
+    </>
   );
 }
