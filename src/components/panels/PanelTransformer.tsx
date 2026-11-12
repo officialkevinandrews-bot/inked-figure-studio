@@ -1,6 +1,7 @@
 import React, { useRef, useState, useEffect } from "react";
 import type { PlacedElement } from "@/lib/manga-layout";
 import { FlipHorizontal, FlipVertical, ArrowUp, ArrowDown, Trash2, Maximize2, ShieldAlert } from "lucide-react";
+import { usePageZoom } from "./zoom-context";
 
 interface PanelTransformerProps {
   element: PlacedElement;
@@ -17,6 +18,7 @@ export function PanelTransformer({
   onChange,
   onDelete,
 }: PanelTransformerProps) {
+  const zoom = usePageZoom();
   const [dragging, setDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const [initialPos, setInitialPos] = useState({ x: 0, y: 0 });
@@ -35,15 +37,15 @@ export function PanelTransformer({
 
   const handlePointerMove = (e: React.PointerEvent) => {
     if (dragging) {
-      const dx = e.clientX - dragStart.x;
-      const dy = e.clientY - dragStart.y;
+      const dx = (e.clientX - dragStart.x) / zoom;
+      const dy = (e.clientY - dragStart.y) / zoom;
       onChange({
         x: initialPos.x + dx,
         y: initialPos.y + dy,
       });
     } else if (resizing) {
-      const dx = e.clientX - resizeStart.x;
-      const dy = e.clientY - resizeStart.y;
+      const dx = (e.clientX - resizeStart.x) / zoom;
+      const dy = (e.clientY - resizeStart.y) / zoom;
       let newW = resizeStart.w;
       let newH = resizeStart.h;
 

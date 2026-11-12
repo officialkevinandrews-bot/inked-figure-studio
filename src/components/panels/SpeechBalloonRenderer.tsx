@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import type { SpeechBalloon } from "@/lib/manga-effects";
 import { generateBalloonPath } from "@/lib/manga-effects";
 import { Trash2, Type, AlignVerticalJustifyCenter, MessageCircle } from "lucide-react";
+import { usePageZoom } from "./zoom-context";
 
 interface SpeechBalloonRendererProps {
   balloon: SpeechBalloon;
@@ -19,6 +20,7 @@ export function SpeechBalloonRenderer({
   onDelete,
 }: SpeechBalloonRendererProps) {
   const [isEditing, setIsEditing] = useState(false);
+  const zoom = usePageZoom();
   const [dragging, setDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const [initialPos, setInitialPos] = useState({ x: 0, y: 0 });
@@ -36,19 +38,16 @@ export function SpeechBalloonRenderer({
 
   const handlePointerMove = (e: React.PointerEvent) => {
     if (dragging) {
-      const dx = e.clientX - dragStart.x;
-      const dy = e.clientY - dragStart.y;
+      const dx = (e.clientX - dragStart.x) / zoom;
+      const dy = (e.clientY - dragStart.y) / zoom;
       onChange({
         x: initialPos.x + dx,
         y: initialPos.y + dy,
       });
     } else if (draggingTail) {
-      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-      const localX = e.clientX - (balloon.x + balloon.width / 2);
-      const localY = e.clientY - (balloon.y + balloon.height / 2);
       onChange({
-        tailX: localX,
-        tailY: localY,
+        tailX: initialPos.x + (e.clientX - dragStart.x) / zoom,
+        tailY: initialPos.y + (e.clientY - dragStart.y) / zoom,
       });
     }
   };
@@ -64,6 +63,8 @@ export function SpeechBalloonRenderer({
   const handleTailPointerDown = (e: React.PointerEvent) => {
     e.stopPropagation();
     setDraggingTail(true);
+    setDragStart({ x: e.clientX, y: e.clientY });
+    setInitialPos({ x: balloon.tailX ?? 0, y: balloon.tailY ?? balloon.height * 0.8 });
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
   };
 
@@ -149,8 +150,8 @@ export function SpeechBalloonRenderer({
         <div
           style={{
             position: "absolute",
-            left: `${balloon.width / 2 + balloon.tailX - 6}px`,
-            top: `${balloon.height / 2 + balloon.tailY - 6}px`,
+            left: `${balloon.width / 2 + (balloon.tailX ?? 0) - 6}px`,
+            top: `${balloon.height / 2 + (balloon.tailY ?? balloon.height * 0.8) - 6}px`,
             cursor: "crosshair",
             pointerEvents: "auto",
           }}

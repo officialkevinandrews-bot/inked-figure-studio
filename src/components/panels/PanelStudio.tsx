@@ -201,7 +201,9 @@ export function PanelStudio({
         x: bounds.minX + bounds.width * 0.35,
         y: bounds.minY + bounds.height * 0.55,
       },
-      hasTail: true,
+      tailX: -Math.min(bounds.width * 0.55, 200) * 0.2,
+      tailY: Math.min(bounds.height * 0.4, 120) * 0.85,
+      hasTail: shape !== "box",
       fontSize: 16,
       fontWeight: shape === "burst" || shape === "double_burst" ? "bold" : "normal",
       writingMode: "horizontal-tb",
@@ -978,7 +980,7 @@ export function PanelStudio({
         {/* Center Canvas Viewport with Auto-Fit Scrolling */}
         <main
           ref={canvasContainerRef}
-          className="flex-1 overflow-auto p-6 flex items-center justify-center bg-muted/30"
+          className="flex-1 min-w-0 overflow-auto p-6 flex bg-muted/30"
           onWheel={(e) => {
             if (e.ctrlKey) {
               e.preventDefault();

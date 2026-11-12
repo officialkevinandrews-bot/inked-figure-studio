@@ -6,18 +6,21 @@ interface SnapshotModalProps {
   isOpen: boolean;
   onClose: () => void;
   snapshot: SnapshotResult | null;
-  onSendToPanel?: (dataUrl: string) => void;
-  onRecapture: (ratio: number) => void;
+  onReRender: (ratio: number) => void;
+  panels?: { id: string }[];
+  onAddToPanel?: (panelId: string, dataUrl: string) => void;
 }
 
 export function SnapshotModal({
   isOpen,
   onClose,
   snapshot,
-  onSendToPanel,
-  onRecapture,
+  onReRender,
+  panels = [],
+  onAddToPanel,
 }: SnapshotModalProps) {
   const [ratio, setRatio] = useState<number>(2);
+  const [panelId, setPanelId] = useState<string>("");
 
   if (!isOpen || !snapshot) return null;
 
@@ -62,7 +65,7 @@ export function SnapshotModal({
                 key={opt.value}
                 onClick={() => {
                   setRatio(opt.value);
-                  onRecapture(opt.value);
+                  onReRender(opt.value);
                 }}
                 className={`rounded-sm border px-2 py-1 text-xs font-semibold ${
                   ratio === opt.value
@@ -86,10 +89,22 @@ export function SnapshotModal({
               Download PNG
             </button>
 
-            {onSendToPanel && (
+            {onAddToPanel && panels.length > 0 && (
+              <select
+                value={panelId || panels[0].id}
+                onChange={(e) => setPanelId(e.target.value)}
+                className="rounded-sm border border-input bg-background px-2 py-1 text-xs"
+                aria-label="Target panel"
+              >
+                {panels.map((p, i) => (
+                  <option key={p.id} value={p.id}>Panel {i + 1}</option>
+                ))}
+              </select>
+            )}
+            {onAddToPanel && panels.length > 0 && (
               <button
                 onClick={() => {
-                  onSendToPanel(snapshot.dataUrl);
+                  onAddToPanel(panelId || panels[0].id, snapshot.dataUrl);
                   onClose();
                 }}
                 className="flex items-center gap-1.5 rounded-sm border-2 border-foreground bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground shadow-ink transition-transform hover:-translate-y-0.5"

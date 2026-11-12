@@ -2,6 +2,7 @@ import React from "react";
 import type { PageLayout, PlacedElement } from "@/lib/manga-layout";
 import { getPanelPixelBounds } from "@/lib/manga-layout";
 import { PanelTransformer } from "./PanelTransformer";
+import { PageZoomContext } from "./zoom-context";
 import { SpeechBalloonRenderer } from "./SpeechBalloonRenderer";
 import {
   ComicMarkRenderer,
@@ -66,8 +67,9 @@ export function PageCanvas({
         width: `${Math.round(width * zoom)}px`,
         height: `${Math.round(height * zoom)}px`,
       }}
-      className="relative shrink-0 flex items-center justify-center my-auto transition-[width,height] duration-75"
+      className="relative shrink-0 m-auto"
     >
+      <PageZoomContext.Provider value={zoom}>
       {/* Physical Manga Page Canvas */}
       <div
         id="manga-page-container"
@@ -76,6 +78,9 @@ export function PageCanvas({
           height: `${height}px`,
           transform: `scale(${zoom})`,
           transformOrigin: "top left",
+          position: "absolute",
+          top: 0,
+          left: 0,
           backgroundColor: "#ffffff",
         }}
         className="relative overflow-hidden border-2 border-foreground bg-white text-black shadow-2xl select-none"
@@ -323,6 +328,7 @@ export function PageCanvas({
           />
         ))}
       </div>
+    </PageZoomContext.Provider>
     </div>
   );
 }

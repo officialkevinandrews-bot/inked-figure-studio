@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import type { ComicMark, SpeedLinesEffect, SFXStamp } from "@/lib/manga-effects";
 import { generateRadialSpeedLines } from "@/lib/manga-effects";
 import { Trash2, RotateCw } from "lucide-react";
+import { usePageZoom } from "./zoom-context";
 
 // ── 1. Comic Marks Renderer
 export function ComicMarkRenderer({
@@ -17,6 +18,7 @@ export function ComicMarkRenderer({
   onChange: (updated: Partial<ComicMark>) => void;
   onDelete: () => void;
 }) {
+  const zoom = usePageZoom();
   const [dragging, setDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const [initialPos, setInitialPos] = useState({ x: 0, y: 0 });
@@ -44,8 +46,8 @@ export function ComicMarkRenderer({
   const handlePointerMove = (e: React.PointerEvent) => {
     if (!dragging) return;
     onChange({
-      x: initialPos.x + (e.clientX - dragStart.x),
-      y: initialPos.y + (e.clientY - dragStart.y),
+      x: initialPos.x + ((e.clientX - dragStart.x) / zoom),
+      y: initialPos.y + ((e.clientY - dragStart.y) / zoom),
     });
   };
 
@@ -121,6 +123,7 @@ export function SpeedLinesRenderer({
     effect.strokeWidth,
     effect.color
   );
+  const zoom = usePageZoom();
 
   return (
     <div
@@ -161,12 +164,12 @@ export function SpeedLinesRenderer({
             className="cursor-move"
             onPointerDown={(e) => {
               e.stopPropagation();
+              const rect = (e.currentTarget as SVGElement).ownerSVGElement?.getBoundingClientRect();
               const handleMove = (ev: PointerEvent) => {
-                const rect = (e.currentTarget as SVGElement).ownerSVGElement?.getBoundingClientRect();
                 if (rect) {
                   onChange({
-                    centerX: ev.clientX - rect.left,
-                    centerY: ev.clientY - rect.top,
+                    centerX: (ev.clientX - rect.left) / zoom,
+                    centerY: (ev.clientY - rect.top) / zoom,
                   });
                 }
               };
@@ -198,6 +201,7 @@ export function SFXStampRenderer({
   onChange: (updated: Partial<SFXStamp>) => void;
   onDelete: () => void;
 }) {
+  const zoom = usePageZoom();
   const [dragging, setDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const [initialPos, setInitialPos] = useState({ x: 0, y: 0 });
@@ -214,8 +218,8 @@ export function SFXStampRenderer({
   const handlePointerMove = (e: React.PointerEvent) => {
     if (!dragging) return;
     onChange({
-      x: initialPos.x + (e.clientX - dragStart.x),
-      y: initialPos.y + (e.clientY - dragStart.y),
+      x: initialPos.x + ((e.clientX - dragStart.x) / zoom),
+      y: initialPos.y + ((e.clientY - dragStart.y) / zoom),
     });
   };
 
