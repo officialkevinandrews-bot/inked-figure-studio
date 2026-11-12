@@ -581,13 +581,13 @@ export function Studio() {
         <nav className="flex items-center gap-1 text-sm">
           {([["create", "Create Character"], ["pose", "3D Pose Studio"]] as const).map(([t, label]) => (
             <button key={t} onClick={() => goTab(t)} aria-pressed={activeTab === t}
-              className={`rounded-sm px-3 py-1 font-semibold transition-colors ${activeTab === t ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground"}`}>
+              className={`whitespace-nowrap rounded-sm px-3 py-1 font-semibold transition-colors ${activeTab === t ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground"}`}>
               {label}
             </button>
           ))}
           <button
             onClick={() => goTab("panels")}
-            className="rounded-sm px-3 py-1 font-semibold text-muted-foreground hover:text-foreground transition-colors"
+            className="whitespace-nowrap rounded-sm px-3 py-1 font-semibold text-muted-foreground hover:text-foreground transition-colors"
           >
             Manga Panels {currentPageLayout.elements.length > 0 && `(${currentPageLayout.elements.length})`}
           </button>
