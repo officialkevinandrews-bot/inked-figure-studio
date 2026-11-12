@@ -186,7 +186,7 @@ export async function renderPageToCanvas(
     ctx.fillStyle = b.backgroundColor || "#ffffff";
     ctx.fill(p2d);
 
-    ctx.lineWidth = b.strokeWidth;
+    ctx.lineWidth = b.strokeWidth ?? 2.5;
     ctx.strokeStyle = b.strokeColor || "#000000";
     if (b.shape === "whisper") {
       ctx.setLineDash([5, 4]);

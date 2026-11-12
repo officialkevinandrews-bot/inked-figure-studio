@@ -1371,7 +1371,7 @@ export function PanelStudio({
                   onChange={(e) =>
                     onUpdateLayout({
                       ...layout,
-                      balloons: layout.balloons.map((b) =>
+                      balloons: (layout.balloons ?? []).map((b) =>
                         b.id === selectedBalloon.id ? { ...b, text: e.target.value } : b
                       ),
                     })
@@ -1388,7 +1388,7 @@ export function PanelStudio({
                   onChange={(e) =>
                     onUpdateLayout({
                       ...layout,
-                      balloons: layout.balloons.map((b) =>
+                      balloons: (layout.balloons ?? []).map((b) =>
                         b.id === selectedBalloon.id
                           ? {
                               ...b,
@@ -1410,7 +1410,7 @@ export function PanelStudio({
                     onClick={() =>
                       onUpdateLayout({
                         ...layout,
-                        balloons: layout.balloons.map((b) =>
+                        balloons: (layout.balloons ?? []).map((b) =>
                           b.id === selectedBalloon.id
                             ? { ...b, backgroundColor: "#ffffff", fontColor: "#000000", strokeColor: "#000000" }
                             : b
@@ -1425,7 +1425,7 @@ export function PanelStudio({
                     onClick={() =>
                       onUpdateLayout({
                         ...layout,
-                        balloons: layout.balloons.map((b) =>
+                        balloons: (layout.balloons ?? []).map((b) =>
                           b.id === selectedBalloon.id
                             ? { ...b, backgroundColor: "#09090b", fontColor: "#ffffff", strokeColor: "#ffffff" }
                             : b
@@ -1453,7 +1453,7 @@ export function PanelStudio({
                     onChange={(e) =>
                       onUpdateLayout({
                         ...layout,
-                        balloons: layout.balloons.map((b) =>
+                        balloons: (layout.balloons ?? []).map((b) =>
                           b.id === selectedBalloon.id ? { ...b, fontSize: +e.target.value } : b
                         ),
                       })
@@ -1492,7 +1492,7 @@ export function PanelStudio({
                   onChange={(e) =>
                     onUpdateLayout({
                       ...layout,
-                      sfxStamps: layout.sfxStamps.map((s) =>
+                      sfxStamps: (layout.sfxStamps ?? []).map((s) =>
                         s.id === selectedSFX.id ? { ...s, text: e.target.value } : s
                       ),
                     })
@@ -1515,7 +1515,7 @@ export function PanelStudio({
                     onChange={(e) =>
                       onUpdateLayout({
                         ...layout,
-                        sfxStamps: layout.sfxStamps.map((s) =>
+                        sfxStamps: (layout.sfxStamps ?? []).map((s) =>
                           s.id === selectedSFX.id ? { ...s, fontSize: +e.target.value } : s
                         ),
                       })
@@ -1537,7 +1537,7 @@ export function PanelStudio({
                     onChange={(e) =>
                       onUpdateLayout({
                         ...layout,
-                        sfxStamps: layout.sfxStamps.map((s) =>
+                        sfxStamps: (layout.sfxStamps ?? []).map((s) =>
                           s.id === selectedSFX.id ? { ...s, rotation: +e.target.value } : s
                         ),
                       })
@@ -1559,7 +1559,7 @@ export function PanelStudio({
                     onChange={(e) =>
                       onUpdateLayout({
                         ...layout,
-                        sfxStamps: layout.sfxStamps.map((s) =>
+                        sfxStamps: (layout.sfxStamps ?? []).map((s) =>
                           s.id === selectedSFX.id ? { ...s, skewX: +e.target.value } : s
                         ),
                       })

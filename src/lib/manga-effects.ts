@@ -146,7 +146,7 @@ export function generateBalloonPath(
   shape: BalloonShape,
   w: number,
   h: number,
-  tailArg?: BalloonTail | { x: number; y: number } | number,
+  tailArg?: BalloonTail | { x: number; y: number; curved?: boolean; curveX?: number; curveY?: number } | number,
   tailYArg?: number,
   hasTailArg?: boolean
 ): string {

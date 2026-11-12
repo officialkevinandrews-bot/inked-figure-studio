@@ -190,7 +190,7 @@ export async function applyPhotoToMangaFilter(
   const srcImageData = ctx.getImageData(0, 0, w, h);
 
   const filteredData = processMangaFilterImageData(srcImageData, options);
-  const outImageData = new ImageData(filteredData, w, h);
+  const outImageData = new ImageData(filteredData as Uint8ClampedArray<ArrayBuffer>, w, h);
   ctx.putImageData(outImageData, 0, 0);
 
   return canvas.toDataURL("image/png");
