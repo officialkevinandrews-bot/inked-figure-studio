@@ -1,7 +1,16 @@
+import { DEFAULT_FACE_COLORS, type FaceColors } from "./face-library";
 import type { BrowState, BrowStyle, EyeState, EyeStyle, FaceCalibration, MouthState, MouthStyle, ResolvedFace } from "./face-library";
 
 type C = CanvasRenderingContext2D;
-const INK = "#141414";
+const BLACK = "#141414";
+// Active palette for the face being drawn (set by drawFace; mono mode keeps classic ink).
+let INK = BLACK, BROWC = BLACK, IRIS = DEFAULT_FACE_COLORS.eyes, MOUTH = DEFAULT_FACE_COLORS.mouth, BLUSH = DEFAULT_FACE_COLORS.blush;
+function rgba(hex: string, a: number) { const n = parseInt(hex.slice(1), 16); return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`; }
+function shade(hex: string, k: number) { const n = parseInt(hex.slice(1), 16); const f = (v: number) => Math.round(Math.min(255, Math.max(0, k >= 0 ? v + (255 - v) * k : v * (1 + k)))); return `rgb(${f((n >> 16) & 255)},${f((n >> 8) & 255)},${f(n & 255)})`; }
+export function setFacePalette(c: FaceColors, mono: boolean) {
+  const m = mono ? DEFAULT_FACE_COLORS : c;
+  INK = mono ? BLACK : m.lines; BROWC = mono ? BLACK : m.brows; IRIS = mono ? "#2a2a2a" : m.eyes; MOUTH = m.mouth; BLUSH = m.blush;
+}
 
 const EYE: Record<EyeStyle, { w: number; h: number; slant: number; iris: number; lash: number }> = {
   sharp: { w: 70, h: 34, slant: 10, iris: 0.5, lash: 6 },
@@ -47,9 +56,9 @@ export function drawEye(c: C, style: EyeStyle, state: EyeState) {
     const cy = (yc * 0.25 + h * L.lo * 0.25);
     if (shock) { c.lineWidth = 3; c.beginPath(); c.ellipse(0, cy, rx, ry, 0, 0, Math.PI * 2); c.stroke(); c.beginPath(); c.arc(0, cy, rx * 0.4, 0, Math.PI * 2); c.fill(); }
     else {
-      const g = c.createLinearGradient(0, cy - ry, 0, cy + ry); g.addColorStop(0, "#0c0c0c"); g.addColorStop(1, "#5a5a5a");
+      const g = c.createLinearGradient(0, cy - ry, 0, cy + ry); g.addColorStop(0, shade(IRIS, -0.55)); g.addColorStop(1, shade(IRIS, 0.35));
       c.fillStyle = g; c.beginPath(); c.ellipse(0, cy, rx, ry, 0, 0, Math.PI * 2); c.fill();
-      c.fillStyle = INK; c.beginPath(); c.ellipse(0, cy, rx * 0.45, ry * 0.5, 0, 0, Math.PI * 2); c.fill();
+      c.fillStyle = shade(IRIS, -0.8); c.beginPath(); c.ellipse(0, cy, rx * 0.45, ry * 0.5, 0, 0, Math.PI * 2); c.fill();
       c.fillStyle = "#ffffff"; c.beginPath(); c.arc(-rx * 0.35, cy - ry * 0.4, rx * 0.3, 0, Math.PI * 2); c.fill();
       c.beginPath(); c.arc(rx * 0.35, cy + ry * 0.35, rx * 0.13, 0, Math.PI * 2); c.fill();
       if (state === "teary") { c.beginPath(); c.arc(rx * 0.1, cy - ry * 0.05, rx * 0.18, 0, Math.PI * 2); c.fill(); c.beginPath(); c.arc(-rx * 0.5, cy + ry * 0.4, rx * 0.12, 0, Math.PI * 2); c.fill(); }
@@ -74,7 +83,7 @@ export function drawBrow(c: C, style: BrowStyle, state: BrowState, side: 1 | -1)
   else if (state === "sad") { yi = -14; yo = 8; arch = 2; }
   else if (state === "flat") { yi = 0; yo = 0; arch = 0; }
   else if (state === "smug") { if (side === 1) { yi = -16; yo = -20; arch += 8; } else { yi = 4; yo = -2; arch = 0; } }
-  c.strokeStyle = INK; c.lineCap = "round"; c.lineWidth = s.w;
+  c.strokeStyle = BROWC; c.lineCap = "round"; c.lineWidth = s.w;
   c.beginPath(); c.moveTo(-hl, yi); c.quadraticCurveTo(0, Math.min(yi, yo) - arch, hl, yo); c.stroke();
 }
 
@@ -85,7 +94,7 @@ export function drawMouth(c: C, style: MouthStyle, state: MouthState) {
   const fang = (x: number, y: number) => { if (style !== "fang") return; c.fillStyle = "#fff"; c.beginPath(); c.moveTo(x - 5, y); c.lineTo(x + 5, y); c.lineTo(x, y + 10); c.closePath(); c.fill(); c.lineWidth = 2; c.stroke(); c.fillStyle = INK; };
   const openFill = (top: number, bot: number, wid: number) => {
     c.beginPath(); c.moveTo(-wid, top); c.quadraticCurveTo(0, top - 4, wid, top); c.quadraticCurveTo(wid * 0.9, bot, 0, bot); c.quadraticCurveTo(-wid * 0.9, bot, -wid, top); c.closePath();
-    c.fill(); c.save(); c.clip(); c.fillStyle = "#c9636b"; c.beginPath(); c.ellipse(0, bot, wid * 0.6, (bot - top) * 0.45, 0, 0, Math.PI * 2); c.fill(); c.restore();
+    c.fill(); c.save(); c.clip(); c.fillStyle = MOUTH; c.beginPath(); c.ellipse(0, bot, wid * 0.6, (bot - top) * 0.45, 0, 0, Math.PI * 2); c.fill(); c.restore();
   };
   switch (state) {
     case "neutral": c.beginPath(); c.moveTo(-hw * 0.6, 0); c.quadraticCurveTo(0, 3, hw * 0.6, 0); c.stroke(); break;
@@ -110,9 +119,9 @@ function drawFx(c: C, fx: string, k: FaceCalibration, mono: boolean) {
   if (fx === "blush") {
     for (const sx of [-1, 1]) {
       const x = 256 + sx * (ex + 18), y = ey + 50;
-      const g = c.createRadialGradient(x, y, 2, x, y, 38); g.addColorStop(0, mono ? "rgba(60,60,60,0.35)" : "rgba(240,110,130,0.6)"); g.addColorStop(1, "rgba(240,110,130,0)");
+      const g = c.createRadialGradient(x, y, 2, x, y, 38); g.addColorStop(0, mono ? "rgba(60,60,60,0.35)" : rgba(BLUSH, 0.6)); g.addColorStop(1, rgba(BLUSH, 0));
       c.fillStyle = g; c.beginPath(); c.ellipse(x, y, 40, 20, 0, 0, Math.PI * 2); c.fill();
-      c.strokeStyle = mono ? INK : "#c0394f"; c.lineWidth = 2.5; for (let i = -1; i <= 1; i++) { c.beginPath(); c.moveTo(x + i * 12 - 4, y + 8); c.lineTo(x + i * 12 + 6, y - 8); c.stroke(); }
+      c.strokeStyle = mono ? INK : shade(BLUSH, -0.3); c.lineWidth = 2.5; for (let i = -1; i <= 1; i++) { c.beginPath(); c.moveTo(x + i * 12 - 4, y + 8); c.lineTo(x + i * 12 + 6, y - 8); c.stroke(); }
     }
   } else if (fx === "sweat") {
     const x = 380, y = 150; c.fillStyle = mono ? "#fff" : "#cfe8fb"; c.lineWidth = 3;
@@ -139,6 +148,7 @@ function drawFx(c: C, fx: string, k: FaceCalibration, mono: boolean) {
 /** Composes the full face onto a 512×512 transparent canvas. */
 export function drawFace(c: C, f: ResolvedFace, k: FaceCalibration, opts: { mono: boolean; guide: boolean }) {
   c.clearRect(0, 0, 512, 512);
+  setFacePalette(f.colors ?? DEFAULT_FACE_COLORS, opts.mono);
   if (opts.guide) {
     c.save(); c.strokeStyle = "rgba(230,60,40,0.9)"; c.lineWidth = 2; c.setLineDash([8, 6]);
     c.beginPath(); c.ellipse(256, 280, 190, 230, 0, 0, Math.PI * 2); c.stroke();

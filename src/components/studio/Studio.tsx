@@ -1,4 +1,7 @@
 import { FacePanel } from "./FacePanel";
+import { WardrobePanel } from "./WardrobePanel";
+import type { CustomAsset } from "./WardrobeRig";
+import { loadOutfit, saveOutfit, type Outfit } from "@/lib/wardrobe";
 import { DEFAULT_FACE, loadFace, saveFace, type FaceConfig } from "@/lib/face-library";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
@@ -87,7 +90,7 @@ export function Studio() {
   // 3D Props state
   const [propsList, setPropsList] = useState<ActiveProp[]>([]);
   const [selectedPropId, setSelectedPropId] = useState<string | null>(null);
-  const [leftTab, setLeftTab] = useState<"poses" | "props" | "face">("poses");
+  const [leftTab, setLeftTab] = useState<"poses" | "props" | "face" | "outfit">("poses");
   const [propCategory, setPropCategory] = useState<PropCategory>("weapons");
 
   // Camera & Rendering Settings
@@ -127,6 +130,18 @@ export function Studio() {
   useEffect(() => {
     if (rig && !face.fitted && faceModelRef.current === modelName) setFaceFitRequest((n) => n + 1);
   }, [rig, face.fitted, modelName]);
+  // Outfit (hair, clothes, accessories) saved per model; imported files stay in memory.
+  const [outfit, setOutfit] = useState<Outfit>({});
+  const [wardrobeAssets, setWardrobeAssets] = useState<Record<string, CustomAsset>>({});
+  const outfitModelRef = useRef<string>("");
+  useEffect(() => {
+    if (!modelName) return;
+    outfitModelRef.current = modelName;
+    setOutfit(loadOutfit(modelName));
+  }, [modelName]);
+  useEffect(() => {
+    if (outfitModelRef.current === modelName && modelName) saveOutfit(modelName, outfit);
+  }, [outfit, modelName]);
   const [activeTab, setActiveTab] = useState<"pose" | "panels">("pose");
   const [pages, setPages] = useState<PageLayout[]>([
     {
@@ -503,7 +518,7 @@ export function Studio() {
                   : "text-muted-foreground hover:text-foreground"
               }`}
             >
-              🥋 Pose Presets
+              🥋 Poses
             </button>
             <button
               onClick={() => setLeftTab("props")}
@@ -513,7 +528,7 @@ export function Studio() {
                   : "text-muted-foreground hover:text-foreground"
               }`}
             >
-              🗡️ 3D Props {propsList.length > 0 && `(${propsList.length})`}
+              🗡️ Props {propsList.length > 0 && `(${propsList.length})`}
             </button>
             <button
               onClick={() => setLeftTab("face")}
@@ -525,9 +540,27 @@ export function Studio() {
             >
               😠 Face
             </button>
+            <button
+              onClick={() => setLeftTab("outfit")}
+              className={`flex-1 py-2 text-center transition-colors ${
+                leftTab === "outfit"
+                  ? "border-b-2 border-primary bg-card text-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              👕 Outfit
+            </button>
           </div>
 
-          {leftTab === "face" ? (
+          {leftTab === "outfit" ? (
+            <WardrobePanel
+              outfit={outfit}
+              onChange={setOutfit}
+              assets={wardrobeAssets}
+              onAddAsset={(a) => setWardrobeAssets((m) => ({ ...m, [a.id]: a }))}
+              hasRig={!!rig}
+            />
+          ) : leftTab === "face" ? (
             <FacePanel
               face={face}
               onChange={setFace}
@@ -944,6 +977,8 @@ export function Studio() {
               onSelectProp={setSelectedPropId}
               face={face}
               faceFitRequest={faceFitRequest}
+              outfit={outfit}
+              wardrobeAssets={wardrobeAssets}
               onFaceFit={(offsetZ, offsetY) => setFace((f) => ({ ...f, fitted: true, calib: { ...f.calib, offsetZ, offsetY } }))}
             />
           </div>

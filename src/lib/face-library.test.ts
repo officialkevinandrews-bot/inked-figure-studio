@@ -26,3 +26,14 @@ describe("face expressions", () => {
     expect(variantCount()).toEqual({ eyes: 36, brows: 24, mouths: 36 });
   });
 });
+
+import { DEFAULT_FACE as DF, resolveFace as rf, loadFace as lf, saveFace as sf } from "./face-library";
+describe("face colours", () => {
+  it("defaults to dark eyes and keeps a custom eye colour through save/load", () => {
+    expect(rf(DF).colors.eyes).toBe("#2a2a2a");
+    localStorage.clear();
+    sf("M", { ...DF, colors: { ...DF.colors, eyes: "#2f6fd6" } });
+    expect(rf(lf("M")).colors.eyes).toBe("#2f6fd6");
+    expect(rf(lf("M")).colors.mouth).toBe("#c9636b");
+  });
+});
