@@ -1,10 +1,10 @@
-import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import { Canvas, useFrame, useThree, type ThreeEvent } from "@react-three/fiber";
 import { OrbitControls, TransformControls, Grid } from "@react-three/drei";
-import { useEffect, useImperativeHandle, useMemo, useRef, forwardRef } from "react";
+import { useEffect, useImperativeHandle, useMemo, useRef, useState, forwardRef } from "react";
 import * as THREE from "three";
 import { OutlineEffect } from "three/examples/jsm/effects/OutlineEffect.js";
 import type { Rig } from "@/lib/rig";
-import { IK_EFFECTORS } from "@/lib/ik";
+import { IK_EFFECTORS, effectorForBone } from "@/lib/ik";
 import { captureTransparentSnapshot, type SnapshotOptions, type SnapshotResult } from "@/lib/snapshot";
 import { type ActiveProp, type PropTransform, getPropById } from "@/lib/props";
 
@@ -113,11 +113,14 @@ function Joints({
   rig,
   selected,
   onSelect,
+  onGrab,
 }: {
   rig: Rig;
   selected: string | null;
   onSelect: (b: string) => void;
+  onGrab?: (b: string, e: ThreeEvent<PointerEvent>) => boolean;
 }) {
+  const [hover, setHover] = useState<string | null>(null);
   const refs = useRef<Map<string, THREE.Mesh>>(new Map());
   const names = useMemo(() => Array.from(rig.bones.keys()), [rig]);
   const v = useMemo(() => new THREE.Vector3(), []);
@@ -141,14 +144,26 @@ function Joints({
             renderOrder={999}
             userData={{ noOutline: true }}
             name={`Joint-${n}`}
-            onClick={(e) => {
+            scale={hover === n ? 1.5 : 1}
+            onPointerOver={(e) => {
+              e.stopPropagation();
+              setHover(n);
+              document.body.style.cursor = "grab";
+            }}
+            onPointerOut={() => {
+              setHover((h) => (h === n ? null : h));
+              document.body.style.cursor = "";
+            }}
+            onPointerDown={(e) => {
               e.stopPropagation();
               onSelect(n);
+              onGrab?.(n, e);
             }}
+            onClick={(e) => e.stopPropagation()}
           >
-            <sphereGeometry args={[finger ? 0.008 : 0.022, 12, 12]} />
+            <sphereGeometry args={[finger ? 0.012 : 0.034, 12, 12]} />
             <meshBasicMaterial
-              color={selected === n ? "#e11d2e" : "#1d4ed8"}
+              color={selected === n ? "#e11d2e" : hover === n ? "#f59e0b" : "#1d4ed8"}
               depthTest={false}
               transparent
               opacity={0.85}
@@ -188,9 +203,11 @@ function SceneBridge({
 function CameraController({
   cameraPose,
   fov = 35,
+  locked = false,
 }: {
   cameraPose?: CameraPose | null;
   fov?: number;
+  locked?: boolean;
 }) {
   const { camera } = useThree();
   const controlsRef = useRef<any>(null);
@@ -214,7 +231,100 @@ function CameraController({
     }
   }, [cameraPose, camera]);
 
-  return <OrbitControls ref={controlsRef} makeDefault target={[0, 0.95, 0]} enableDamping />;
+  return <OrbitControls ref={controlsRef} makeDefault target={[0, 0.95, 0]} enableDamping={false} enabled={!locked} />;
+}
+
+/** Press-and-drag posing: drags an IK effector on a camera-facing plane while the camera is frozen. */
+function useDirectDrag(rig: Rig | null, onIkDrag: (eff: string, p: THREE.Vector3) => void, onSelect: (b: string) => void) {
+  const { camera, gl, controls } = useThree();
+  const cb = useRef(onIkDrag);
+  cb.current = onIkDrag;
+  return (boneName: string, e: ThreeEvent<PointerEvent>): boolean => {
+    if (!rig || e.button !== 0) return false;
+    const eff = effectorForBone(boneName);
+    const bone = eff && rig.bones.get(eff);
+    if (!eff || !bone) return false;
+    e.stopPropagation();
+    onSelect(eff);
+    const ctl = controls as unknown as { enabled: boolean } | null;
+    const wasEnabled = ctl?.enabled ?? true;
+    if (ctl) ctl.enabled = false;
+    const start = bone.getWorldPosition(new THREE.Vector3());
+    const normal = camera.getWorldDirection(new THREE.Vector3());
+    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, start);
+    const grabOffset = start.clone().sub(e.point.clone().projectOnPlane(normal).add(normal.clone().multiplyScalar(normal.dot(start))));
+    const ray = new THREE.Raycaster();
+    const hit = new THREE.Vector3();
+    document.body.style.cursor = "grabbing";
+    const move = (ev: PointerEvent) => {
+      const r = gl.domElement.getBoundingClientRect();
+      ray.setFromCamera(
+        new THREE.Vector2(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1),
+        camera
+      );
+      if (ray.ray.intersectPlane(plane, hit)) cb.current(eff, hit.clone().add(grabOffset));
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      if (ctl) ctl.enabled = wasEnabled;
+      document.body.style.cursor = "";
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    return true;
+  };
+}
+
+function PoseScene({
+  model,
+  rig,
+  selected,
+  onSelect,
+  showJoints,
+  ikMode,
+  onIkDrag,
+}: {
+  model: THREE.Object3D | null;
+  rig: Rig | null;
+  selected: string | null;
+  onSelect: (b: string | null) => void;
+  showJoints: boolean;
+  ikMode: boolean;
+  onIkDrag: (eff: string, p: THREE.Vector3) => void;
+}) {
+  const grab = useDirectDrag(rig, onIkDrag, onSelect);
+  const v = useMemo(() => new THREE.Vector3(), []);
+  const nearestBone = (p: THREE.Vector3) => {
+    let best: string | null = null, bd = Infinity;
+    rig?.bones.forEach((b, n) => {
+      if (/Hand(Thumb|Index|Middle|Ring|Pinky)/.test(n)) return;
+      const d = b.getWorldPosition(v).distanceTo(p);
+      if (d < bd) { bd = d; best = n; }
+    });
+    return best as string | null;
+  };
+  return (
+    <>
+      {model && (
+        <primitive
+          object={model}
+          onPointerDown={(e: ThreeEvent<PointerEvent>) => {
+            if (!rig) return;
+            const n = nearestBone(e.point);
+            if (!n) return;
+            if (ikMode) grab(n, e);
+            else { e.stopPropagation(); onSelect(n); }
+          }}
+          onPointerOver={() => rig && (document.body.style.cursor = "grab")}
+          onPointerOut={() => (document.body.style.cursor = "")}
+        />
+      )}
+      {rig && showJoints && (
+        <Joints rig={rig} selected={selected} onSelect={onSelect} onGrab={ikMode ? grab : undefined} />
+      )}
+    </>
+  );
 }
 
 function IkHandle({ bone, onDrag }: { bone: THREE.Bone; onDrag: (p: THREE.Vector3) => void }) {
@@ -333,6 +443,7 @@ export const Viewport = forwardRef<
     onSelectProp?: (id: string | null) => void;
     ikMode?: boolean;
     onIkDrag?: (effector: string, world: THREE.Vector3) => void;
+    cameraLocked?: boolean;
   }
 >(function Viewport(
   {
@@ -348,6 +459,7 @@ export const Viewport = forwardRef<
     onSelectProp = () => {},
     ikMode = false,
     onIkDrag = () => {},
+    cameraLocked = false,
   },
   ref
 ) {
@@ -377,7 +489,15 @@ export const Viewport = forwardRef<
         shadow-mapSize={[1024, 1024]}
       />
       <directionalLight position={[-3, 2, -2]} intensity={0.5} />
-      {model && <primitive object={model} />}
+      <PoseScene
+        model={model}
+        rig={rig}
+        selected={selected}
+        onSelect={onSelect}
+        showJoints={settings.showJoints}
+        ikMode={ikMode}
+        onIkDrag={onIkDrag}
+      />
 
       {/* 3D Props with Bone Parenting */}
       {propsList.map((p) => (
@@ -403,14 +523,13 @@ export const Viewport = forwardRef<
         userData={{ noOutline: true }}
         name="GridHelper"
       />
-      {rig && settings.showJoints && <Joints rig={rig} selected={selected} onSelect={onSelect} />}
       {bone && (!ikMode || !IK_EFFECTORS.includes(selected!)) && (
         <TransformControls object={bone} mode="rotate" space="local" size={0.6} onObjectChange={onBoneDrag} />
       )}
       {bone && ikMode && IK_EFFECTORS.includes(selected!) && (
         <IkHandle key={selected!} bone={bone} onDrag={(p) => onIkDrag(selected!, p)} />
       )}
-      <CameraController cameraPose={cameraPose} fov={fov} />
+      <CameraController cameraPose={cameraPose} fov={fov} locked={cameraLocked} />
     </Canvas>
   );
 });

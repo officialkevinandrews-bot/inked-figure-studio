@@ -228,6 +228,7 @@ export function Studio() {
 
   const [ikMode, setIkMode] = useState(true);
   const [pinFeetOn, setPinFeetOn] = useState(true);
+  const [cameraLocked, setCameraLocked] = useState(false);
   const onIkDrag = (effector: string, world: THREE.Vector3) => {
     if (!rig) return;
     if (effector === "Hips") {
@@ -594,7 +595,7 @@ export function Studio() {
                 {ikMode && (
                   <>
                     <p className="text-[11px] text-muted-foreground">
-                      Click a hand, foot, head or hip joint, then drag the arrows — the arms, legs and spine bend to follow.
+                      Press on any body part and drag — the arms, legs and spine bend to follow. Drag empty space to turn the camera.
                     </p>
                     <label className="flex items-center gap-2 text-xs">
                       <input type="checkbox" checked={pinFeetOn} onChange={(e) => setPinFeetOn(e.target.checked)} />
@@ -602,8 +603,12 @@ export function Studio() {
                     </label>
                   </>
                 )}
-              </div>
 
+                <label className="flex items-center gap-2 text-xs">
+                  <input type="checkbox" checked={cameraLocked} onChange={(e) => setCameraLocked(e.target.checked)} />
+                  Lock camera
+                </label>
+              </div>
               {/* Quick Mirror & Reset Tools */}
               <div className="flex gap-2 border-t border-border p-3">
                 <button
@@ -897,6 +902,7 @@ export function Studio() {
               onBoneDrag={onBoneDrag}
               ikMode={ikMode}
               onIkDrag={onIkDrag}
+              cameraLocked={cameraLocked}
               settings={settings}
               cameraPose={cameraPose}
               propsList={propsList}

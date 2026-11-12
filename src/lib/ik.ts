@@ -59,3 +59,14 @@ export function pinFeet(rig: Rig, feet: Partial<Record<"LeftFoot" | "RightFoot",
   }
   return out;
 }
+
+/** Which draggable effector a pressed bone should move (e.g. grabbing a forearm moves the hand). */
+export function effectorForBone(name: string): string | null {
+  if (IK_EFFECTORS.includes(name)) return name;
+  const side = name.startsWith("Left") ? "Left" : name.startsWith("Right") ? "Right" : "";
+  if (side && /(Shoulder|Arm|ForeArm|Hand)/.test(name)) return `${side}Hand`;
+  if (side && /(UpLeg|Leg|ToeBase)/.test(name)) return `${side}Foot`;
+  if (/^(Spine2|Neck)$/.test(name)) return "Head";
+  if (/^(Spine|Spine1)$/.test(name)) return "Hips";
+  return null;
+}
