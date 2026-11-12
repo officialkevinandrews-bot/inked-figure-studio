@@ -5,6 +5,9 @@ import {
   type FaceCalibration, type FaceConfig, type FaceFx, type ResolvedFace,
 } from "@/lib/face-library";
 import { drawFace } from "@/lib/face-draw";
+import { DEFAULT_FACE_COLORS, FACE_COLOR_LABELS, type FaceColors } from "@/lib/face-library";
+import { SWATCHES } from "@/lib/wardrobe";
+import { ColorPicker } from "./ColorPicker";
 
 function FaceThumb({ face, calib, size = 64 }: { face: ResolvedFace; calib: FaceCalibration; size?: number }) {
   const ref = useRef<HTMLCanvasElement>(null);
@@ -85,6 +88,14 @@ export function FacePanel({ face, onChange, hasHead, onAutoFit }: { face: FaceCo
         <div className="flex flex-wrap gap-1.5">
           {(Object.entries(FACE_FX) as [FaceFx, string][]).map(([id, label]) => <Btn key={id} active={face.fx.includes(id)} onClick={() => onChange(toggleFx(face, id))}>{label}</Btn>)}
         </div>
+      </Section>
+
+      <Section title="Face Colours">
+        {(Object.keys(FACE_COLOR_LABELS) as (keyof FaceColors)[]).map((k) => (
+          <ColorPicker key={k} label={FACE_COLOR_LABELS[k]} value={r.colors[k]} swatches={SWATCHES.face}
+            onChange={(c) => onChange({ ...face, colors: { ...r.colors, [k]: c } })} />
+        ))}
+        <button onClick={() => onChange({ ...face, colors: { ...DEFAULT_FACE_COLORS } })} className="text-[11px] underline">Reset face colours</button>
       </Section>
 
       <Section title="Character Creator">

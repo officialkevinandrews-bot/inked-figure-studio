@@ -8,6 +8,8 @@ import type { Rig } from "@/lib/rig";
 import { IK_EFFECTORS, effectorForBone } from "@/lib/ik";
 import { captureTransparentSnapshot, type SnapshotOptions, type SnapshotResult } from "@/lib/snapshot";
 import { FaceRig } from "./FaceRig";
+import { WardrobeRig, type CustomAsset } from "./WardrobeRig";
+import type { Outfit } from "@/lib/wardrobe";
 import type { FaceConfig } from "@/lib/face-library";
 import { type ActiveProp, type PropTransform, getPropById } from "@/lib/props";
 
@@ -454,6 +456,8 @@ export const Viewport = forwardRef<
     face?: FaceConfig | null;
     faceFitRequest?: number;
     onFaceFit?: (offsetZ: number, offsetY: number) => void;
+    outfit?: Outfit;
+    wardrobeAssets?: Record<string, CustomAsset>;
   }
 >(function Viewport(
   {
@@ -473,6 +477,8 @@ export const Viewport = forwardRef<
     face = null,
     faceFitRequest = 0,
     onFaceFit = () => {},
+    outfit = {},
+    wardrobeAssets = {},
   },
   ref
 ) {
@@ -515,6 +521,8 @@ export const Viewport = forwardRef<
       {face && (
         <FaceRig rig={rig} model={model} face={face} mono={settings.mono} fitRequest={faceFitRequest} onFit={onFaceFit} />
       )}
+
+      <WardrobeRig outfit={outfit} rig={rig} mono={settings.mono} tones={settings.tones} assets={wardrobeAssets} />
 
       {/* 3D Props with Bone Parenting */}
       {propsList.map((p) => (

@@ -52,7 +52,12 @@ export interface FaceConfig {
   overrides: { eye?: EyeState; brow?: BrowState; mouth?: MouthState };
   fx: FaceFx[];
   calib: FaceCalibration;
+  colors: FaceColors;
 }
+
+export interface FaceColors { eyes: string; brows: string; lines: string; mouth: string; blush: string }
+export const DEFAULT_FACE_COLORS: FaceColors = { eyes: "#2a2a2a", brows: "#141414", lines: "#141414", mouth: "#c9636b", blush: "#f06e82" };
+export const FACE_COLOR_LABELS: Record<keyof FaceColors, string> = { eyes: "Eye colour", brows: "Eyebrows", lines: "Eye lines", mouth: "Mouth", blush: "Blush" };
 
 export const DEFAULT_CALIBRATION: FaceCalibration = {
   offsetX: 0, offsetY: 0.08, offsetZ: 0.1, size: 0.2, tilt: 0, curve: 0.35,
@@ -64,6 +69,7 @@ export const DEFAULT_FACE: FaceConfig = {
   eyeStyle: "sharp", browStyle: "thin", mouthStyle: "line",
   expression: "Neutral", overrides: {}, fx: [],
   calib: { ...DEFAULT_CALIBRATION },
+  colors: { ...DEFAULT_FACE_COLORS },
 };
 
 export interface CharacterLook { name: string; eyeStyle: EyeStyle; browStyle: BrowStyle; mouthStyle: MouthStyle }
@@ -75,7 +81,7 @@ export const CHARACTER_LOOKS: CharacterLook[] = [
   { name: "Elegant", eyeStyle: "almond", browStyle: "arched", mouthStyle: "soft" },
 ];
 
-export interface ResolvedFace { eyeStyle: EyeStyle; browStyle: BrowStyle; mouthStyle: MouthStyle; eye: EyeState; brow: BrowState; mouth: MouthState; fx: FaceFx[] }
+export interface ResolvedFace { eyeStyle: EyeStyle; browStyle: BrowStyle; mouthStyle: MouthStyle; eye: EyeState; brow: BrowState; mouth: MouthState; fx: FaceFx[]; colors: FaceColors }
 
 export function resolveFace(c: FaceConfig): ResolvedFace {
   const ex = EXPRESSIONS[c.expression ?? "Neutral"] ?? EXPRESSIONS["Neutral"]!;
@@ -83,6 +89,7 @@ export function resolveFace(c: FaceConfig): ResolvedFace {
     eyeStyle: c.eyeStyle, browStyle: c.browStyle, mouthStyle: c.mouthStyle,
     eye: c.overrides.eye ?? ex.eye, brow: c.overrides.brow ?? ex.brow, mouth: c.overrides.mouth ?? ex.mouth,
     fx: c.fx,
+    colors: { ...DEFAULT_FACE_COLORS, ...(c.colors ?? {}) },
   };
 }
 
@@ -116,10 +123,10 @@ export function loadFace(model: string): FaceConfig {
     const raw = localStorage.getItem(KEY + model);
     if (raw) {
       const p = JSON.parse(raw) as Partial<FaceConfig>;
-      return { ...DEFAULT_FACE, ...p, calib: { ...DEFAULT_CALIBRATION, ...(p.calib ?? {}) }, overrides: p.overrides ?? {}, fx: p.fx ?? [] };
+      return { ...DEFAULT_FACE, ...p, calib: { ...DEFAULT_CALIBRATION, ...(p.calib ?? {}) }, overrides: p.overrides ?? {}, fx: p.fx ?? [], colors: { ...DEFAULT_FACE_COLORS, ...(p.colors ?? {}) } };
     }
   } catch { /* ignore */ }
-  return { ...DEFAULT_FACE, calib: { ...DEFAULT_CALIBRATION } };
+  return { ...DEFAULT_FACE, calib: { ...DEFAULT_CALIBRATION }, colors: { ...DEFAULT_FACE_COLORS } };
 }
 export function saveFace(model: string, c: FaceConfig) {
   try { localStorage.setItem(KEY + model, JSON.stringify(c)); } catch { /* ignore */ }
