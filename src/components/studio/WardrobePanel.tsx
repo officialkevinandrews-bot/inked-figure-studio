@@ -12,9 +12,9 @@ const FIT: [keyof SlotFit, string, number, number, number][] = [
   ["scale", "Size", 0.5, 2, 0.01], ["inflate", "Looser / tighter", 0.7, 1.6, 0.01],
 ];
 
-export function WardrobePanel({ outfit, onChange, assets, onAddAsset, hasRig }: {
+export function WardrobePanel({ outfit, onChange, assets, onAddAsset, hasRig, onOpenExtractor }: {
   outfit: Outfit; onChange: (o: Outfit) => void; assets: Record<string, CustomAsset>;
-  onAddAsset: (a: CustomAsset) => void; hasRig: boolean;
+  onAddAsset: (a: CustomAsset) => void; hasRig: boolean; onOpenExtractor?: () => void;
 }) {
   const [slot, setSlot] = useState<SlotId>("hair");
   const [busy, setBusy] = useState(""); const [err, setErr] = useState("");
@@ -44,6 +44,12 @@ export function WardrobePanel({ outfit, onChange, assets, onAddAsset, hasRig }: 
           ))}
           <button onClick={() => onChange({})} className="rounded-sm border-2 border-destructive/60 px-1.5 py-1 text-[11px] font-semibold text-destructive hover:bg-destructive/10">Undress all</button>
         </div>
+      </div>
+
+      <div className="space-y-1 border-b border-border p-3">
+        <h3 className="font-display text-sm uppercase tracking-wide">Clothing from outfit</h3>
+        <p className="text-[11px] text-muted-foreground">Load a fully dressed version of your character and pull out every item at once.</p>
+        <button onClick={onOpenExtractor} className="w-full rounded-sm border-2 border-foreground bg-foreground px-2 py-1.5 text-xs font-semibold text-background">✂️ Make clothing from outfit</button>
       </div>
 
       <div className="grid grid-cols-5 gap-1 border-b border-border p-2">

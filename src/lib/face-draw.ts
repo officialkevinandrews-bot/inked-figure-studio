@@ -1,4 +1,6 @@
 import { DEFAULT_FACE_COLORS, type FaceColors } from "./face-library";
+import type { FacePack } from "./face-parts";
+import { drawPackParts } from "./face-pack-draw";
 import type { BrowState, BrowStyle, EyeState, EyeStyle, FaceCalibration, MouthState, MouthStyle, ResolvedFace } from "./face-library";
 
 type C = CanvasRenderingContext2D;
@@ -146,7 +148,7 @@ function drawFx(c: C, fx: string, k: FaceCalibration, mono: boolean) {
 }
 
 /** Composes the full face onto a 512×512 transparent canvas. */
-export function drawFace(c: C, f: ResolvedFace, k: FaceCalibration, opts: { mono: boolean; guide: boolean }) {
+export function drawFace(c: C, f: ResolvedFace, k: FaceCalibration, opts: { mono: boolean; guide: boolean; pack?: FacePack | null }) {
   c.clearRect(0, 0, 512, 512);
   setFacePalette(f.colors ?? DEFAULT_FACE_COLORS, opts.mono);
   if (opts.guide) {
@@ -156,10 +158,11 @@ export function drawFace(c: C, f: ResolvedFace, k: FaceCalibration, opts: { mono
   }
   if (f.fx.includes("gloom")) drawFx(c, "gloom", k, opts.mono);
   if (f.fx.includes("blush")) drawFx(c, "blush", k, opts.mono);
-  for (const side of [1, -1] as const) {
+  if (opts.pack) drawPackParts(c, opts.pack, f, k, opts.mono);
+  else for (const side of [1, -1] as const) {
     c.save(); c.translate(256 + side * k.eyeSpacing, k.eyeY); c.scale(side * k.partScale, k.partScale); drawEye(c, f.eyeStyle, f.eye); c.restore();
     c.save(); c.translate(256 + side * (k.eyeSpacing + 4), k.eyeY - k.browGap); c.scale(side * k.partScale, k.partScale); drawBrow(c, f.browStyle, f.brow, side); c.restore();
   }
-  c.save(); c.translate(256, k.mouthY); c.scale(k.partScale, k.partScale); drawMouth(c, f.mouthStyle, f.mouth); c.restore();
+  if (!opts.pack) { c.save(); c.translate(256, k.mouthY); c.scale(k.partScale, k.partScale); drawMouth(c, f.mouthStyle, f.mouth); c.restore(); }
   for (const fx of ["tears", "sweat", "anger", "sparkle"]) if (f.fx.includes(fx as never)) drawFx(c, fx, k, opts.mono);
 }

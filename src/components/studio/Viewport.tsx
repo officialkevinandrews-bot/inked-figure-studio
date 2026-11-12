@@ -8,6 +8,7 @@ import type { Rig } from "@/lib/rig";
 import { IK_EFFECTORS, effectorForBone } from "@/lib/ik";
 import { captureTransparentSnapshot, type SnapshotOptions, type SnapshotResult } from "@/lib/snapshot";
 import { FaceRig } from "./FaceRig";
+import type { FacePack } from "@/lib/face-parts";
 import { WardrobeRig, type CustomAsset } from "./WardrobeRig";
 import type { Outfit } from "@/lib/wardrobe";
 import type { FaceConfig } from "@/lib/face-library";
@@ -454,6 +455,7 @@ export const Viewport = forwardRef<
     onIkDrag?: (effector: string, world: THREE.Vector3) => void;
     cameraLocked?: boolean;
     face?: FaceConfig | null;
+    facePack?: FacePack | null;
     faceFitRequest?: number;
     onFaceFit?: (offsetZ: number, offsetY: number) => void;
     outfit?: Outfit;
@@ -475,6 +477,7 @@ export const Viewport = forwardRef<
     onIkDrag = () => {},
     cameraLocked = false,
     face = null,
+    facePack = null,
     faceFitRequest = 0,
     onFaceFit = () => {},
     outfit = {},
@@ -519,7 +522,7 @@ export const Viewport = forwardRef<
       />
 
       {face && (
-        <FaceRig rig={rig} model={model} face={face} mono={settings.mono} fitRequest={faceFitRequest} onFit={onFaceFit} />
+        <FaceRig rig={rig} model={model} face={face} pack={facePack} mono={settings.mono} fitRequest={faceFitRequest} onFit={onFaceFit} />
       )}
 
       <WardrobeRig outfit={outfit} rig={rig} mono={settings.mono} tones={settings.tones} assets={wardrobeAssets} />

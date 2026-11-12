@@ -1,7 +1,9 @@
 import { FacePanel } from "./FacePanel";
+import { loadPacks, savePacks, type FacePack } from "@/lib/face-parts";
+import { ExtractOutfitModal } from "./ExtractOutfitModal";
 import { WardrobePanel } from "./WardrobePanel";
 import type { CustomAsset } from "./WardrobeRig";
-import { loadOutfit, saveOutfit, type Outfit } from "@/lib/wardrobe";
+import { equip, loadOutfit, saveOutfit, type Outfit } from "@/lib/wardrobe";
 import { DEFAULT_FACE, loadFace, saveFace, type FaceConfig } from "@/lib/face-library";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
@@ -117,6 +119,11 @@ export function Studio() {
   // Navigation & Multi-Page Chapter State
   const [face, setFace] = useState<FaceConfig>(DEFAULT_FACE);
   const [faceFitRequest, setFaceFitRequest] = useState(0);
+  const [facePacks, setFacePacks] = useState<FacePack[]>([]);
+  useEffect(() => { setFacePacks(loadPacks()); }, []);
+  const updateFacePacks = (p: FacePack[]) => { setFacePacks(p); if (!savePacks(p)) alert("Browser storage is full; this face pack will only last until you reload."); };
+  const activeFacePack = facePacks.find((p) => p.id === face.pack) ?? null;
+  const [extractOpen, setExtractOpen] = useState(false);
   const faceModelRef = useRef<string>("");
   useEffect(() => {
     if (!modelName) return;
@@ -559,6 +566,7 @@ export function Studio() {
               assets={wardrobeAssets}
               onAddAsset={(a) => setWardrobeAssets((m) => ({ ...m, [a.id]: a }))}
               hasRig={!!rig}
+              onOpenExtractor={() => setExtractOpen(true)}
             />
           ) : leftTab === "face" ? (
             <FacePanel
@@ -566,6 +574,8 @@ export function Studio() {
               onChange={setFace}
               hasHead={!!rig?.bones.get("Head")}
               onAutoFit={() => setFaceFitRequest((n) => n + 1)}
+              packs={facePacks}
+              onPacksChange={updateFacePacks}
             />
           ) : leftTab === "poses" ? (
             <>
@@ -976,6 +986,7 @@ export function Studio() {
               selectedPropId={selectedPropId}
               onSelectProp={setSelectedPropId}
               face={face}
+              facePack={activeFacePack}
               faceFitRequest={faceFitRequest}
               outfit={outfit}
               wardrobeAssets={wardrobeAssets}
@@ -983,6 +994,16 @@ export function Studio() {
             />
           </div>
 
+          {extractOpen && (
+            <ExtractOutfitModal
+              onClose={() => setExtractOpen(false)}
+              onExtract={(items) => {
+                setWardrobeAssets((m) => { const n = { ...m }; items.forEach((a) => { n[a.id] = a; }); return n; });
+                setOutfit((o) => { let n = { ...o }; items.forEach((a) => { n = equip(n, a.slot, a.id); }); return n; });
+                setExtractOpen(false);
+              }}
+            />
+          )}
           {(dragOver || loading || error) && (
             <div className="pointer-events-none absolute inset-4 flex items-center justify-center bg-background/85 backdrop-blur-xs">
               <p className={`font-display text-2xl ${error ? "text-destructive" : ""}`}>

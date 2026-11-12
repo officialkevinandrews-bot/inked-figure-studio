@@ -49,6 +49,7 @@ export interface FaceConfig {
   fitted?: boolean; // auto-fit has run for this model
   eyeStyle: EyeStyle; browStyle: BrowStyle; mouthStyle: MouthStyle;
   expression: string | null;
+  pack?: string | null; // custom uploaded face pack id (null = procedural parts)
   overrides: { eye?: EyeState; brow?: BrowState; mouth?: MouthState };
   fx: FaceFx[];
   calib: FaceCalibration;

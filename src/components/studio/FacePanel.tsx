@@ -8,13 +8,18 @@ import { drawFace } from "@/lib/face-draw";
 import { DEFAULT_FACE_COLORS, FACE_COLOR_LABELS, type FaceColors } from "@/lib/face-library";
 import { SWATCHES } from "@/lib/wardrobe";
 import { ColorPicker } from "./ColorPicker";
+import { removePack, upsertPack, type FacePack } from "@/lib/face-parts";
+import { onSpritesLoaded, preloadPack } from "@/lib/face-pack-draw";
+import { FaceSlicerModal } from "./FaceSlicerModal";
 
-function FaceThumb({ face, calib, size = 64 }: { face: ResolvedFace; calib: FaceCalibration; size?: number }) {
+export function FaceThumb({ face, calib, size = 64, pack = null }: { face: ResolvedFace; calib: FaceCalibration; size?: number; pack?: FacePack | null }) {
   const ref = useRef<HTMLCanvasElement>(null);
-  const key = JSON.stringify([face, calib]);
+  const [loaded, setLoaded] = useState(0);
+  useEffect(() => { if (!pack) return; preloadPack(pack); return onSpritesLoaded(() => setLoaded((n) => n + 1)); }, [pack]);
+  const key = JSON.stringify([face, calib, pack?.id, loaded]);
   useEffect(() => {
     const c = ref.current?.getContext("2d"); if (!c) return;
-    c.save(); c.clearRect(0, 0, 512, 512); drawFace(c, face, calib, { mono: false, guide: false }); c.restore();
+    c.save(); c.clearRect(0, 0, 512, 512); drawFace(c, face, calib, { mono: false, guide: false, pack }); c.restore();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
   return <canvas ref={ref} width={512} height={512} style={{ width: size, height: size }} className="mx-auto" />;
@@ -35,8 +40,13 @@ const SLIDERS: [keyof FaceCalibration, string, number, number, number][] = [
   ["mouthY", "Mouth height", 300, 470, 1], ["partScale", "Feature size", 0.5, 1.8, 0.01],
 ];
 
-export function FacePanel({ face, onChange, hasHead, onAutoFit }: { face: FaceConfig; onChange: (f: FaceConfig) => void; hasHead: boolean; onAutoFit: () => void }) {
+export function FacePanel({ face, onChange, hasHead, onAutoFit, packs = [], onPacksChange = () => {} }: {
+  face: FaceConfig; onChange: (f: FaceConfig) => void; hasHead: boolean; onAutoFit: () => void;
+  packs?: FacePack[]; onPacksChange?: (p: FacePack[]) => void;
+}) {
   const [part, setPart] = useState<"eye" | "brow" | "mouth">("eye");
+  const [slicer, setSlicer] = useState(false);
+  const pack = packs.find((p) => p.id === face.pack) ?? null;
   const r = resolveFace(face);
   const set = (p: Partial<FaceConfig>) => onChange({ ...face, ...p });
   const setK = (k: keyof FaceCalibration, v: number) => onChange({ ...face, calib: { ...face.calib, [k]: v } });
@@ -47,7 +57,7 @@ export function FacePanel({ face, onChange, hasHead, onAutoFit }: { face: FaceCo
   return (
     <div className="flex-1 overflow-y-auto text-sm" data-testid="face-panel">
       <div className="flex items-center gap-3 border-b border-border p-3">
-        <FaceThumb face={r} calib={face.calib} size={72} />
+        <FaceThumb face={r} calib={face.calib} size={72} pack={pack} />
         <div className="space-y-1">
           <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={face.visible} onChange={(e) => set({ visible: e.target.checked })} /> Show face</label>
           <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={face.guide} onChange={(e) => set({ guide: e.target.checked })} /> Alignment guide</label>
@@ -60,7 +70,7 @@ export function FacePanel({ face, onChange, hasHead, onAutoFit }: { face: FaceCo
           {Object.keys(EXPRESSIONS).map((name) => (
             <button key={name} onClick={() => onChange(applyExpression(face, name))}
               className={`rounded-sm border-2 p-1 text-[10px] font-semibold ${face.expression === name && !Object.keys(face.overrides).length ? "border-foreground bg-accent" : "border-border hover:border-foreground"}`}>
-              <FaceThumb face={resolveFace(applyExpression(face, name))} calib={face.calib} size={52} />
+              <FaceThumb face={resolveFace(applyExpression(face, name))} calib={face.calib} size={52} pack={pack} />
               {name}
             </button>
           ))}
@@ -77,7 +87,7 @@ export function FacePanel({ face, onChange, hasHead, onAutoFit }: { face: FaceCo
             return (
               <button key={id} onClick={() => onChange(setPartOverride(face, part, id))} aria-label={`${part} ${label}`}
                 className={`rounded-sm border-2 p-1 text-[10px] ${r[part] === id ? "border-foreground bg-accent font-semibold" : "border-border hover:border-foreground"}`}>
-                <FaceThumb face={preview} calib={face.calib} size={52} />{label}
+                <FaceThumb face={preview} calib={face.calib} size={52} pack={pack} />{label}
               </button>
             );
           })}
@@ -96,6 +106,28 @@ export function FacePanel({ face, onChange, hasHead, onAutoFit }: { face: FaceCo
             onChange={(c) => onChange({ ...face, colors: { ...r.colors, [k]: c } })} />
         ))}
         <button onClick={() => onChange({ ...face, colors: { ...DEFAULT_FACE_COLORS } })} className="text-[11px] underline">Reset face colours</button>
+      </Section>
+
+      <Section title="My Face Packs">
+        <p className="text-[11px] text-muted-foreground">Upload a neutral face drawn on the template. It's cut into parts, and every expression is bent from it automatically.</p>
+        <div className="grid grid-cols-3 gap-1.5" data-testid="face-packs">
+          <button onClick={() => set({ pack: null })} className={`rounded-sm border-2 p-1 text-[10px] font-semibold ${!pack ? "border-foreground bg-accent" : "border-border hover:border-foreground"}`}>
+            <FaceThumb face={resolveFace({ ...face, expression: "Neutral", overrides: {}, fx: [] })} calib={face.calib} size={52} />Drawn parts
+          </button>
+          {packs.map((p) => (
+            <div key={p.id} className={`relative rounded-sm border-2 p-1 text-center text-[10px] font-semibold ${pack?.id === p.id ? "border-foreground bg-accent" : "border-border hover:border-foreground"}`}>
+              <button onClick={() => set({ pack: p.id })} aria-label={`Use face ${p.name}`} className="w-full">
+                <FaceThumb face={resolveFace({ ...face, expression: "Neutral", overrides: {}, fx: [] })} calib={face.calib} size={52} pack={p} />
+                <span className="line-clamp-2">{p.name}</span>
+              </button>
+              <button aria-label={`Delete face ${p.name}`} onClick={() => { if (confirm(`Delete "${p.name}"?`)) { onPacksChange(removePack(packs, p.id)); if (face.pack === p.id) set({ pack: null }); } }}
+                className="absolute right-0.5 top-0 text-xs text-destructive">×</button>
+            </div>
+          ))}
+        </div>
+        <Btn onClick={() => setSlicer(true)}>+ Upload neutral face</Btn>
+        {slicer && <FaceSlicerModal calib={face.calib} onClose={() => setSlicer(false)}
+          onSave={(p) => { onPacksChange(upsertPack(packs, p)); onChange({ ...applyExpression(face, "Neutral"), pack: p.id }); setSlicer(false); }} />}
       </Section>
 
       <Section title="Character Creator">

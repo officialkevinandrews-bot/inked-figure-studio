@@ -4,6 +4,9 @@ import * as THREE from "three";
 import type { Rig } from "@/lib/rig";
 import { resolveFace, type FaceConfig } from "@/lib/face-library";
 import { drawFace } from "@/lib/face-draw";
+import type { FacePack } from "@/lib/face-parts";
+import { onSpritesLoaded } from "@/lib/face-pack-draw";
+import { useState } from "react";
 
 const D = THREE.MathUtils.DEG2RAD;
 
@@ -25,7 +28,8 @@ export function faceFrame(rig: Rig, pos: THREE.Vector3, quat: THREE.Quaternion) 
   return true;
 }
 
-export function FaceRig({ rig, model, face, mono, fitRequest, onFit }: {
+export function FaceRig({ rig, model, face, mono, fitRequest, onFit, pack = null }: {
+  pack?: FacePack | null;
   rig: Rig | null; model: THREE.Object3D | null; face: FaceConfig; mono: boolean;
   fitRequest: number; onFit: (offsetZ: number, offsetY: number) => void;
 }) {
@@ -35,10 +39,12 @@ export function FaceRig({ rig, model, face, mono, fitRequest, onFit }: {
   const geo = useMemo(() => bentPlane(face.calib.curve), [face.calib.curve]);
   useEffect(() => () => geo.dispose(), [geo]);
   const resolved = resolveFace(face);
-  const key = JSON.stringify([resolved, face.calib, mono, face.guide]);
+  const [loaded, setLoaded] = useState(0);
+  useEffect(() => onSpritesLoaded(() => setLoaded((n) => n + 1)), []);
+  const key = JSON.stringify([resolved, face.calib, mono, face.guide, pack?.id, loaded]);
   useEffect(() => {
     const c = canvas.getContext("2d")!;
-    drawFace(c, resolved, face.calib, { mono, guide: face.guide });
+    drawFace(c, resolved, face.calib, { mono, guide: face.guide, pack });
     tex.needsUpdate = true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
