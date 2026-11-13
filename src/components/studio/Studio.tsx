@@ -8,8 +8,20 @@ import {
   renameOutfit, saveCharacters, updateActiveOutfit, upsertCharacter, type Character,
 } from "@/lib/characters";
 import type { VRM } from "@pixiv/three-vrm";
-import { getFile, putFile } from "@/lib/file-store";
-import { builtinModel, uploadedBodies } from "@/lib/base-models";
+import { deleteFile, getFile, putFile } from "@/lib/file-store";
+import {
+  BUILTIN_MODELS,
+  builtinModel,
+  detectSkinMaterials,
+  loadBaseModels,
+  reconcileBaseModels,
+  removeBaseModel,
+  renameBaseModel,
+  saveBaseModels,
+  uploadedBodies,
+  upsertBaseModel,
+  type CustomBaseModel,
+} from "@/lib/base-models";
 import { b64ToBlob, blobToB64, mergeById, parseBackup, referencedFileIds, type StudioBackup } from "@/lib/backup";
 import {
   createDefaultPages,
@@ -30,7 +42,15 @@ import { generateAiPose } from "@/lib/ai-pose.functions";
 import { loadWardrobeAsset } from "./WardrobeRig";
 import type { CustomAsset } from "./WardrobeRig";
 import { equip, loadOutfit, saveOutfit, type Outfit } from "@/lib/wardrobe";
-import { DEFAULT_FACE, loadFace, saveFace, type FaceConfig } from "@/lib/face-library";
+import {
+  DEFAULT_FACE,
+  loadFace,
+  loadModelCalibration,
+  saveFace,
+  saveModelCalibration,
+  type FaceCalibration,
+  type FaceConfig,
+} from "@/lib/face-library";
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import {
@@ -39,9 +59,11 @@ import {
   mirrorBoneName,
   mirrorPose,
   offsetFromBone,
+  rigCoverage,
   type Pose,
   type PoseData,
   type Rig,
+  type RigCoverage,
   type Rot,
 } from "@/lib/rig";
 import { CATEGORIES, POSES } from "@/lib/poses";
@@ -240,6 +262,9 @@ export function Studio() {
   const [face, setFace] = useState<FaceConfig>(DEFAULT_FACE);
   const [faceFitRequest, setFaceFitRequest] = useState(0);
   const [facePacks, setFacePacks] = useState<FacePack[]>([]);
+  const [baseModels, setBaseModels] = useState<CustomBaseModel[]>([]);
+  const [rigInfo, setRigInfo] = useState<RigCoverage | null>(null);
+  const [materialInfo, setMaterialInfo] = useState<{ all: string[]; targets: string[]; isSingleMaterial: boolean } | null>(null);
   useEffect(() => { setFacePacks(loadPacks()); }, []);
   const updateFacePacks = (p: FacePack[]) => { setFacePacks(p); if (!savePacks(p)) alert("Browser storage is full; this face pack will only last until you reload."); };
   const activeFacePack = facePacks.find((p) => p.id === face.pack) ?? null;
@@ -250,15 +275,19 @@ export function Studio() {
   useEffect(() => {
     if (!modelName || charRef.current) return;
     faceModelRef.current = modelName;
-    setFace(loadFace(modelName));
-  }, [modelName]);
+    const loaded = loadFace(modelName);
+    const cachedCalib = loadModelCalibration(activeActorMeta.modelKey);
+    setFace(cachedCalib ? { ...loaded, fitted: true, calib: cachedCalib } : loaded);
+  }, [modelName, activeActorMeta.modelKey]);
   useEffect(() => {
     if (faceModelRef.current === modelName && modelName && !charRef.current) saveFace(modelName, face);
   }, [face, modelName]);
-  // First time a model is seen, line the face up with its skin automatically.
+  // First time a body is loaded (demo or character), run adaptive raycast auto-fit to hug its head mesh.
   useEffect(() => {
-    if (rig && !face.fitted && faceModelRef.current === modelName) setFaceFitRequest((n) => n + 1);
-  }, [rig, face.fitted, modelName]);
+    if (rig && !loading && !face.fitted && activeActorMeta.modelKey === loadedModelKey.current) {
+      setFaceFitRequest((n) => n + 1);
+    }
+  }, [rig, loading, face.fitted, activeActorMeta.modelKey]);
   // Outfit (hair, clothes, accessories) saved per model; imported files stay in memory.
   const [outfit, setOutfit] = useState<Outfit>({});
   const [wardrobeAssets, setWardrobeAssets] = useState<Record<string, CustomAsset>>({});
@@ -379,24 +408,26 @@ export function Studio() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const load = useCallback(async (url: string, ext: string, name: string) => {
+  const load = useCallback(async (url: string, ext: string, name: string, fallbackUrl?: string) => {
     setLoading(true);
     setError("");
     try {
-      const char: LoadedCharacter = await loadCharacterModel(url, ext, name);
+      const char: LoadedCharacter = await loadCharacterModel(url, ext, name, fallbackUrl);
       setModel(char.object);
       setRig(char.rig);
+      setRigInfo(char.rig ? rigCoverage(char.rig) : null);
+      setMaterialInfo(detectSkinMaterials(char.object));
       setVrm(char.vrm ?? null);
       setModelName(name);
       setModelType(char.type);
       setSelected(null);
       setPoseHist(resetHistory({ pose: {}, hipsDrop: 0 }));
       setActivePose(null);
-      return true;
+      return char;
     } catch (e) {
       console.error(e);
       setError(e instanceof Error ? e.message : "Could not load 3D model.");
-      return false;
+      return null;
     } finally {
       setLoading(false);
     }
@@ -406,14 +437,29 @@ export function Studio() {
   const loadedModelKey = useRef<string>("");
   useEffect(() => {
     loadedModelKey.current = DUMMY_MODEL;
-    load("/models/xbot.glb", "glb", "X Bot (demo)");
+    const xbot = builtinModel(DUMMY_MODEL);
+    load(xbot?.url ?? "/models/xbot.glb", xbot?.ext ?? "glb", xbot?.name ?? "X Bot (demo)", xbot?.fallbackUrl);
   }, [load]);
 
-  // ---------- Characters ----------
+  // ---------- Characters & Persistent Base Model Library ----------
   const [characters, setCharacters] = useState<Character[]>([]);
   const [activeCharId, setActiveCharId] = useState<string | null>(null);
   const [charLoaded, setCharLoaded] = useState<string | null>(null);
-  useEffect(() => { setCharacters(loadCharacters()); }, []);
+  const commitBaseModels = useCallback((fn: (list: CustomBaseModel[]) => CustomBaseModel[]) => {
+    setBaseModels((cur) => {
+      const next = fn(cur);
+      saveBaseModels(next);
+      return next;
+    });
+  }, []);
+  useEffect(() => {
+    const loadedChars = loadCharacters();
+    setCharacters(loadedChars);
+    const lib = loadBaseModels();
+    const merged = reconcileBaseModels(lib, loadedChars);
+    setBaseModels(merged);
+    if (merged !== lib) saveBaseModels(merged);
+  }, []);
   const activeChar = characters.find((c) => c.id === activeCharId) ?? null;
   const commitChars = (fn: (list: Character[]) => Character[]) =>
     setCharacters((list) => { const n = fn(list); if (!saveCharacters(n)) alert("Browser storage is full; recent character changes may not be saved."); return n; });
@@ -430,19 +476,30 @@ export function Studio() {
     if (loadedModelKey.current !== key) {
       let ok = false;
       const bm = builtinModel(key);
-      if (bm) ok = await load(bm.url, bm.ext, bm.name);
+      if (bm) ok = !!(await load(bm.url, bm.ext, bm.name, bm.fallbackUrl));
       else {
         const f = await getFile(key).catch(() => null);
-        if (f) ok = await load(URL.createObjectURL(f.blob), f.name.split(".").pop()?.toLowerCase() ?? "glb", f.name);
-        else setError("This character's body file is missing from this browser. Upload it again in Create Character.");
+        if (f) {
+          const objUrl = URL.createObjectURL(f.blob);
+          try {
+            ok = !!(await load(objUrl, f.name.split(".").pop()?.toLowerCase() ?? "glb", f.name));
+          } finally {
+            URL.revokeObjectURL(objUrl);
+          }
+        } else setError("This character's body file is missing from this browser. Upload it again in Create Character.");
       }
       if (ok) loadedModelKey.current = key;
     }
     if (!c) {
-      // Back to the plain test dummy with its own saved face/outfit.
+      // Back to the plain built-in model with its own saved face/outfit.
+      const bm = builtinModel(key);
+      const fallbackName = bm?.name ?? "X Bot (demo)";
       faceModelRef.current = ""; outfitModelRef.current = "";
-      setFace(loadFace("X Bot (demo)")); setOutfit(loadOutfit("X Bot (demo)")); setPropsList([]);
-      faceModelRef.current = "X Bot (demo)"; outfitModelRef.current = "X Bot (demo)";
+      const loadedFace = loadFace(fallbackName);
+      const cachedCalib = loadModelCalibration(key);
+      setFace(cachedCalib ? { ...loadedFace, fitted: true, calib: cachedCalib } : loadedFace);
+      setOutfit(loadOutfit(fallbackName)); setPropsList([]);
+      faceModelRef.current = fallbackName; outfitModelRef.current = fallbackName;
       return;
     }
     const needed = customItemIds(c);
@@ -458,7 +515,8 @@ export function Studio() {
     setWardrobeAssets((m) => ({ ...found, ...m }));
     const o = c.outfits.find((x) => x.id === (outfitId ?? c.activeOutfit)) ?? activeOutfitOf(c);
     const outfitClean = Object.fromEntries(Object.entries(o.outfit).filter(([, v]) => v && (!v.itemId.startsWith("custom:") || found[v.itemId])));
-    setFace(c.face);
+    const cachedCalib = loadModelCalibration(key);
+    setFace(c.face.fitted ? c.face : cachedCalib ? { ...c.face, fitted: true, calib: cachedCalib } : c.face);
     setOutfit(outfitClean);
     setPropsList(o.props.map((p) => ({ ...p })));
     setSelectedPropId(null);
@@ -484,45 +542,188 @@ export function Studio() {
   };
 
   const createCharacter = () => {
+    const curKey = loadedModelKey.current || DUMMY_MODEL;
+    const curLib = baseModels.find((m) => m.key === curKey);
+    const curBuiltin = builtinModel(curKey);
+    const curName = curBuiltin?.name ?? curLib?.name ?? (modelName || "X Bot (demo)");
+    const cachedCalib = loadModelCalibration(curKey);
     const c = newCharacter(`Character ${characters.length + 1}`);
-    // Start from whatever is on the dummy now so nothing is lost.
-    const seeded = loadedModelKey.current === DUMMY_MODEL && !activeChar
-      ? updateActiveOutfit({ ...c, face: { ...face, expression: "Neutral", overrides: {}, fx: [] } }, { outfit, props: propsList })
-      : c;
+    const base: Character = {
+      ...c,
+      model: curKey,
+      modelName: curName,
+      skinMaterials: curLib?.skinMaterials,
+      face: !activeChar
+        ? { ...face, expression: "Neutral", overrides: {}, fx: [], ...(cachedCalib && !face.fitted ? { fitted: true, calib: cachedCalib } : {}) }
+        : { ...c.face, ...(cachedCalib ? { fitted: true, calib: cachedCalib } : {}) },
+    };
+    const seeded = !activeChar ? updateActiveOutfit(base, { outfit, props: propsList }) : base;
     commitChars((l) => upsertCharacter(l, seeded));
     showCharacter(seeded);
   };
 
   const setCharacterBody = async (f: File | string | null) => {
-    if (!activeChar) return;
-    let model = DUMMY_MODEL, modelName = "X Bot (demo)";
+    let targetKey = DUMMY_MODEL;
+    let targetName = "X Bot (demo)";
+    let customEntry: CustomBaseModel | null = null;
+
     if (typeof f === "string") {
-      model = f;
-      modelName = builtinModel(f)?.name ?? characters.find((c) => c.model === f)?.modelName ?? f;
+      targetKey = f;
+      targetName =
+        builtinModel(f)?.name ??
+        baseModels.find((m) => m.key === f)?.name ??
+        characters.find((c) => c.model === f)?.modelName ??
+        f;
     } else if (f) {
-      model = `file:${crypto.randomUUID()}`; modelName = f.name;
-      try { await putFile(model, f, f.name); } catch { setError("Could not save that file in this browser."); return; }
+      targetKey = `file:${crypto.randomUUID()}`;
+      targetName = f.name;
+      try {
+        await putFile(targetKey, f, f.name, "body");
+      } catch {
+        setError("Could not save that file in this browser.");
+        return;
+      }
+      const ext = f.name.split(".").pop()?.toLowerCase() ?? "glb";
+      customEntry = { id: targetKey, key: targetKey, name: targetName, ext, addedAt: Date.now() };
+      commitBaseModels((list) => upsertBaseModel(list, customEntry!));
     }
-    // A new body needs the face lined up again.
-    const updated: Character = { ...activeChar, model, modelName, face: { ...activeChar.face, fitted: false } };
+
+    const cachedCalib = loadModelCalibration(targetKey);
+    const savedLib = baseModels.find((m) => m.key === targetKey);
+
+    if (!activeChar) {
+      setActiveActorMeta((m) => ({ ...m, modelKey: targetKey }));
+      const bm = builtinModel(targetKey);
+      let loadedChar: LoadedCharacter | null = null;
+      if (bm) loadedChar = await load(bm.url, bm.ext, bm.name, bm.fallbackUrl);
+      else {
+        const stored = await getFile(targetKey).catch(() => null);
+        if (stored) {
+          const objUrl = URL.createObjectURL(stored.blob);
+          try {
+            loadedChar = await load(objUrl, stored.name.split(".").pop()?.toLowerCase() ?? "glb", targetName);
+          } finally {
+            URL.revokeObjectURL(objUrl);
+          }
+        }
+      }
+      if (loadedChar) {
+        loadedModelKey.current = targetKey;
+        if (customEntry) {
+          const cov = loadedChar.rig ? rigCoverage(loadedChar.rig) : null;
+          const mats = detectSkinMaterials(loadedChar.object);
+          commitBaseModels((list) =>
+            upsertBaseModel(list, {
+              ...customEntry!,
+              boneCount: cov?.mapped,
+              hasFullHands: cov?.hasFullHands,
+              skinMaterials: mats.targets,
+            }),
+          );
+        }
+        const loadedFace = loadFace(targetName);
+        setFace(cachedCalib ? { ...loadedFace, fitted: true, calib: cachedCalib } : { ...loadedFace, fitted: false });
+      }
+      return;
+    }
+
+    const updated: Character = {
+      ...activeChar,
+      model: targetKey,
+      modelName: targetName,
+      skinMaterials: savedLib?.skinMaterials,
+      face: cachedCalib
+        ? { ...activeChar.face, fitted: true, calib: cachedCalib }
+        : { ...activeChar.face, fitted: false },
+    };
     commitChars((l) => upsertCharacter(l, updated));
-    showCharacter(updated);
+    await showCharacter(updated);
+    if (customEntry) {
+      const stored = await getFile(targetKey).catch(() => null);
+      if (stored && loadedModelKey.current === targetKey && model) {
+        const cov = rig ? rigCoverage(rig) : null;
+        const mats = detectSkinMaterials(model);
+        commitBaseModels((list) =>
+          upsertBaseModel(list, {
+            ...customEntry!,
+            boneCount: cov?.mapped,
+            hasFullHands: cov?.hasFullHands,
+            skinMaterials: mats.targets,
+          }),
+        );
+      }
+    }
+  };
+
+  const handleRenameBaseModel = (key: string, nextName: string) => {
+    const clean = nextName.trim();
+    if (!clean) return;
+    commitBaseModels((list) => renameBaseModel(list, key, clean));
+    commitChars((list) => list.map((c) => (c.model === key ? { ...c, modelName: clean } : c)));
+    if (loadedModelKey.current === key) setModelName(clean);
+  };
+
+  const handleDeleteBaseModel = async (key: string) => {
+    commitBaseModels((list) => removeBaseModel(list, key));
+    await deleteFile(key).catch(() => {});
+    const fallback = builtinModel(DUMMY_MODEL)!;
+    commitChars((list) =>
+      list.map((c) =>
+        c.model === key
+          ? { ...c, model: fallback.key, modelName: fallback.name, skinMaterials: undefined, face: { ...c.face, fitted: false } }
+          : c,
+      ),
+    );
+    if (loadedModelKey.current === key) {
+      await setCharacterBody(DUMMY_MODEL);
+    }
   };
 
   const storeAssetFile = (a: CustomAsset, file?: File) => {
     if (file) putFile(a.id, file, file.name, a.slot).catch(() => {});
   };
 
-  // Toon shading & co-actor sync updates
+  // Toon shading & selective skin tinting sync updates
   useEffect(() => {
-    if (model) toonify(model, settings.tones, settings.mono, Boolean(settings.shadowHatch), activeChar?.skinColor);
+    if (model) {
+      const libMats = baseModels.find((b) => b.key === activeActorMeta.modelKey)?.skinMaterials;
+      toonify(
+        model,
+        settings.tones,
+        settings.mono,
+        Boolean(settings.shadowHatch),
+        activeChar?.skinColor,
+        activeChar?.skinMaterials ?? libMats,
+      );
+    }
     for (const co of coActors) {
-      if (co.model) toonify(co.model, settings.tones, settings.mono, Boolean(settings.shadowHatch));
+      if (co.model) {
+        const libMats = baseModels.find((b) => b.key === co.modelKey)?.skinMaterials;
+        toonify(
+          co.model,
+          settings.tones,
+          settings.mono,
+          Boolean(settings.shadowHatch),
+          co.skinColor,
+          co.skinMaterials ?? libMats,
+        );
+      }
     }
     for (const propObj of Object.values(customPropObjects)) {
       toonify(propObj, settings.tones, settings.mono, Boolean(settings.shadowHatch));
     }
-  }, [model, coActors, customPropObjects, settings.tones, settings.mono, settings.shadowHatch, activeChar?.skinColor]);
+  }, [
+    model,
+    coActors,
+    customPropObjects,
+    baseModels,
+    activeActorMeta.modelKey,
+    settings.tones,
+    settings.mono,
+    settings.shadowHatch,
+    activeChar?.skinColor,
+    activeChar?.skinMaterials,
+  ]);
 
   // Apply pose to rig (active actor + co-actors)
   useEffect(() => {
@@ -554,7 +755,12 @@ export function Studio() {
       setError("Supported formats: .fbx (Mixamo), .vrm, .glb, .gltf, or .obj");
       return;
     }
-    load(URL.createObjectURL(f), ext, f.name);
+    if (ext === "obj") {
+      const objUrl = URL.createObjectURL(f);
+      load(objUrl, ext, f.name).finally(() => URL.revokeObjectURL(objUrl));
+      return;
+    }
+    void setCharacterBody(f);
   };
 
   const allAvailablePoses = useMemo(() => {
@@ -599,6 +805,7 @@ export function Studio() {
       characters,
       externalPages,
       customPropsMeta.map((p) => p.fileId),
+      baseModels,
     )) {
       const f = await getFile(id).catch(() => null);
       if (f) files.push({ id, name: f.name, slot: f.slot, type: f.blob.type || "application/octet-stream", data: await blobToB64(f.blob) });
@@ -608,6 +815,7 @@ export function Studio() {
       version: 1,
       exported: Date.now(),
       characters,
+      baseModels,
       facePacks,
       files,
       pages: externalPages,
@@ -623,13 +831,19 @@ export function Studio() {
       const b = parseBackup(await file.text());
       for (const f of b.files) await putFile(f.id, b64ToBlob(f.data, f.type), f.name, f.slot);
       commitChars((l) => mergeById(l, b.characters));
+      if (b.baseModels && b.baseModels.length > 0) {
+        commitBaseModels((l) => reconcileBaseModels(mergeById(l, b.baseModels!), b.characters));
+      } else {
+        commitBaseModels((l) => reconcileBaseModels(l, b.characters));
+      }
       updateFacePacks(mergeById(facePacks, b.facePacks));
       if (b.pages && b.pages.length > 0) {
         const hydrated = await hydratePageAssets(b.pages);
         await saveChapterState(hydrated, b.activePageIndex ?? 0);
       }
       const pageCount = b.pages?.length ?? 0;
-      alert(`Restored ${b.characters.length} character(s), ${b.facePacks.length} face pack(s), ${pageCount} page(s), and ${b.files.length} file(s). The page will reload to load them.`);
+      const bodyCount = b.baseModels?.length ?? 0;
+      alert(`Restored ${b.characters.length} character(s), ${bodyCount} base model(s), ${b.facePacks.length} face pack(s), ${pageCount} page(s), and ${b.files.length} file(s). The page will reload to load them.`);
       location.reload();
     } catch (e) { alert(e instanceof Error ? e.message : "Couldn't read that backup."); }
   };
@@ -798,12 +1012,13 @@ export function Studio() {
       poseInit: PoseData = {},
       hipsInit = 0,
       actorId = `actor-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+      overrideModelKey?: string,
     ): Promise<StagedActor | null> => {
-      const key = charOrNull?.model ?? DUMMY_MODEL;
+      const key = charOrNull?.model ?? overrideModelKey ?? DUMMY_MODEL;
       let loaded: LoadedCharacter;
       const bm = builtinModel(key);
       if (bm) {
-        loaded = await loadCharacterModel(bm.url, bm.ext, bm.name);
+        loaded = await loadCharacterModel(bm.url, bm.ext, bm.name, bm.fallbackUrl);
       } else {
         const f = await getFile(key).catch(() => null);
         if (!f) return null;
@@ -829,20 +1044,28 @@ export function Studio() {
           }),
         );
       }
-      toonify(loaded.object, settings.tones, settings.mono, Boolean(settings.shadowHatch));
+      const libMats = baseModels.find((b) => b.key === key)?.skinMaterials;
+      const skinMaterials = charOrNull?.skinMaterials ?? libMats;
+      toonify(loaded.object, settings.tones, settings.mono, Boolean(settings.shadowHatch), charOrNull?.skinColor, skinMaterials);
       if (loaded.rig) applyPose(loaded.rig, poseInit, hipsInit);
       const activeOutfit = charOrNull ? activeOutfitOf(charOrNull) : null;
+      const fallbackName = bm?.name ?? "X Bot (demo)";
+      const baseFace = charOrNull ? charOrNull.face : loadFace(fallbackName);
+      const cachedCalib = loadModelCalibration(key);
+      const finalFace = baseFace.fitted || !cachedCalib ? baseFace : { ...baseFace, fitted: true, calib: cachedCalib };
       return {
         id: actorId,
         characterId: charOrNull?.id ?? null,
-        name: charOrNull?.name ?? "X Bot (demo)",
+        name: charOrNull?.name ?? fallbackName,
         modelKey: key,
+        skinColor: charOrNull?.skinColor,
+        skinMaterials,
         position,
         rotationY,
         pose: { ...poseInit },
         hipsDrop: hipsInit,
-        face: charOrNull ? charOrNull.face : loadFace("X Bot (demo)"),
-        outfit: activeOutfit ? { ...activeOutfit.outfit } : loadOutfit("X Bot (demo)"),
+        face: finalFace,
+        outfit: activeOutfit ? { ...activeOutfit.outfit } : loadOutfit(fallbackName),
         props: activeOutfit ? activeOutfit.props.map((p) => ({ ...p })) : [],
         vrmExpressions: { happy: 0, angry: 0, sad: 0, relaxed: 0, surprised: 0, blink: 0 },
         visible: true,
@@ -852,19 +1075,18 @@ export function Studio() {
         wardrobeAssets: wAssets,
       };
     },
-    [settings.tones, settings.mono, settings.shadowHatch],
+    [settings.tones, settings.mono, settings.shadowHatch, baseModels],
   );
 
   const handleStageCharacter = async () => {
     if (stagingBusy) return;
     setStagingBusy(true);
     try {
-      const targetChar =
-        stageCharPick === "__demo__"
-          ? null
-          : characters.find((c) => c.id === stageCharPick) ?? null;
+      const isBuiltin = stageCharPick === "__demo__" || stageCharPick.startsWith("builtin:");
+      const targetChar = isBuiltin ? null : characters.find((c) => c.id === stageCharPick) ?? null;
+      const overrideKey = stageCharPick.startsWith("builtin:") ? stageCharPick : undefined;
       const slotPos = nextStagePosition(1 + coActors.length);
-      const staged = await buildStagedActorFromChar(targetChar, slotPos, 0);
+      const staged = await buildStagedActorFromChar(targetChar, slotPos, 0, {}, 0, undefined, overrideKey);
       if (staged) setCoActors((cur) => [...cur, staged]);
       else setError("Selected character's model file is missing from browser storage.");
     } finally {
@@ -881,6 +1103,8 @@ export function Studio() {
       characterId: activeCharId,
       name: activeChar?.name ?? (modelName || "Primary Figure"),
       modelKey: activeActorMeta.modelKey,
+      skinColor: activeChar?.skinColor,
+      skinMaterials: activeChar?.skinMaterials,
       position: [...activeActorMeta.position],
       rotationY: activeActorMeta.rotationY,
       pose: { ...pose },
@@ -1118,6 +1342,7 @@ export function Studio() {
                   spec.pose,
                   spec.hipsDrop,
                   spec.id,
+                  spec.modelKey,
                 ),
               ),
             ).then((loadedOthers) => {
@@ -1245,8 +1470,22 @@ export function Studio() {
               onModelFile={(f) => setCharacterBody(f)}
               onUseDummy={() => setCharacterBody(null)}
               onPickBody={(key) => setCharacterBody(key)}
-              savedBodies={uploadedBodies(characters)}
+              savedBodies={uploadedBodies(characters, baseModels)}
               onSkin={(hex) => activeChar && patchChar(activeChar.id, (c) => ({ ...c, skinColor: hex }))}
+              activeModelKey={activeActorMeta.modelKey}
+              rigInfo={rigInfo}
+              materialInfo={materialInfo}
+              onSkinMaterials={(mats) => {
+                if (!activeChar) return;
+                patchChar(activeChar.id, (c) => ({ ...c, skinMaterials: mats }));
+                if (activeChar.model.startsWith("file:")) {
+                  commitBaseModels((list) =>
+                    list.map((b) => (b.key === activeChar.model ? { ...b, skinMaterials: mats } : b)),
+                  );
+                }
+              }}
+              onRenameBody={handleRenameBaseModel}
+              onDeleteBody={(key) => void handleDeleteBaseModel(key)}
               onSelectOutfit={(id) => { if (!activeChar) return; const u = { ...activeChar, activeOutfit: id }; patchChar(u.id, () => u); showCharacter(u); }}
               onAddOutfit={() => { if (!activeChar) return; const u = addOutfit(activeChar); patchChar(u.id, () => u); showCharacter(u); }}
               onDuplicateOutfit={() => { if (!activeChar) return; const u = addOutfit(activeChar, activeChar.activeOutfit); patchChar(u.id, () => u); showCharacter(u); }}
@@ -1323,7 +1562,10 @@ export function Studio() {
           ) : leftTab === "face" ? (
             <FacePanel
               face={face}
-              onChange={setFace}
+              onChange={(next) => {
+                setFace(next);
+                if (next.fitted) saveModelCalibration(activeActorMeta.modelKey, next.calib);
+              }}
               hasHead={!!rig?.bones.get("Head")}
               onAutoFit={() => setFaceFitRequest((n) => n + 1)}
               packs={facePacks}
@@ -1532,12 +1774,22 @@ export function Studio() {
                     onChange={(e) => setStageCharPick(e.target.value)}
                     className="flex-1 rounded border border-input bg-background p-1.5 text-xs"
                   >
-                    <option value="__demo__">X Bot (demo)</option>
-                    {characters.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name}
-                      </option>
-                    ))}
+                    <optgroup label="Built-in bases">
+                      {BUILTIN_MODELS.map((m) => (
+                        <option key={m.key} value={m.key === DUMMY_MODEL ? "__demo__" : m.key}>
+                          {m.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                    {characters.length > 0 && (
+                      <optgroup label="Saved characters">
+                        {characters.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name}
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
                   </select>
                   <button
                     type="button"
@@ -2053,7 +2305,13 @@ export function Studio() {
               primaryVisible={activeTab === "create" ? true : activeActorMeta.visible}
               coActors={activeTab === "create" ? [] : coActors}
               onSelectActor={switchActiveActor}
-              onFaceFit={(offsetZ, offsetY) => setFace((f) => ({ ...f, fitted: true, calib: { ...f.calib, offsetZ, offsetY } }))}
+              onFaceFit={(fit: Partial<FaceCalibration>) =>
+                setFace((f) => {
+                  const nextCalib = { ...f.calib, ...fit };
+                  saveModelCalibration(activeActorMeta.modelKey, nextCalib);
+                  return { ...f, fitted: true, calib: nextCalib };
+                })
+              }
             />
           </div>
 

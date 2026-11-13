@@ -72,30 +72,37 @@ const VRM_TO_CANONICAL: Record<string, string> = {
   rightLittleDistal: "RightHandPinky3",
 };
 
+function updateSkinnedSkeletons(obj: THREE.Object3D) {
+  obj.updateMatrixWorld(true);
+  obj.traverse((o) => {
+    const sm = o as THREE.SkinnedMesh;
+    if (sm.isSkinnedMesh && sm.skeleton) sm.skeleton.update();
+  });
+}
+
 /** Normalises an object to ~1.8 units high with feet at Y=0 and centered on X/Z */
 export function normaliseModel(obj: THREE.Object3D, targetHeight = 1.8): number {
-  obj.updateMatrixWorld(true);
+  updateSkinnedSkeletons(obj);
   const box = new THREE.Box3().setFromObject(obj);
   const size = box.getSize(new THREE.Vector3());
   const h = size.y || 1;
   const scale = targetHeight / h;
   obj.scale.multiplyScalar(scale);
-  obj.updateMatrixWorld(true);
+  updateSkinnedSkeletons(obj);
 
   const b2 = new THREE.Box3().setFromObject(obj);
   const center = b2.getCenter(new THREE.Vector3());
   obj.position.x -= center.x;
   obj.position.z -= center.z;
   obj.position.y -= b2.min.y;
-  obj.updateMatrixWorld(true);
+  updateSkinnedSkeletons(obj);
   return scale;
 }
 
-/** Loads 3D models with format detection (.fbx, .vrm, .glb, .gltf, .obj) */
-export async function loadCharacterModel(
+async function loadCharacterFromUrl(
   url: string,
   ext: string,
-  name: string
+  name: string,
 ): Promise<LoadedCharacter> {
   const cleanExt = ext.toLowerCase().replace(/^\./, "");
 
@@ -191,5 +198,22 @@ export async function loadCharacterModel(
     name,
     hasSkeleton: rig.bones.size >= 10,
   };
+}
+
+/** Loads 3D models with format detection (.fbx, .vrm, .glb, .gltf, .obj) and optional fallback URL. */
+export async function loadCharacterModel(
+  url: string,
+  ext: string,
+  name: string,
+  fallbackUrl?: string,
+): Promise<LoadedCharacter> {
+  try {
+    return await loadCharacterFromUrl(url, ext, name);
+  } catch (err) {
+    if (fallbackUrl && fallbackUrl !== url) {
+      return await loadCharacterFromUrl(fallbackUrl, ext, name);
+    }
+    throw err;
+  }
 }
 

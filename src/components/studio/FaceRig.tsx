@@ -1,20 +1,24 @@
 import { useFrame } from "@react-three/fiber";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import type { Rig } from "@/lib/rig";
-import { resolveFace, type FaceConfig } from "@/lib/face-library";
+import { resolveFace, type FaceCalibration, type FaceConfig } from "@/lib/face-library";
+import { computeAdaptiveFaceCalibration } from "@/lib/face-autofit";
 import { drawFace } from "@/lib/face-draw";
 import type { FacePack } from "@/lib/face-parts";
 import { onSpritesLoaded } from "@/lib/face-pack-draw";
-import { useState } from "react";
 
 const D = THREE.MathUtils.DEG2RAD;
 
-/** Bent plane: z pulls back toward the edges so the decal hugs a rounded face. */
+/** Bent plane: pulls edges back horizontally and gently tapers top/bottom so the decal hugs a rounded head. */
 function bentPlane(curve: number) {
-  const g = new THREE.PlaneGeometry(1, 1, 24, 1);
+  const g = new THREE.PlaneGeometry(1, 1, 24, 6);
   const p = g.attributes["position"] as THREE.BufferAttribute;
-  for (let i = 0; i < p.count; i++) { const x = p.getX(i); p.setZ(i, -x * x * curve); }
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i);
+    const y = p.getY(i);
+    p.setZ(i, -(x * x * curve + y * y * curve * 0.16));
+  }
   p.needsUpdate = true;
   return g;
 }
@@ -31,7 +35,7 @@ export function faceFrame(rig: Rig, pos: THREE.Vector3, quat: THREE.Quaternion) 
 export function FaceRig({ rig, model, face, mono, fitRequest, onFit, pack = null }: {
   pack?: FacePack | null;
   rig: Rig | null; model: THREE.Object3D | null; face: FaceConfig; mono: boolean;
-  fitRequest: number; onFit: (offsetZ: number, offsetY: number) => void;
+  fitRequest: number; onFit: (fit: Partial<FaceCalibration>) => void;
 }) {
   const group = useRef<THREE.Group>(null);
   const canvas = useMemo(() => { const c = document.createElement("canvas"); c.width = c.height = 512; return c; }, []);
@@ -63,27 +67,13 @@ export function FaceRig({ rig, model, face, mono, fitRequest, onFit, pack = null
     g.scale.setScalar(k.size);
   });
 
-  // Auto-fit: ray from in front of the face back toward the head to find the skin surface.
+  // Auto-fit: multi-ray surface grid cast toward the head to hug jaw, cheek, and brow depth.
   useEffect(() => {
     if (!fitRequest || !rig || !model) return;
-    model.updateMatrixWorld(true);
-    const p = new THREE.Vector3(), fq = new THREE.Quaternion();
-    if (!faceFrame(rig, p, fq)) return;
-    const meshes: THREE.Object3D[] = [];
-    model.traverse((o) => { if ((o as THREE.Mesh).isMesh) meshes.push(o); });
-    const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(fq);
-    const ray = new THREE.Raycaster();
-    let best: { y: number; z: number } | null = null;
-    // sample eye height candidates; choose the frontmost hit around 6–10cm above the head bone
-    for (const y of [0.06, 0.08, 0.1]) {
-      const origin = p.clone().add(new THREE.Vector3(0, y, 1).applyQuaternion(fq));
-      ray.set(origin, dir);
-      const hit = ray.intersectObjects(meshes, false)[0];
-      if (hit) { const z = 1 - hit.distance; if (!best || z > best.z) best = { y, z }; }
-    }
-    if (best) onFit(Math.max(0.01, best.z + 0.006), best.y);
+    const fitted = computeAdaptiveFaceCalibration(rig, model, face.calib);
+    if (fitted) onFit(fitted);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fitRequest]);
+  }, [fitRequest, rig, model]);
 
   if (!rig || !face.visible || !rig.bones.get("Head")) return null;
   return (

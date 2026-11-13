@@ -1,5 +1,6 @@
 import type { Character } from "./characters";
 import { customItemIds } from "./characters";
+import type { CustomBaseModel } from "./base-models";
 import type { FacePack } from "./face-parts";
 import type { PageLayout } from "./manga-layout";
 
@@ -16,22 +17,27 @@ export interface StudioBackup {
   version: 1;
   exported: number;
   characters: Character[];
+  baseModels?: CustomBaseModel[];
   facePacks: FacePack[];
   files: BackupFile[];
   pages?: PageLayout[];
   activePageIndex?: number;
 }
 
-/** Stored-file ids a set of characters and chapter pages need: uploaded bodies, custom clothing, and panel assets. */
+/** Stored-file ids a set of characters, custom base models, and chapter pages need: uploaded bodies, custom clothing, and panel assets. */
 export function referencedFileIds(
   chars: Character[],
   pages: PageLayout[] = [],
   extraFileIds: string[] = [],
+  baseModels: CustomBaseModel[] = [],
 ): string[] {
   const s = new Set<string>();
   for (const c of chars) {
     if (!c.model.startsWith("builtin:")) s.add(c.model);
     for (const id of customItemIds(c)) s.add(id);
+  }
+  for (const m of baseModels) {
+    if (m.key && !m.key.startsWith("builtin:")) s.add(m.key);
   }
   for (const page of pages) {
     for (const el of page.elements) {
@@ -49,6 +55,7 @@ export function parseBackup(text: string): StudioBackup {
   }
   return {
     ...b,
+    baseModels: Array.isArray(b.baseModels) ? b.baseModels : [],
     facePacks: b.facePacks ?? [],
     files: b.files ?? [],
     pages: Array.isArray(b.pages) ? b.pages : undefined,

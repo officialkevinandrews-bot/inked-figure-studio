@@ -102,4 +102,47 @@ test.describe("Inked Figure Studio End-to-End Regression", () => {
     expect(consoleErrors).toEqual([]);
     expect(pageErrors).toEqual([]);
   });
+
+  test("Universal Base Model Pipeline: Shonen Hero Base, auto-calibration, skin tint, and Scene Cast", async ({
+    page,
+  }) => {
+    const consoleErrors: string[] = [];
+    const pageErrors: string[] = [];
+
+    page.on("console", (msg) => {
+      if (msg.type() === "error") consoleErrors.push(msg.text());
+    });
+    page.on("pageerror", (err) => pageErrors.push(String(err)));
+
+    await page.goto("/");
+    await expect(page.locator("[data-scene-ready]")).toBeVisible();
+
+    // 1. Switch Base Model to Shonen Hero Base & create a character
+    const baseSelect = page.getByLabel("Base model");
+    await baseSelect.selectOption("builtin:shonen-base");
+    await expect(page.getByText(/52\/52 bones · 5-finger · 1\.8m/)).toBeVisible({ timeout: 20000 });
+    await expect(page.locator("[data-scene-ready]")).toBeVisible();
+
+    await page.getByRole("button", { name: "+ New character" }).click();
+    await expect(page.getByLabel("Character name")).toHaveValue("Character 1");
+
+    // 2. Apply skin color swatch & check Face Auto-Fit ran
+    await page.getByLabel("Skin colour hex").fill("#d9a07a");
+    await page.getByLabel("Skin colour hex").press("Enter");
+
+    await page.getByRole("button", { name: /😠 Face/ }).click();
+    await expect(page.getByTestId("face-panel")).toBeVisible();
+    const forwardVal = await page.getByLabel("Forward / back").inputValue();
+    expect(Number(forwardVal)).toBeGreaterThan(0.11);
+
+    // 3. Stage X Bot alongside Shonen Hero Base in Pose Studio -> Cast
+    await page.getByRole("button", { name: /Pose this character/ }).click();
+    await page.getByRole("button", { name: /👥 Cast/ }).click();
+    await page.getByLabel("Character to stage").selectOption("__demo__");
+    await page.getByRole("button", { name: /\+ Add$/i }).click();
+    await expect(page.getByRole("button", { name: /👥 Cast \(2\)/ })).toBeVisible();
+
+    expect(consoleErrors).toEqual([]);
+    expect(pageErrors).toEqual([]);
+  });
 });

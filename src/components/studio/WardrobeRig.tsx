@@ -112,29 +112,123 @@ function buildPiece(p: Piece, rig: Rig, mats: Record<"p" | "s", THREE.Material>)
   };
 }
 
-/** Rebinds a skinned clothing mesh onto the character's bones (matching Mixamo names). */
-function bindSkinned(obj: THREE.Object3D, rig: Rig) {
+/** Rebinds a skinned clothing mesh onto the target Mixamo/VRM rig with scale & rest-pose alignment. */
+export function bindSkinned(obj: THREE.Object3D, rig: Rig) {
+  // Temporarily sample the target rig in its exact rest pose (model-local frame).
+  const savedQuats = new Map<string, THREE.Quaternion>();
+  rig.bones.forEach((b, k) => {
+    savedQuats.set(k, b.quaternion.clone());
+    const rest = rig.restLocal.get(k);
+    if (rest) b.quaternion.copy(rest);
+  });
+  const tgtHips = rig.bones.get("Hips");
+  const savedHipsPos = tgtHips?.position.clone() ?? null;
+  if (tgtHips && rig.hipsRestLocal) tgtHips.position.copy(rig.hipsRestLocal);
+  rig.root.updateMatrixWorld(true);
+
+  const actorGroup = rig.root.parent;
+  const actorInv = actorGroup ? actorGroup.matrixWorld.clone().invert() : new THREE.Matrix4();
+  const targetRestActor = new Map<string, THREE.Matrix4>();
+  rig.bones.forEach((b, k) => {
+    targetRestActor.set(k, actorInv.clone().multiply(b.matrixWorld));
+  });
+
+  // Restore active pose immediately after sampling rest matrices.
+  savedQuats.forEach((q, k) => rig.bones.get(k)?.quaternion.copy(q));
+  if (tgtHips && savedHipsPos) tgtHips.position.copy(savedHipsPos);
+  rig.root.updateMatrixWorld(true);
+
+  const zeroTransforms = (node: THREE.Object3D) => {
+    node.traverse((n) => {
+      n.position.set(0, 0, 0);
+      n.rotation.set(0, 0, 0);
+      n.scale.set(1, 1, 1);
+    });
+    node.updateMatrixWorld(true);
+  };
+
   obj.updateMatrixWorld(true);
   obj.traverse((o) => {
     const sm = o as THREE.SkinnedMesh;
     if (!sm.isSkinnedMesh) return;
     const src = sm.skeleton;
-    const bones: THREE.Bone[] = [], inverses: THREE.Matrix4[] = [];
-    src.bones.forEach((b, i) => {
-      let cur: THREE.Object3D | null = b, target: THREE.Bone | undefined, inv = src.boneInverses[i]!;
+
+    // Extract source rest-world positions of mapped Hips and Head/Foot to compute scale + anchor alignment.
+    const srcRestPos = new Map<string, THREE.Vector3>();
+    for (let i = 0; i < src.bones.length; i++) {
+      const b = src.bones[i];
+      if (!b) continue;
+      const canon = canonicalBoneName(b.name);
+      if (!canon) continue;
+      const invMat = src.boneInverses[i];
+      const worldMat = invMat ? invMat.clone().invert() : b.matrixWorld.clone();
+      srcRestPos.set(canon, new THREE.Vector3().setFromMatrixPosition(worldMat));
+    }
+    const srcHipsPos = srcRestPos.get("Hips") ?? null;
+    const srcHeadPos = srcRestPos.get("Head") ?? null;
+    const srcFootPos = srcRestPos.get("LeftFoot") ?? srcRestPos.get("RightFoot") ?? null;
+
+    const getTgtPos = (k: string) => {
+      const m = targetRestActor.get(k);
+      return m ? new THREE.Vector3().setFromMatrixPosition(m) : null;
+    };
+    const tgtHipsPos = getTgtPos("Hips");
+    const tgtHeadPos = getTgtPos("Head");
+    const tgtFootPos = getTgtPos("LeftFoot") ?? getTgtPos("RightFoot");
+
+    let scaleRatio = 1;
+    if (srcHipsPos && srcHeadPos && tgtHipsPos && tgtHeadPos) {
+      const srcSpan = srcHeadPos.distanceTo(srcHipsPos);
+      const tgtSpan = tgtHeadPos.distanceTo(tgtHipsPos);
+      if (srcSpan > 1e-4 && tgtSpan > 1e-4) scaleRatio = tgtSpan / srcSpan;
+    } else if (srcFootPos && srcHeadPos && tgtFootPos && tgtHeadPos) {
+      const srcSpan = srcHeadPos.distanceTo(srcFootPos);
+      const tgtSpan = tgtHeadPos.distanceTo(tgtFootPos);
+      if (srcSpan > 1e-4 && tgtSpan > 1e-4) scaleRatio = tgtSpan / srcSpan;
+    }
+
+    const srcAnchor = srcHipsPos ?? new THREE.Vector3();
+    const tgtAnchor = tgtHipsPos ?? new THREE.Vector3();
+    // Map vertices from source geometry local -> source bind world -> scaled & anchored target actor rest space.
+    const toTargetActorRest = new THREE.Matrix4()
+      .makeTranslation(tgtAnchor.x, tgtAnchor.y, tgtAnchor.z)
+      .multiply(new THREE.Matrix4().makeScale(scaleRatio, scaleRatio, scaleRatio))
+      .multiply(new THREE.Matrix4().makeTranslation(-srcAnchor.x, -srcAnchor.y, -srcAnchor.z))
+      .multiply(sm.bindMatrix);
+
+    sm.geometry = sm.geometry.clone();
+    sm.geometry.applyMatrix4(toTargetActorRest);
+
+    const bones: THREE.Bone[] = [];
+    const inverses: THREE.Matrix4[] = [];
+    const fallbackHips = rig.bones.get("Hips")!;
+    const fallbackInv = targetRestActor.get("Hips")?.clone().invert() ?? new THREE.Matrix4();
+
+    src.bones.forEach((b) => {
+      let cur: THREE.Object3D | null = b;
+      let target: THREE.Bone | undefined;
+      let canonFound: string | null = null;
       while (cur) {
         const n = canonicalBoneName(cur.name);
-        target = n ? rig.bones.get(n) : undefined;
-        if (target) { if (cur !== b) inv = cur.matrixWorld.clone().invert(); break; }
+        const found = n ? rig.bones.get(n) : undefined;
+        if (found) {
+          target = found;
+          canonFound = n;
+          break;
+        }
         cur = cur.parent;
       }
-      bones.push(target ?? rig.bones.get("Hips")!);
-      inverses.push(inv);
+      bones.push(target ?? fallbackHips);
+      const inv = canonFound ? targetRestActor.get(canonFound)?.clone().invert() : undefined;
+      inverses.push(inv ?? fallbackInv.clone());
     });
-    sm.bind(new THREE.Skeleton(bones, inverses), sm.bindMatrix.clone());
+
+    zeroTransforms(sm);
+    sm.bind(new THREE.Skeleton(bones, inverses), new THREE.Matrix4());
     sm.bindMode = THREE.AttachedBindMode;
     sm.frustumCulled = false;
   });
+  zeroTransforms(obj);
 }
 
 function buildCustom(asset: CustomAsset, slot: SlotId, rig: Rig, tint: THREE.Material[]): Built[] {

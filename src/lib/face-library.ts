@@ -132,3 +132,27 @@ export function loadFace(model: string): FaceConfig {
 export function saveFace(model: string, c: FaceConfig) {
   try { localStorage.setItem(KEY + model, JSON.stringify(c)); } catch { /* ignore */ }
 }
+
+const CALIB_KEY = "koma-face-calib:";
+export function loadModelCalibration(modelKey: string): FaceCalibration | null {
+  try {
+    const raw = localStorage.getItem(CALIB_KEY + modelKey);
+    if (!raw) return null;
+    const p = JSON.parse(raw) as Partial<FaceCalibration>;
+    return { ...DEFAULT_CALIBRATION, ...p };
+  } catch {
+    return null;
+  }
+}
+
+export function saveModelCalibration(modelKey: string, calib: FaceCalibration) {
+  try {
+    localStorage.setItem(CALIB_KEY + modelKey, JSON.stringify(calib));
+  } catch { /* ignore */ }
+}
+
+export function clearModelCalibration(modelKey: string) {
+  try {
+    localStorage.removeItem(CALIB_KEY + modelKey);
+  } catch { /* ignore */ }
+}

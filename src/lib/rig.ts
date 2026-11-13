@@ -30,9 +30,21 @@ const ALIASES: Record<string, string> = {
 };
 const CANON_LOWER = new Map(CANONICAL_BONES.map((b) => [b.toLowerCase(), b]));
 
+const AUX_LEAF_RE = /(?:headtop_?end|toe_?end|(?:thumb|index|middle|ring|pinky)4|lefteye|righteye)$/i;
+
+/** Returns true for standard Mixamo leaf/helper joints (4th finger tips, _End nubs, eyes) that don't require FK rotation. */
+export function isAuxiliaryBoneName(raw: string): boolean {
+  const cleaned = raw.replace(/^.*?(?:mixamorig\d*[:_]?|character\d*_)/i, "").replace(/[:_\s.]/g, "");
+  return AUX_LEAF_RE.test(cleaned);
+}
+
 /** Maps Mixamo-style names ("mixamorig:LeftArm", "mixamorig1LeftArm", "mixamorig_LeftArm") to canonical names. */
 export function canonicalBoneName(raw: string): string | null {
-  const stripped = raw.replace(/^.*?mixamorig\d*[:_]?/i, "").replace(/[:_\s.]/g, "");
+  const noPrefix = raw
+    .replace(/^.*?mixamorig\d*[:_]?/i, "")
+    .replace(/^.*?character\d*[:_]/i, "")
+    .replace(/\.\d+$/, "");
+  const stripped = noPrefix.replace(/[:_\s.]/g, "");
   const key = stripped.toLowerCase();
   return CANON_LOWER.get(key) ?? ALIASES[key] ?? null;
 }
@@ -63,17 +75,33 @@ export interface Rig {
   hipsRestLocal: THREE.Vector3 | null;
   scale: number;
   unmapped: number;
+  leafBones: number;
+}
+
+export interface RigCoverage {
+  mapped: number;
+  totalCanonical: number;
+  coreMapped: number;
+  fingerMapped: number;
+  leafBones: number;
+  unmapped: number;
+  totalSkeletonBones: number;
+  hasFullHands: boolean;
 }
 
 export function buildRig(root: THREE.Object3D, scale: number): Rig {
   root.updateMatrixWorld(true);
   const bones = new Map<string, THREE.Bone>();
   let unmapped = 0;
+  let leafBones = 0;
   root.traverse((o) => {
     if ((o as THREE.Bone).isBone) {
       const c = canonicalBoneName(o.name);
       if (c && !bones.has(c)) bones.set(c, o as THREE.Bone);
-      else if (!c) unmapped++;
+      else if (!c) {
+        if (isAuxiliaryBoneName(o.name)) leafBones++;
+        else unmapped++;
+      }
     }
   });
   const rootInv = root.getWorldQuaternion(new THREE.Quaternion()).invert();
@@ -85,9 +113,28 @@ export function buildRig(root: THREE.Object3D, scale: number): Rig {
   });
   const hips = bones.get("Hips");
   return {
-    root, bones, restLocal, restModel, scale, unmapped,
+    root, bones, restLocal, restModel, scale, unmapped, leafBones,
     hipsRestWorld: hips ? hips.getWorldPosition(new THREE.Vector3()) : null,
     hipsRestLocal: hips ? hips.position.clone() : null,
+  };
+}
+
+/** Summarizes canonical + 5-finger coverage for diagnostics and auto-calibration badges. */
+export function rigCoverage(rig: Rig): RigCoverage {
+  let fingerMapped = 0;
+  rig.bones.forEach((_, name) => {
+    if (/^(Left|Right)Hand(Thumb|Index|Middle|Ring|Pinky)[123]$/.test(name)) fingerMapped++;
+  });
+  const mapped = rig.bones.size;
+  return {
+    mapped,
+    totalCanonical: CANONICAL_BONES.length,
+    coreMapped: mapped - fingerMapped,
+    fingerMapped,
+    leafBones: rig.leafBones,
+    unmapped: rig.unmapped,
+    totalSkeletonBones: mapped + rig.leafBones + rig.unmapped,
+    hasFullHands: fingerMapped >= 30,
   };
 }
 

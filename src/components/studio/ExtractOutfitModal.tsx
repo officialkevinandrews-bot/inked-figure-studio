@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { analyseOutfit, buildPiece, makeSampleDressed, worldVertex, type Island, type Target } from "@/lib/outfit-extract";
+import { BUILTIN_MODELS } from "@/lib/base-models";
 import { SLOTS, slotDef, type SlotId } from "@/lib/wardrobe";
 import type { CustomAsset } from "./WardrobeRig";
 
@@ -115,8 +116,26 @@ export function ExtractOutfitModal({ onClose, onExtract }: { onClose: () => void
             <div className="max-w-[280px] rounded-sm border border-border p-2 text-[11px]">
               <p className="font-semibold">Undressed version (optional, recommended)</p>
               <p className="text-muted-foreground">{baseName ? `Using: ${baseName}` : "Add your plain base model so bare skin is recognised and removed exactly."}</p>
-              <div className="mt-1 flex gap-2">
-                <button onClick={() => baseRef.current?.click()} className="underline">{base ? "Change" : "Add base model"}</button>
+              <div className="mt-1 flex flex-wrap gap-2">
+                <button onClick={() => baseRef.current?.click()} className="underline">{base ? "Upload other" : "Upload base"}</button>
+                {BUILTIN_MODELS.map((bm) => (
+                  <button
+                    key={bm.key}
+                    onClick={async () => {
+                      setErr(""); setBusy(`Loading ${bm.name}…`);
+                      try {
+                        const { loadCharacterModel } = await import("@/lib/model-loader");
+                        const loaded = await loadCharacterModel(bm.url, bm.ext, bm.name, bm.fallbackUrl);
+                        setBase(loaded.object); setBaseName(bm.name);
+                      } catch (er) {
+                        setErr(er instanceof Error ? er.message : "Couldn't load base model.");
+                      } finally { setBusy(""); }
+                    }}
+                    className="underline"
+                  >
+                    Use {bm.name.replace(" (demo)", "")}
+                  </button>
+                ))}
                 {base && <button onClick={() => { setBase(null); setBaseName(""); }} className="underline">Remove</button>}
               </div>
               <input ref={baseRef} type="file" accept=".glb,.gltf,.fbx" hidden onChange={async (e) => { const f = e.target.files?.[0]; e.target.value = ""; if (!f) return; try { setBase(await loadAny(f)); setBaseName(f.name); } catch (er) { setErr(er instanceof Error ? er.message : "Couldn't read that base model."); } }} />

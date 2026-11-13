@@ -8,10 +8,11 @@ import type { Rig } from "@/lib/rig";
 import { IK_EFFECTORS, effectorForBone } from "@/lib/ik";
 import { captureTransparentSnapshot, type SnapshotOptions, type SnapshotResult } from "@/lib/snapshot";
 import { FaceRig } from "./FaceRig";
+import type { FaceCalibration, FaceConfig } from "@/lib/face-library";
 import type { FacePack } from "@/lib/face-parts";
+import { collectMaterialNames, shouldTintMaterial } from "@/lib/base-models";
 import { WardrobeRig, type CustomAsset } from "./WardrobeRig";
 import type { Outfit } from "@/lib/wardrobe";
-import type { FaceConfig } from "@/lib/face-library";
 import { type ActiveProp, type PropTransform, getPropById } from "@/lib/props";
 import { hexToOutlineRgb } from "@/lib/lighting";
 
@@ -63,21 +64,32 @@ function makeGradient(tones: number, highContrast = false) {
 }
 
 /** Replaces the model's materials with toon materials (keeps original colour maps). */
-export function toonify(root: THREE.Object3D, tones: number, mono: boolean, shadowHatch = false, tint?: string) {
+export function toonify(
+  root: THREE.Object3D,
+  tones: number,
+  mono: boolean,
+  shadowHatch = false,
+  tint?: string,
+  skinMaterials?: string[],
+) {
   const grad = makeGradient(tones, shadowHatch);
+  const allMatNames = tint ? collectMaterialNames(root) : [];
   root.traverse((o) => {
     const m = o as THREE.Mesh;
     if (!m.isMesh) return;
     m.castShadow = true;
     m.frustumCulled = false;
     const orig = (m.userData["origMat"] ??= m.material) as THREE.Material | THREE.Material[];
-    const conv = (mat: THREE.Material) => {
+    const conv = (mat: THREE.Material, idx: number) => {
       const src = mat as THREE.MeshStandardMaterial;
+      const matId = src.name?.trim() || `${m.name || "mesh"}#${idx}`;
       const hasMap = !!src.map;
       const color = hasMap
         ? new THREE.Color(0xffffff)
         : src.color ? src.color.clone() : new THREE.Color(0xdddddd);
-      if (tint) color.multiply(new THREE.Color(tint));
+      if (tint && shouldTintMaterial(matId, allMatNames, skinMaterials)) {
+        color.multiply(new THREE.Color(tint));
+      }
       if (src.map) src.map.colorSpace = THREE.SRGBColorSpace;
       if (mono || shadowHatch) {
         const l = color.getHSL({ h: 0, s: 0, l: 0 }).l;
@@ -110,7 +122,7 @@ export function toonify(root: THREE.Object3D, tones: number, mono: boolean, shad
       }
       return toon;
     };
-    m.material = Array.isArray(orig) ? orig.map(conv) : conv(orig);
+    m.material = Array.isArray(orig) ? orig.map((mat, i) => conv(mat, i)) : conv(orig, 0);
   });
 }
 
@@ -509,7 +521,7 @@ export const Viewport = forwardRef<
     face?: FaceConfig | null;
     facePack?: FacePack | null;
     faceFitRequest?: number;
-    onFaceFit?: (offsetZ: number, offsetY: number) => void;
+    onFaceFit?: (fit: Partial<FaceCalibration>) => void;
     outfit?: Outfit;
     wardrobeAssets?: Record<string, CustomAsset>;
     primaryStageTransform?: { position: [number, number, number]; rotationY: number };

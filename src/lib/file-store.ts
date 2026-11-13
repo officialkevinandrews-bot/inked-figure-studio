@@ -45,6 +45,16 @@ export async function getFile(id: string): Promise<Stored | null> {
   });
 }
 
+export async function deleteFile(id: string): Promise<void> {
+  const db = await open();
+  await new Promise<void>((res, rej) => {
+    const tx = db.transaction(STORE, "readwrite");
+    tx.objectStore(STORE).delete(id);
+    tx.oncomplete = () => res();
+    tx.onerror = () => rej(tx.error);
+  });
+}
+
 export async function putKv<T>(id: string, value: T): Promise<void> {
   const db = await open();
   await new Promise<void>((res, rej) => {

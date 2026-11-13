@@ -12,6 +12,8 @@ export interface SerializedActorPose {
   characterId: string | null;
   name: string;
   modelKey: string;
+  skinColor?: string;
+  skinMaterials?: string[];
   position: [number, number, number];
   rotationY: number; // degrees
   pose: PoseData;
@@ -24,6 +26,8 @@ export interface StagedActor {
   characterId: string | null;
   name: string;
   modelKey: string;
+  skinColor?: string;
+  skinMaterials?: string[];
   position: [number, number, number];
   rotationY: number; // degrees
   pose: PoseData;
