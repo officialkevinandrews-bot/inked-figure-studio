@@ -1,13 +1,16 @@
 import { useRef, useState } from "react";
 import { activeOutfitOf, type Character } from "@/lib/characters";
+import { BUILTIN_MODELS, SKIN_SWATCHES } from "@/lib/base-models";
+import { ColorPicker } from "./ColorPicker";
 
 /** Create Character tab: character roster, name, base body and the outfit shelf. */
-export function CharacterPanel({ characters, active, onSelect, onNew, onRename, onDuplicate, onDelete, onModelFile, onUseDummy,
+export function CharacterPanel({ characters, active, onSelect, onNew, onRename, onDuplicate, onDelete, onModelFile, onUseDummy, onPickBody, savedBodies, onSkin,
   onSelectOutfit, onAddOutfit, onDuplicateOutfit, onRenameOutfit, onDeleteOutfit, onPose, onExport, onImport }: {
   onExport: () => void; onImport: (f: File) => void;
   characters: Character[]; active: Character | null;
   onSelect: (id: string) => void; onNew: () => void; onRename: (name: string) => void; onDuplicate: () => void; onDelete: () => void;
   onModelFile: (f: File) => void; onUseDummy: () => void;
+  onPickBody: (key: string) => void; savedBodies: { key: string; name: string }[]; onSkin: (hex: string) => void;
   onSelectOutfit: (id: string) => void; onAddOutfit: () => void; onDuplicateOutfit: () => void; onRenameOutfit: (id: string, name: string) => void; onDeleteOutfit: (id: string) => void;
   onPose: () => void;
 }) {
@@ -48,12 +51,23 @@ export function CharacterPanel({ characters, active, onSelect, onNew, onRename, 
           </label>
           <div className="text-xs">
             <span className="font-semibold">Body: </span><span className="text-muted-foreground">{active.modelName}</span>
+            <select aria-label="Base model" value={active.model} onChange={(e) => onPickBody(e.target.value)}
+              className="mt-1 w-full rounded-sm border border-input bg-background px-2 py-1 text-sm">
+              <optgroup label="Built-in bases">
+                {BUILTIN_MODELS.map((m) => <option key={m.key} value={m.key}>{m.name}</option>)}
+              </optgroup>
+              {savedBodies.length > 0 && (
+                <optgroup label="My uploaded bodies">
+                  {savedBodies.map((m) => <option key={m.key} value={m.key}>{m.name}</option>)}
+                </optgroup>
+              )}
+            </select>
             <div className="mt-1 flex gap-1.5">
               <button className={btn} onClick={() => fileRef.current?.click()}>Upload body (.glb/.fbx)</button>
-              <button className={btn} onClick={onUseDummy}>Use test dummy</button>
               <input ref={fileRef} type="file" accept=".glb,.gltf,.fbx,.vrm" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) onModelFile(f); e.target.value = ""; }} />
             </div>
           </div>
+          <ColorPicker label="Skin colour" value={active.skinColor ?? "#ffffff"} onChange={onSkin} swatches={SKIN_SWATCHES} />
           <div>
             <p className="text-xs font-semibold">Outfits</p>
             <div className="mt-1 space-y-1" data-testid="outfit-list">

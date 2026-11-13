@@ -9,6 +9,7 @@ import {
 } from "@/lib/characters";
 import type { VRM } from "@pixiv/three-vrm";
 import { getFile, putFile } from "@/lib/file-store";
+import { builtinModel, uploadedBodies } from "@/lib/base-models";
 import { b64ToBlob, blobToB64, mergeById, parseBackup, referencedFileIds, type StudioBackup } from "@/lib/backup";
 import {
   createDefaultPages,
@@ -428,7 +429,8 @@ export function Studio() {
     setActiveActorMeta((m) => ({ ...m, modelKey: key }));
     if (loadedModelKey.current !== key) {
       let ok = false;
-      if (key === DUMMY_MODEL) ok = await load("/models/xbot.glb", "glb", "X Bot (demo)");
+      const bm = builtinModel(key);
+      if (bm) ok = await load(bm.url, bm.ext, bm.name);
       else {
         const f = await getFile(key).catch(() => null);
         if (f) ok = await load(URL.createObjectURL(f.blob), f.name.split(".").pop()?.toLowerCase() ?? "glb", f.name);
@@ -491,10 +493,13 @@ export function Studio() {
     showCharacter(seeded);
   };
 
-  const setCharacterBody = async (f: File | null) => {
+  const setCharacterBody = async (f: File | string | null) => {
     if (!activeChar) return;
     let model = DUMMY_MODEL, modelName = "X Bot (demo)";
-    if (f) {
+    if (typeof f === "string") {
+      model = f;
+      modelName = builtinModel(f)?.name ?? characters.find((c) => c.model === f)?.modelName ?? f;
+    } else if (f) {
       model = `file:${crypto.randomUUID()}`; modelName = f.name;
       try { await putFile(model, f, f.name); } catch { setError("Could not save that file in this browser."); return; }
     }
@@ -510,14 +515,14 @@ export function Studio() {
 
   // Toon shading & co-actor sync updates
   useEffect(() => {
-    if (model) toonify(model, settings.tones, settings.mono, Boolean(settings.shadowHatch));
+    if (model) toonify(model, settings.tones, settings.mono, Boolean(settings.shadowHatch), activeChar?.skinColor);
     for (const co of coActors) {
       if (co.model) toonify(co.model, settings.tones, settings.mono, Boolean(settings.shadowHatch));
     }
     for (const propObj of Object.values(customPropObjects)) {
       toonify(propObj, settings.tones, settings.mono, Boolean(settings.shadowHatch));
     }
-  }, [model, coActors, customPropObjects, settings.tones, settings.mono, settings.shadowHatch]);
+  }, [model, coActors, customPropObjects, settings.tones, settings.mono, settings.shadowHatch, activeChar?.skinColor]);
 
   // Apply pose to rig (active actor + co-actors)
   useEffect(() => {
@@ -796,8 +801,9 @@ export function Studio() {
     ): Promise<StagedActor | null> => {
       const key = charOrNull?.model ?? DUMMY_MODEL;
       let loaded: LoadedCharacter;
-      if (key === DUMMY_MODEL) {
-        loaded = await loadCharacterModel("/models/xbot.glb", "glb", "X Bot (demo)");
+      const bm = builtinModel(key);
+      if (bm) {
+        loaded = await loadCharacterModel(bm.url, bm.ext, bm.name);
       } else {
         const f = await getFile(key).catch(() => null);
         if (!f) return null;
@@ -1238,6 +1244,9 @@ export function Studio() {
               onDelete={() => { if (!activeChar) return; const id = activeChar.id; commitChars((l) => l.filter((c) => c.id !== id)); showCharacter(null); }}
               onModelFile={(f) => setCharacterBody(f)}
               onUseDummy={() => setCharacterBody(null)}
+              onPickBody={(key) => setCharacterBody(key)}
+              savedBodies={uploadedBodies(characters)}
+              onSkin={(hex) => activeChar && patchChar(activeChar.id, (c) => ({ ...c, skinColor: hex }))}
               onSelectOutfit={(id) => { if (!activeChar) return; const u = { ...activeChar, activeOutfit: id }; patchChar(u.id, () => u); showCharacter(u); }}
               onAddOutfit={() => { if (!activeChar) return; const u = addOutfit(activeChar); patchChar(u.id, () => u); showCharacter(u); }}
               onDuplicateOutfit={() => { if (!activeChar) return; const u = addOutfit(activeChar, activeChar.activeOutfit); patchChar(u.id, () => u); showCharacter(u); }}

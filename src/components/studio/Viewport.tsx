@@ -63,7 +63,7 @@ function makeGradient(tones: number, highContrast = false) {
 }
 
 /** Replaces the model's materials with toon materials (keeps original colour maps). */
-export function toonify(root: THREE.Object3D, tones: number, mono: boolean, shadowHatch = false) {
+export function toonify(root: THREE.Object3D, tones: number, mono: boolean, shadowHatch = false, tint?: string) {
   const grad = makeGradient(tones, shadowHatch);
   root.traverse((o) => {
     const m = o as THREE.Mesh;
@@ -77,6 +77,7 @@ export function toonify(root: THREE.Object3D, tones: number, mono: boolean, shad
       const color = hasMap
         ? new THREE.Color(0xffffff)
         : src.color ? src.color.clone() : new THREE.Color(0xdddddd);
+      if (tint) color.multiply(new THREE.Color(tint));
       if (src.map) src.map.colorSpace = THREE.SRGBColorSpace;
       if (mono || shadowHatch) {
         const l = color.getHSL({ h: 0, s: 0, l: 0 }).l;

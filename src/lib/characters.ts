@@ -11,6 +11,7 @@ export interface Character {
   name: string;
   model: string; // DUMMY_MODEL or "file:<id>"
   modelName: string; // file name shown to the user
+  skinColor?: string; // multiplies the body texture; white = untinted
   face: FaceConfig;
   outfits: CharacterOutfit[];
   activeOutfit: string;
