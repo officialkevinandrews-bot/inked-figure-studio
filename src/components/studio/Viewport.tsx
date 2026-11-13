@@ -13,14 +13,19 @@ import { WardrobeRig, type CustomAsset } from "./WardrobeRig";
 import type { Outfit } from "@/lib/wardrobe";
 import type { FaceConfig } from "@/lib/face-library";
 import { type ActiveProp, type PropTransform, getPropById } from "@/lib/props";
+import { hexToOutlineRgb } from "@/lib/lighting";
 
 export interface ViewSettings {
   outline: number;
+  outlineColor?: string;
   mono: boolean;
   tones: number;
+  shadowHatch?: boolean;
   showJoints: boolean;
   fov?: number;
   lightIntensity?: number;
+  rimIntensity?: number;
+  fillIntensity?: number;
   lightAngle?: [number, number, number];
 }
 
@@ -40,21 +45,26 @@ export const CAMERA_PRESETS: Record<string, CameraPose> = {
   "Full Body": { position: [0, 0.95, 4.0], target: [0, 0.9, 0], fov: 35 },
 };
 
-function makeGradient(tones: number) {
-  const data = new Uint8Array(tones * 4);
-  for (let i = 0; i < tones; i++) {
-    const v = Math.round(70 + (185 * i) / Math.max(1, tones - 1));
+function makeGradient(tones: number, highContrast = false) {
+  const count = highContrast ? 2 : tones;
+  const data = new Uint8Array(count * 4);
+  for (let i = 0; i < count; i++) {
+    const v = highContrast
+      ? i === 0
+        ? 45
+        : 255
+      : Math.round(70 + (185 * i) / Math.max(1, count - 1));
     data.set([v, v, v, 255], i * 4);
   }
-  const t = new THREE.DataTexture(data, tones, 1, THREE.RGBAFormat);
+  const t = new THREE.DataTexture(data, count, 1, THREE.RGBAFormat);
   t.minFilter = t.magFilter = THREE.NearestFilter;
   t.needsUpdate = true;
   return t;
 }
 
 /** Replaces the model's materials with toon materials (keeps original colour maps). */
-export function toonify(root: THREE.Object3D, tones: number, mono: boolean) {
-  const grad = makeGradient(tones);
+export function toonify(root: THREE.Object3D, tones: number, mono: boolean, shadowHatch = false) {
+  const grad = makeGradient(tones, shadowHatch);
   root.traverse((o) => {
     const m = o as THREE.Mesh;
     if (!m.isMesh) return;
@@ -68,25 +78,44 @@ export function toonify(root: THREE.Object3D, tones: number, mono: boolean) {
         ? new THREE.Color(0xffffff)
         : src.color ? src.color.clone() : new THREE.Color(0xdddddd);
       if (src.map) src.map.colorSpace = THREE.SRGBColorSpace;
-      if (mono) {
+      if (mono || shadowHatch) {
         const l = color.getHSL({ h: 0, s: 0, l: 0 }).l;
-        color.setHSL(0, 0, 0.55 + l * 0.45);
+        color.setHSL(0, 0, shadowHatch ? Math.min(1, 0.72 + l * 0.28) : 0.55 + l * 0.45);
       }
-      return new THREE.MeshToonMaterial({
+      const toon = new THREE.MeshToonMaterial({
         color,
-        map: mono ? null : src.map ?? null,
+        map: mono || shadowHatch ? null : src.map ?? null,
         gradientMap: grad,
         transparent: src.transparent,
         alphaTest: src.alphaTest,
         side: src.side,
       });
+      if (shadowHatch) {
+        toon.customProgramCacheKey = () => "manga-hatch-v1";
+        toon.onBeforeCompile = (shader) => {
+          shader.fragmentShader = shader.fragmentShader.replace(
+            "#include <dithering_fragment>",
+            `#include <dithering_fragment>
+            float hatchLum = dot(gl_FragColor.rgb, vec3(0.299, 0.587, 0.114));
+            if (hatchLum < 0.52) {
+              float d1 = mod(gl_FragCoord.x + gl_FragCoord.y, 7.0);
+              float d2 = mod(gl_FragCoord.x - gl_FragCoord.y + 700.0, 7.0);
+              if (d1 < 2.2 || (hatchLum < 0.30 && d2 < 1.9)) {
+                gl_FragColor.rgb *= 0.25;
+              }
+            }`,
+          );
+        };
+      }
+      return toon;
     };
     m.material = Array.isArray(orig) ? orig.map(conv) : conv(orig);
   });
 }
 
-function MangaRenderer({ outline }: { outline: number }) {
+function MangaRenderer({ outline, outlineColor }: { outline: number; outlineColor?: string }) {
   const { gl, scene, camera } = useThree();
+  const rgb = useMemo(() => hexToOutlineRgb(outlineColor), [outlineColor]);
   const effect = useMemo(
     () => new OutlineEffect(gl, { defaultThickness: 0.004, defaultColor: [0.05, 0.05, 0.05] }),
     [gl]
@@ -107,7 +136,7 @@ function MangaRenderer({ outline }: { outline: number }) {
       mats.forEach((mat) => {
         mat.userData["outlineParameters"] = {
           thickness: outline * 0.0015,
-          color: [0.05, 0.05, 0.05],
+          color: rgb,
           visible: show,
         };
       });
@@ -192,9 +221,11 @@ export interface ViewportHandle {
 function SceneBridge({
   handleRef,
   outline,
+  outlineColor,
 }: {
   handleRef: React.ForwardedRef<ViewportHandle>;
   outline: number;
+  outlineColor?: string;
 }) {
   const { gl, scene, camera } = useThree();
 
@@ -202,6 +233,7 @@ function SceneBridge({
     captureSnapshot: (options = {}) => {
       return captureTransparentSnapshot(gl, scene, camera, {
         outlineThickness: outline,
+        outlineColor,
         ...options,
       });
     },
@@ -220,7 +252,7 @@ function CameraController({
   locked?: boolean;
 }) {
   const { camera } = useThree();
-  const controlsRef = useRef<any>(null);
+  const controlsRef = useRef<React.ComponentRef<typeof OrbitControls>>(null);
 
   useEffect(() => {
     if (camera instanceof THREE.PerspectiveCamera) {
@@ -363,17 +395,21 @@ function PropItem({
   rig,
   isSelected,
   onSelect,
+  customPropObjects,
 }: {
   prop: ActiveProp;
   rig: Rig | null;
   isSelected: boolean;
   onSelect: () => void;
+  customPropObjects?: Record<string, THREE.Object3D>;
 }) {
   const groupRef = useRef<THREE.Group>(null);
+  const customObj = customPropObjects?.[prop.propDefId];
   const mesh = useMemo(() => {
+    if (customObj) return customObj.clone();
     const def = getPropById(prop.propDefId);
     return def ? def.buildMesh() : new THREE.Group();
-  }, [prop.propDefId]);
+  }, [prop.propDefId, customObj]);
 
   const vPos = useMemo(() => new THREE.Vector3(), []);
   const qRot = useMemo(() => new THREE.Quaternion(), []);
@@ -438,6 +474,20 @@ function PropItem({
   );
 }
 
+export interface CoActorRender {
+  id: string;
+  model: THREE.Object3D | null;
+  rig: Rig | null;
+  position: [number, number, number];
+  rotationY: number;
+  face?: FaceConfig | null;
+  facePack?: FacePack | null;
+  outfit?: Outfit;
+  wardrobeAssets?: Record<string, CustomAsset>;
+  propsList?: ActiveProp[];
+  visible: boolean;
+}
+
 export const Viewport = forwardRef<
   ViewportHandle,
   {
@@ -451,6 +501,7 @@ export const Viewport = forwardRef<
     propsList?: ActiveProp[];
     selectedPropId?: string | null;
     onSelectProp?: (id: string | null) => void;
+    customPropObjects?: Record<string, THREE.Object3D>;
     ikMode?: boolean;
     onIkDrag?: (effector: string, world: THREE.Vector3) => void;
     cameraLocked?: boolean;
@@ -460,6 +511,10 @@ export const Viewport = forwardRef<
     onFaceFit?: (offsetZ: number, offsetY: number) => void;
     outfit?: Outfit;
     wardrobeAssets?: Record<string, CustomAsset>;
+    primaryStageTransform?: { position: [number, number, number]; rotationY: number };
+    primaryVisible?: boolean;
+    coActors?: CoActorRender[];
+    onSelectActor?: (id: string) => void;
   }
 >(function Viewport(
   {
@@ -473,6 +528,7 @@ export const Viewport = forwardRef<
     propsList = [],
     selectedPropId = null,
     onSelectProp = () => {},
+    customPropObjects,
     ikMode = false,
     onIkDrag = () => {},
     cameraLocked = false,
@@ -482,17 +538,28 @@ export const Viewport = forwardRef<
     onFaceFit = () => {},
     outfit = {},
     wardrobeAssets = {},
+    primaryStageTransform = { position: [0, 0, 0], rotationY: 0 },
+    primaryVisible = true,
+    coActors = [],
+    onSelectActor,
   },
   ref
 ) {
   const bone = rig && selected ? rig.bones.get(selected) ?? null : null;
   const fov = settings.fov ?? 35;
   const lightIntensity = settings.lightIntensity ?? 2.2;
+  const rimIntensity = settings.rimIntensity ?? 0.5;
+  const fillIntensity = settings.fillIntensity ?? 0.6;
   const lightAngle = settings.lightAngle ?? [2.5, 4, 3];
+  const rimAngle: [number, number, number] = [
+    -lightAngle[0],
+    Math.max(1.5, lightAngle[1] * 0.55),
+    -lightAngle[2],
+  ];
 
   return (
     <Canvas
-      shadows
+      shadows={{ type: THREE.PCFShadowMap }}
       camera={{ position: [0, 1.3, 3.6], fov }}
       gl={{ antialias: true, preserveDrawingBuffer: true }}
       onPointerMissed={() => {
@@ -501,42 +568,108 @@ export const Viewport = forwardRef<
       }}
       onCreated={({ gl }) => gl.setClearColor(new THREE.Color("#f7f4ec"))}
     >
-      <SceneBridge handleRef={ref} outline={settings.outline} />
-      <MangaRenderer outline={settings.outline} />
-      <ambientLight intensity={0.6} />
+      <SceneBridge handleRef={ref} outline={settings.outline} outlineColor={settings.outlineColor} />
+      <MangaRenderer outline={settings.outline} outlineColor={settings.outlineColor} />
+      <ambientLight intensity={fillIntensity} />
       <directionalLight
         position={lightAngle}
         intensity={lightIntensity}
         castShadow
         shadow-mapSize={[1024, 1024]}
       />
-      <directionalLight position={[-3, 2, -2]} intensity={0.5} />
-      <PoseScene
-        model={model}
-        rig={rig}
-        selected={selected}
-        onSelect={onSelect}
-        showJoints={settings.showJoints}
-        ikMode={ikMode}
-        onIkDrag={onIkDrag}
-      />
-
-      {face && (
-        <FaceRig rig={rig} model={model} face={face} pack={facePack} mono={settings.mono} fitRequest={faceFitRequest} onFit={onFaceFit} />
-      )}
-
-      <WardrobeRig outfit={outfit} rig={rig} mono={settings.mono} tones={settings.tones} assets={wardrobeAssets} />
-
-      {/* 3D Props with Bone Parenting */}
-      {propsList.map((p) => (
-        <PropItem
-          key={p.id}
-          prop={p}
+      <directionalLight position={rimAngle} intensity={rimIntensity} />
+      <group
+        position={primaryStageTransform.position}
+        rotation={[0, (primaryStageTransform.rotationY * Math.PI) / 180, 0]}
+        visible={primaryVisible}
+      >
+        <PoseScene
+          model={model}
           rig={rig}
-          isSelected={selectedPropId === p.id}
-          onSelect={() => onSelectProp(p.id)}
+          selected={selected}
+          onSelect={onSelect}
+          showJoints={settings.showJoints}
+          ikMode={ikMode}
+          onIkDrag={onIkDrag}
         />
+
+        {face && (
+          <FaceRig rig={rig} model={model} face={face} pack={facePack} mono={settings.mono} fitRequest={faceFitRequest} onFit={onFaceFit} />
+        )}
+
+        <WardrobeRig outfit={outfit} rig={rig} mono={settings.mono} tones={settings.tones} assets={wardrobeAssets} />
+
+        {coActors.length > 0 && primaryVisible && (
+          <mesh rotation-x={-Math.PI / 2} position={[0, 0.004, 0]} userData={{ noOutline: true }} name="ActiveActorRing">
+            <ringGeometry args={[0.36, 0.42, 32]} />
+            <meshBasicMaterial color="#e11d2e" side={THREE.DoubleSide} />
+          </mesh>
+        )}
+      </group>
+
+      {/* Secondary staged characters in Scene Cast */}
+      {coActors
+        .filter((co) => co.visible)
+        .map((co) => (
+          <group
+            key={co.id}
+            position={co.position}
+            rotation={[0, (co.rotationY * Math.PI) / 180, 0]}
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelectActor?.(co.id);
+            }}
+          >
+          {co.model && <primitive object={co.model} />}
+          {co.face && co.model && (
+            <FaceRig
+              rig={co.rig}
+              model={co.model}
+              face={co.face}
+              pack={co.facePack ?? facePack}
+              mono={settings.mono}
+              fitRequest={0}
+              onFit={() => {}}
+            />
+          )}
+          {co.outfit && (
+            <WardrobeRig
+              outfit={co.outfit}
+              rig={co.rig}
+              mono={settings.mono}
+              tones={settings.tones}
+              assets={co.wardrobeAssets ?? {}}
+            />
+          )}
+        </group>
       ))}
+
+      {/* 3D Props with Bone Parenting (Active + Co-Actors) */}
+      {primaryVisible &&
+        propsList.map((p) => (
+          <PropItem
+            key={p.id}
+            prop={p}
+            rig={rig}
+            isSelected={selectedPropId === p.id}
+            onSelect={() => onSelectProp(p.id)}
+            customPropObjects={customPropObjects}
+          />
+        ))}
+      {coActors.flatMap((co) =>
+        co.visible
+          ? (co.propsList ?? []).map((p) => (
+              <PropItem
+                key={`${co.id}-${p.id}`}
+                prop={p}
+                rig={co.rig}
+                isSelected={false}
+                onSelect={() => onSelectActor?.(co.id)}
+                customPropObjects={customPropObjects}
+              />
+            ))
+          : []
+      )}
 
       <mesh rotation-x={-Math.PI / 2} receiveShadow userData={{ noOutline: true }} name="FloorShadowMesh">
         <planeGeometry args={[20, 20]} />

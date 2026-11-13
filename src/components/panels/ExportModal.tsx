@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import type { PageLayout } from "@/lib/manga-layout";
 import {
   exportPageAsImage,
@@ -22,6 +22,7 @@ interface ExportModalProps {
   onClose: () => void;
   currentPage: PageLayout;
   allPages: PageLayout[];
+  initialTab?: "image" | "pdf" | "webtoon";
 }
 
 export function ExportModal({
@@ -29,8 +30,12 @@ export function ExportModal({
   onClose,
   currentPage,
   allPages,
+  initialTab = "image",
 }: ExportModalProps) {
-  const [tab, setTab] = useState<"image" | "pdf" | "webtoon">("image");
+  const [tab, setTab] = useState<"image" | "pdf" | "webtoon">(initialTab);
+  useEffect(() => {
+    if (isOpen) setTab(initialTab);
+  }, [isOpen, initialTab]);
   const [scale, setScale] = useState<number>(2); // 1 = standard, 2 = 150 DPI, 3 = 300 DPI print
   const [format, setFormat] = useState<"png" | "jpeg">("png");
   const [isExporting, setIsExporting] = useState(false);
@@ -134,7 +139,8 @@ export function ExportModal({
             }`}
           >
             <FileText className="h-4 w-4" />
-            Multi-Page PDF Book ({allPages.length || 1} pages)
+            Multi-Page PDF Book ({allPages.length || 1}{" "}
+            {(allPages.length || 1) === 1 ? "page" : "pages"})
           </button>
           <button
             onClick={() => setTab("webtoon")}
@@ -221,9 +227,12 @@ export function ExportModal({
                   Manga Chapter Compilation
                 </h3>
                 <p className="text-muted-foreground text-xs leading-relaxed">
-                  Export all <strong>{allPages.length || 1} pages</strong> formatted into a
-                  single printable high-resolution PDF document ready for physical comic printing or
-                  digital tankobon release.
+                  Export all{" "}
+                  <strong>
+                    {allPages.length || 1} {(allPages.length || 1) === 1 ? "page" : "pages"}
+                  </strong>{" "}
+                  formatted into a single printable high-resolution PDF document ready for physical
+                  comic printing or digital tankobon release.
                 </p>
               </div>
 

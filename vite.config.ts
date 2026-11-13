@@ -15,4 +15,37 @@ export default defineConfig({
     // nitro/vite builds from this
     server: { entry: "server" },
   },
+  vite: {
+    environments: {
+      client: {
+        build: {
+          chunkSizeWarningLimit: 950,
+          rolldownOptions: {
+            output: {
+              codeSplitting: {
+                groups: [
+                  {
+                    name: "vendor-three",
+                    test: /[\\/]node_modules[\\/]three[\\/]/,
+                  },
+                  {
+                    name: "vendor-r3f",
+                    test: /[\\/]node_modules[\\/](@react-three|three-stdlib|camera-controls|suspend-react|maath|troika-three-text)[\\/]/,
+                  },
+                  {
+                    name: "vendor-vrm",
+                    test: /[\\/]node_modules[\\/]@pixiv[\\/]/,
+                  },
+                  {
+                    name: "vendor-ui",
+                    test: /[\\/]node_modules[\\/](@radix-ui|lucide-react|@tanstack)[\\/]/,
+                  },
+                ],
+              },
+            },
+          },
+        },
+      },
+    },
+  },
 });

@@ -63,3 +63,4 @@ describe("Manga Pro Features: Extended Grid Layout Catalog", () => {
     expect(webtoon3.length).toBe(3);
   });
 });
+

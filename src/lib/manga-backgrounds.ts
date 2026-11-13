@@ -350,3 +350,4 @@ export function getMangaBackgroundDataUrl(bg: MangaBackground, width = 800, heig
   const encoded = encodeURIComponent(svg);
   return `data:image/svg+xml;charset=utf-8,${encoded}`;
 }
+

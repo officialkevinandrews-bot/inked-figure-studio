@@ -1,19 +1,33 @@
-import React, { useRef, useState, useEffect } from "react";
+import React, { useState } from "react";
 import type { PlacedElement } from "@/lib/manga-layout";
-import { FlipHorizontal, FlipVertical, ArrowUp, ArrowDown, Trash2, Maximize2, ShieldAlert } from "lucide-react";
+import { computeResizedBox } from "@/lib/transform-box";
+import { FlipHorizontal, FlipVertical, ArrowUp, ArrowDown, Trash2, Maximize2, RotateCw } from "lucide-react";
 import { usePageZoom } from "./zoom-context";
 
 interface PanelTransformerProps {
   element: PlacedElement;
   isSelected: boolean;
+  mode?: "full" | "art-only" | "handles-only";
   onSelect: () => void;
   onChange: (updated: Partial<PlacedElement>) => void;
   onDelete: () => void;
 }
 
+const HANDLE_LABELS: Record<string, string> = {
+  nw: "Resize top-left corner",
+  n: "Resize top edge",
+  ne: "Resize top-right corner",
+  e: "Resize right edge",
+  se: "Resize bottom-right corner",
+  s: "Resize bottom edge",
+  sw: "Resize bottom-left corner",
+  w: "Resize left edge",
+};
+
 export function PanelTransformer({
   element,
   isSelected,
+  mode = "full",
   onSelect,
   onChange,
   onDelete,
@@ -24,7 +38,9 @@ export function PanelTransformer({
   const [initialPos, setInitialPos] = useState({ x: 0, y: 0 });
 
   const [resizing, setResizing] = useState<string | null>(null);
-  const [resizeStart, setResizeStart] = useState({ x: 0, y: 0, w: 0, h: 0 });
+  const [resizeStart, setResizeStart] = useState({ x: 0, y: 0, elX: 0, elY: 0, w: 0, h: 0 });
+  const [rotating, setRotating] = useState(false);
+  const containerRef = React.useRef<HTMLDivElement>(null);
 
   const handlePointerDown = (e: React.PointerEvent) => {
     e.stopPropagation();
@@ -32,7 +48,7 @@ export function PanelTransformer({
     setDragging(true);
     setDragStart({ x: e.clientX, y: e.clientY });
     setInitialPos({ x: element.x, y: element.y });
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   };
 
   const handlePointerMove = (e: React.PointerEvent) => {
@@ -46,50 +62,56 @@ export function PanelTransformer({
     } else if (resizing) {
       const dx = (e.clientX - resizeStart.x) / zoom;
       const dy = (e.clientY - resizeStart.y) / zoom;
-      let newW = resizeStart.w;
-      let newH = resizeStart.h;
-
-      if (resizing.includes("e")) newW = Math.max(20, resizeStart.w + dx);
-      if (resizing.includes("s")) newH = Math.max(20, resizeStart.h + dy);
-      if (resizing.includes("w")) {
-        newW = Math.max(20, resizeStart.w - dx);
-      }
-      if (resizing.includes("n")) {
-        newH = Math.max(20, resizeStart.h - dy);
-      }
-
-      // Preserve aspect ratio if holding shift
-      if (e.shiftKey) {
-        const aspect = resizeStart.w / resizeStart.h;
-        newH = newW / aspect;
-      }
-
-      onChange({ width: newW, height: newH });
+      onChange(
+        computeResizedBox(
+          { x: resizeStart.elX, y: resizeStart.elY, width: resizeStart.w, height: resizeStart.h },
+          resizing,
+          dx,
+          dy,
+          e.shiftKey,
+        ),
+      );
+    } else if (rotating && containerRef.current) {
+      const rect = containerRef.current.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      const deg = (Math.atan2(e.clientY - cy, e.clientX - cx) * 180) / Math.PI - 90;
+      onChange({ rotation: Math.round(e.shiftKey ? Math.round(deg / 15) * 15 : deg) });
     }
   };
 
   const handlePointerUp = (e: React.PointerEvent) => {
     setDragging(false);
     setResizing(null);
+    setRotating(false);
     try {
-      (e.target as HTMLElement).releasePointerCapture(e.pointerId);
-    } catch {}
+      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch {
+      /* pointer capture already released */
+    }
   };
 
   const handleResizePointerDown = (handle: string, e: React.PointerEvent) => {
     e.stopPropagation();
+    onSelect();
     setResizing(handle);
     setResizeStart({
       x: e.clientX,
       y: e.clientY,
+      elX: element.x,
+      elY: element.y,
       w: element.width,
       h: element.height,
     });
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   };
+
+  const showArt = mode !== "handles-only";
+  const showHandles = mode !== "art-only" && isSelected;
 
   return (
     <div
+      ref={containerRef}
       style={{
         position: "absolute",
         left: `${element.x}px`,
@@ -98,32 +120,38 @@ export function PanelTransformer({
         height: `${element.height}px`,
         transform: `rotate(${element.rotation}deg) scale(${element.flipX ? -1 : 1}, ${element.flipY ? -1 : 1})`,
         transformOrigin: "center center",
-        zIndex: element.zIndex,
+        zIndex: mode === "handles-only" ? 90 : element.zIndex,
+        pointerEvents: mode === "handles-only" ? "none" : "auto",
       }}
-      className={`group select-none cursor-move ${isSelected ? "ring-2 ring-primary ring-offset-1" : ""}`}
-      onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerUp}
+      className={`group select-none ${showArt ? "cursor-move" : ""} ${showHandles ? "ring-2 ring-primary ring-offset-1" : ""}`}
+      onClick={showArt ? (e) => e.stopPropagation() : undefined}
+      onPointerDown={showArt ? handlePointerDown : undefined}
+      onPointerMove={showArt ? handlePointerMove : undefined}
+      onPointerUp={showArt ? handlePointerUp : undefined}
     >
-      <img
-        src={element.imageUrl}
-        alt="Placed Character"
-        className="w-full h-full object-contain pointer-events-none select-none"
-        draggable={false}
-      />
+      {showArt && (
+        <>
+          <img
+            src={element.imageUrl}
+            alt="Placed Character"
+            className="w-full h-full object-contain pointer-events-none select-none"
+            draggable={false}
+          />
 
-      {/* Breakout badge indicator */}
-      {element.breakout && (
-        <span
-          title="Breakout layer: overlaps panel borders & gutters"
-          className="absolute -top-2 -left-2 bg-primary text-primary-foreground text-[9px] font-bold px-1.5 py-0.5 rounded-full shadow-ink pointer-events-none flex items-center gap-0.5"
-        >
-          <Maximize2 className="h-2.5 w-2.5" /> Breakout
-        </span>
+          {/* Breakout badge indicator */}
+          {element.breakout && (
+            <span
+              title="Breakout layer: overlaps panel borders & gutters"
+              className="absolute -top-2 -left-2 bg-primary text-primary-foreground text-[9px] font-bold px-1.5 py-0.5 rounded-full shadow-ink pointer-events-none flex items-center gap-0.5"
+            >
+              <Maximize2 className="h-2.5 w-2.5" /> Breakout
+            </span>
+          )}
+        </>
       )}
 
       {/* Selected handles & Quick Controls toolbar */}
-      {isSelected && (
+      {showHandles && (
         <>
           {/* Quick Transform Toolbar */}
           <div
@@ -131,6 +159,7 @@ export function PanelTransformer({
               transform: `scale(${element.flipX ? -1 : 1}, ${element.flipY ? -1 : 1})`,
             }}
             className="absolute -top-10 left-1/2 -translate-x-1/2 flex items-center gap-1 bg-foreground text-background px-2 py-1 rounded-sm shadow-ink text-xs z-50 pointer-events-auto"
+            onClick={(e) => e.stopPropagation()}
             onPointerDown={(e) => e.stopPropagation()}
           >
             <button
@@ -196,16 +225,39 @@ export function PanelTransformer({
             return (
               <div
                 key={handle}
-                className={`absolute w-3 h-3 bg-primary border-2 border-foreground rounded-xs shadow-xs ${posClass[handle]}`}
+                role="button"
+                tabIndex={0}
+                aria-label={HANDLE_LABELS[handle]}
+                className={`pointer-events-auto absolute w-3 h-3 bg-primary border-2 border-foreground rounded-xs shadow-xs ${posClass[handle]}`}
+                onClick={(e) => e.stopPropagation()}
                 onPointerDown={(e) => handleResizePointerDown(handle, e)}
                 onPointerMove={handlePointerMove}
                 onPointerUp={handlePointerUp}
               />
             );
           })}
+
+          {/* On-canvas bottom rotation handle */}
+          <div
+            role="button"
+            tabIndex={0}
+            aria-label="Rotate element"
+            title="Drag to rotate (Shift snaps 15°)"
+            className="pointer-events-auto absolute -bottom-7 left-1/2 -translate-x-1/2 flex h-5 w-5 items-center justify-center rounded-full border-2 border-foreground bg-card text-foreground shadow-ink cursor-grab active:cursor-grabbing"
+            onClick={(e) => e.stopPropagation()}
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              onSelect();
+              setRotating(true);
+              (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+            }}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+          >
+            <RotateCw className="h-3 w-3" />
+          </div>
         </>
       )}
     </div>
   );
 }
-

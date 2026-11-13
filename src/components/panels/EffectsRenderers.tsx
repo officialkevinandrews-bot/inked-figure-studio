@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import type { ComicMark, SpeedLinesEffect, SFXStamp } from "@/lib/manga-effects";
-import { generateRadialSpeedLines } from "@/lib/manga-effects";
+import { generateSpeedWedges } from "@/lib/manga-effects";
 import { Trash2, RotateCw } from "lucide-react";
 import { usePageZoom } from "./zoom-context";
 import { markPath } from "@/lib/manga-marks";
@@ -57,8 +57,10 @@ export function ComicMarkRenderer({
   const handlePointerUp = (e: React.PointerEvent) => {
     setDragging(false);
     try {
-      (e.target as HTMLElement).releasePointerCapture(e.pointerId);
-    } catch {}
+      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch {
+      /* pointer capture already released */
+    }
   };
 
   return (
@@ -74,6 +76,7 @@ export function ComicMarkRenderer({
         zIndex: mark.zIndex,
       }}
       className={`group select-none cursor-move p-1 ${isSelected ? "ring-2 ring-primary rounded-xs" : ""}`}
+      onClick={(e) => e.stopPropagation()}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
@@ -83,6 +86,10 @@ export function ComicMarkRenderer({
         if (vec)
           return (
             <svg width={mark.size} height={mark.size} viewBox="0 0 100 100" style={{ display: "block", overflow: "visible" }}>
+              {/* White contrast halo so emotion marks pop over black screentones */}
+              {vec.map((part, i) => (
+                <path key={`halo-${i}`} d={part.d} fill="none" stroke="#ffffff" strokeWidth={(part.width ?? 4) + 6} strokeLinecap="round" strokeLinejoin="round" />
+              ))}
               {vec.map((part, i) => (
                 <path key={i} d={part.d} fill={part.fill ?? "none"} stroke={part.stroke} strokeWidth={part.width ?? 4} strokeLinecap="round" strokeLinejoin="round" />
               ))}
@@ -130,23 +137,7 @@ export function SpeedLinesRenderer({
   onChange: (updated: Partial<SpeedLinesEffect>) => void;
   onDelete: () => void;
 }) {
-  const lines = React.useMemo(() => {
-    if (effect.type === "linear") {
-      const rad = (effect.angle * Math.PI) / 180;
-      const cos = Math.cos(rad), sin = Math.sin(rad);
-      const out: string[] = [];
-      for (let i = 0; i < effect.density; i++) {
-        const off = (i - effect.density / 2) * 12;
-        const x1 = effect.centerX + off * -sin - cos * effect.outerRadius;
-        const y1 = effect.centerY + off * cos - sin * effect.outerRadius;
-        const x2 = effect.centerX + off * -sin + cos * effect.outerRadius;
-        const y2 = effect.centerY + off * cos + sin * effect.outerRadius;
-        out.push(`M ${x1.toFixed(1)} ${y1.toFixed(1)} L ${x2.toFixed(1)} ${y2.toFixed(1)}`);
-      }
-      return out;
-    }
-    return generateRadialSpeedLines(effect.centerX, effect.centerY, effect.innerRadius, effect.outerRadius, effect.density, effect.strokeWidth, effect.color);
-  }, [effect.type, effect.angle, effect.centerX, effect.centerY, effect.innerRadius, effect.outerRadius, effect.density, effect.strokeWidth, effect.color]);
+  const wedges = React.useMemo(() => generateSpeedWedges(effect), [effect]);
   const zoom = usePageZoom();
 
   return (
@@ -160,19 +151,19 @@ export function SpeedLinesRenderer({
         pointerEvents: "none",
         zIndex: effect.zIndex,
       }}
-      onClick={(e) => {
-        e.stopPropagation();
-        onSelect();
-      }}
     >
-      <svg style={{ width: "100%", height: "100%", pointerEvents: "auto" }}>
-        {lines.map((d, i) => (
-          <path
+      <svg style={{ width: "100%", height: "100%", pointerEvents: "none" }}>
+        {wedges.map((poly, i) => (
+          <polygon
             key={i}
-            d={d}
-            stroke={effect.color || "#000000"}
-            strokeWidth={effect.strokeWidth || 1.5}
-            strokeLinecap="round"
+            points={poly.map((pt) => `${pt.x.toFixed(1)},${pt.y.toFixed(1)}`).join(" ")}
+            fill={effect.color || "#000000"}
+            opacity={effect.opacity ?? 1}
+            style={{ pointerEvents: "auto", cursor: "pointer" }}
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelect();
+            }}
           />
         ))}
 
@@ -185,7 +176,9 @@ export function SpeedLinesRenderer({
             fill="#e11d2e"
             stroke="#ffffff"
             strokeWidth={2}
+            style={{ pointerEvents: "auto" }}
             className="cursor-move"
+            onClick={(e) => e.stopPropagation()}
             onPointerDown={(e) => {
               e.stopPropagation();
               const rect = (e.currentTarget as SVGElement).ownerSVGElement?.getBoundingClientRect();
@@ -250,8 +243,10 @@ export function SFXStampRenderer({
   const handlePointerUp = (e: React.PointerEvent) => {
     setDragging(false);
     try {
-      (e.target as HTMLElement).releasePointerCapture(e.pointerId);
-    } catch {}
+      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch {
+      /* pointer capture already released */
+    }
   };
 
   return (
@@ -268,20 +263,37 @@ export function SFXStampRenderer({
         zIndex: stamp.zIndex,
       }}
       className={`group select-none cursor-move p-2 ${isSelected ? "ring-2 ring-primary rounded-xs" : ""}`}
+      onClick={(e) => e.stopPropagation()}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
     >
-      <span
-        style={{
-          fontFamily: fontStack(stamp.fontFamily, "sfx"),
-          color: stamp.fillColor || "#ffffff",
-          WebkitTextStroke: `${stamp.strokeWidth ?? 3}px ${stamp.strokeColor || "#000000"}`,
-          paintOrder: "stroke fill",
-        }}
-        className="font-black tracking-widest drop-shadow-xl select-none"
-      >
-        {stamp.text}
+      <span className="relative inline-block select-none">
+        {(stamp.haloWidth ?? 3) > 0 && (
+          <span
+            aria-hidden="true"
+            style={{
+              fontFamily: fontStack(stamp.fontFamily, "sfx"),
+              color: "transparent",
+              WebkitTextStroke: `${(stamp.strokeWidth ?? 3) + (stamp.haloWidth ?? 3) * 2}px ${stamp.haloColor || "#ffffff"}`,
+              paintOrder: "stroke fill",
+            }}
+            className="pointer-events-none absolute inset-0 font-black tracking-widest select-none"
+          >
+            {stamp.text}
+          </span>
+        )}
+        <span
+          style={{
+            fontFamily: fontStack(stamp.fontFamily, "sfx"),
+            color: stamp.fillColor || "#ffffff",
+            WebkitTextStroke: `${stamp.strokeWidth ?? 3}px ${stamp.strokeColor || "#000000"}`,
+            paintOrder: "stroke fill",
+          }}
+          className="relative font-black tracking-widest drop-shadow-xl select-none"
+        >
+          {stamp.text}
+        </span>
       </span>
 
       {isSelected && (

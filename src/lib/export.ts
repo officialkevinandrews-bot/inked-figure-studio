@@ -1,11 +1,16 @@
-import { jsPDF } from "jspdf";
 import type { PageLayout, PlacedElement } from "./manga-layout";
 import { panelBounds } from "./manga-layout";
 import { toneDataUrl, fadeGeometry, type Screentone } from "./screentone";
 import { fontStack, ensureFontsLoaded } from "./manga-fonts";
-import { COMIC_MARK_PRESETS } from "./manga-effects";
+import {
+  COMIC_MARK_PRESETS,
+  balloonPathFromSpec,
+  generateSpeedWedges,
+} from "./manga-effects";
+import { tracePanelCanvasPath } from "./panel-geometry";
+import { markPath } from "./manga-marks";
 
-/** Fill a polygon with a screentone, honouring rotation and fade. */
+/** Fill a panel path with a screentone, honouring rotation, rounded/scalloped corners, and fade. */
 async function drawTone(
   ctx: CanvasRenderingContext2D,
   pts: { x: number; y: number }[],
@@ -13,7 +18,9 @@ async function drawTone(
   tone: Screentone,
   W: number,
   H: number,
-  scale: number
+  scale: number,
+  cornerRadius = 0,
+  scalloped = false,
 ) {
   const tile = await loadImage(toneDataUrl(tone));
   const off = document.createElement("canvas");
@@ -24,9 +31,7 @@ async function drawTone(
   const pat = o.createPattern(tile, "repeat");
   if (!pat) return;
   pat.setTransform(new DOMMatrix().rotateSelf(tone.angle));
-  o.beginPath();
-  pts.forEach((p, i) => (i ? o.lineTo(p.x, p.y) : o.moveTo(p.x, p.y)));
-  o.closePath();
+  tracePanelCanvasPath(o, pts, cornerRadius, scalloped);
   o.fillStyle = pat;
   o.fill();
   const g = fadeGeometry(tone.fade, box);
@@ -51,8 +56,6 @@ async function drawTone(
   ctx.drawImage(off, 0, 0);
   ctx.restore();
 }
-import { generateBalloonPath } from "./manga-effects";
-import { markPath } from "./manga-marks";
 
 export interface ExportOptions {
   scale?: number; // 1 = 72 DPI, 2 = 150 DPI, 3 or 4 = 300 DPI high-res print
@@ -72,6 +75,35 @@ export function loadImage(url: string): Promise<HTMLImageElement> {
     img.onerror = (e) => reject(new Error(`Failed to load element image: ${url}`));
     img.src = url;
   });
+}
+
+const VERTICAL_ROTATE_CHARS = new Set(["ー", "—", "−", "…", "‥", "「", "」", "『", "』", "（", "）", "(", ")", "[", "]"]);
+
+/**
+ * Splits vertical Japanese (`vertical-rl`) balloon text into right-to-left columns,
+ * respecting explicit newlines and wrapping when a column exceeds `maxHeight`.
+ */
+export function layoutVerticalColumns(
+  text: string,
+  fontSize: number,
+  maxHeight: number,
+): string[][] {
+  const charStep = fontSize * 1.1;
+  const maxChars = Math.max(1, Math.floor(Math.max(charStep, maxHeight) / charStep));
+  const paragraphs = text.split(/\r?\n/);
+  const cols: string[][] = [];
+
+  for (const para of paragraphs) {
+    const chars = Array.from(para);
+    if (chars.length === 0) {
+      cols.push([]);
+      continue;
+    }
+    for (let i = 0; i < chars.length; i += maxChars) {
+      cols.push(chars.slice(i, i + maxChars));
+    }
+  }
+  return cols.length > 0 ? cols : [[]];
 }
 
 /**
@@ -120,67 +152,42 @@ export async function renderPageToCanvas(
 
     // Panel Fill
     ctx.save();
-    ctx.beginPath();
-    ctx.moveTo(pts[0].x, pts[0].y);
-    for (let i = 1; i < pts.length; i++) {
-      ctx.lineTo(pts[i].x, pts[i].y);
-    }
-    ctx.closePath();
+    tracePanelCanvasPath(ctx, pts, panel.cornerRadius ?? 0, Boolean(panel.scalloped));
     ctx.fillStyle = panel.backgroundColor || "#ffffff";
     ctx.fill();
     if (panel.tone) {
       ctx.restore();
-      await drawTone(ctx, pts, bounds, panel.tone, width, height, scale);
+      await drawTone(
+        ctx,
+        pts,
+        bounds,
+        panel.tone,
+        width,
+        height,
+        scale,
+        panel.cornerRadius ?? 0,
+        Boolean(panel.scalloped),
+      );
       ctx.save();
-      ctx.beginPath();
-      ctx.moveTo(pts[0].x, pts[0].y);
-      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
-      ctx.closePath();
+      tracePanelCanvasPath(ctx, pts, panel.cornerRadius ?? 0, Boolean(panel.scalloped));
     }
 
     // Clip to panel geometry
     ctx.clip();
 
-    // Draw Speed Lines assigned to this panel
+    // Draw Tapered Ink Speed Lines assigned to this panel
     const panelSpeedLines = (layout.speedLines ?? []).filter((l) => l.panelId === panel.id);
     for (const effect of panelSpeedLines) {
       ctx.save();
-      ctx.strokeStyle = effect.color || "#000000";
-      ctx.lineWidth = effect.strokeWidth;
-
-      if (effect.type === "radial") {
-        const count = effect.density;
-        const cx = effect.centerX;
-        const cy = effect.centerY;
-        const r1 = effect.innerRadius;
-        const r2 = effect.outerRadius;
-        for (let i = 0; i < count; i++) {
-          const angle = (i / count) * Math.PI * 2 + (i % 3) * 0.02;
-          const x1 = cx + Math.cos(angle) * r1;
-          const y1 = cy + Math.sin(angle) * r1;
-          const x2 = cx + Math.cos(angle) * r2;
-          const y2 = cy + Math.sin(angle) * r2;
-          ctx.beginPath();
-          ctx.moveTo(x1, y1);
-          ctx.lineTo(x2, y2);
-          ctx.stroke();
-        }
-      } else {
-        // Linear parallel motion lines
-        const rad = (effect.angle * Math.PI) / 180;
-        const cos = Math.cos(rad);
-        const sin = Math.sin(rad);
-        for (let i = 0; i < effect.density; i++) {
-          const offset = (i - effect.density / 2) * 12;
-          const x1 = effect.centerX + offset * -sin - cos * effect.outerRadius;
-          const y1 = effect.centerY + offset * cos - sin * effect.outerRadius;
-          const x2 = effect.centerX + offset * -sin + cos * effect.outerRadius;
-          const y2 = effect.centerY + offset * cos + sin * effect.outerRadius;
-          ctx.beginPath();
-          ctx.moveTo(x1, y1);
-          ctx.lineTo(x2, y2);
-          ctx.stroke();
-        }
+      ctx.fillStyle = effect.color || "#000000";
+      ctx.globalAlpha = effect.opacity ?? 1;
+      for (const poly of generateSpeedWedges(effect)) {
+        if (poly.length < 3) continue;
+        ctx.beginPath();
+        ctx.moveTo(poly[0].x, poly[0].y);
+        for (let k = 1; k < poly.length; k++) ctx.lineTo(poly[k].x, poly[k].y);
+        ctx.closePath();
+        ctx.fill();
       }
       ctx.restore();
     }
@@ -206,15 +213,10 @@ export async function renderPageToCanvas(
 
     // 3. Draw Panel Border Stroke
     ctx.save();
-    ctx.beginPath();
-    ctx.moveTo(pts[0].x, pts[0].y);
-    for (let i = 1; i < pts.length; i++) {
-      ctx.lineTo(pts[i].x, pts[i].y);
-    }
-    ctx.closePath();
+    tracePanelCanvasPath(ctx, pts, panel.cornerRadius ?? 0, Boolean(panel.scalloped));
     ctx.lineWidth = panel.borderWidth;
     ctx.strokeStyle = panel.borderColor;
-    ctx.lineJoin = "miter";
+    ctx.lineJoin = panel.cornerRadius || panel.scalloped ? "round" : "miter";
     if (panel.borderStyle === "dashed") ctx.setLineDash([8, 6]);
     if (panel.borderStyle === "dotted") ctx.setLineDash([3, 4]);
     if (panel.borderStyle !== "none" && panel.borderWidth > 0) ctx.stroke();
@@ -241,7 +243,7 @@ export async function renderPageToCanvas(
   // 5. Speech Balloons
   for (const b of layout.balloons ?? []) {
     ctx.save();
-    const pathD = generateBalloonPath(b.shape, b.width, b.height, b.tailX, b.tailY, b.hasTail);
+    const pathD = balloonPathFromSpec(b);
     const p2d = new Path2D(pathD);
 
     ctx.translate(b.x, b.y);
@@ -263,11 +265,26 @@ export async function renderPageToCanvas(
     ctx.textBaseline = "middle";
 
     if (b.writingMode === "vertical-rl" || b.isVertical) {
-      // Vertical Japanese reading order
-      const chars = b.text.split("");
-      const startY = b.height / 2 - ((chars.length - 1) * b.fontSize * 1.1) / 2;
-      chars.forEach((char, idx) => {
-        ctx.fillText(char, b.width / 2, startY + idx * b.fontSize * 1.1);
+      // Vertical Japanese reading order (right-to-left columns, wrapping by height & newlines)
+      const charStep = b.fontSize * 1.1;
+      const colStep = b.fontSize * 1.25;
+      const cols = layoutVerticalColumns(b.text, b.fontSize, b.height * 0.76);
+      const startX = b.width / 2 + ((cols.length - 1) * colStep) / 2;
+      cols.forEach((colChars, colIdx) => {
+        const colX = startX - colIdx * colStep;
+        const startY = b.height / 2 - ((Math.max(1, colChars.length) - 1) * charStep) / 2;
+        colChars.forEach((char, rowIdx) => {
+          const cy = startY + rowIdx * charStep;
+          if (VERTICAL_ROTATE_CHARS.has(char)) {
+            ctx.save();
+            ctx.translate(colX, cy);
+            ctx.rotate(Math.PI / 2);
+            ctx.fillText(char, 0, 0);
+            ctx.restore();
+          } else {
+            ctx.fillText(char, colX, cy);
+          }
+        });
       });
     } else {
       // Horizontal text with auto line wrap
@@ -310,6 +327,14 @@ export async function renderPageToCanvas(
       ctx.translate(-50, -50);
       for (const part of vec) {
         const p2 = new Path2D(part.d);
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = (part.width ?? 4) + 6;
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        ctx.stroke(p2);
+      }
+      for (const part of vec) {
+        const p2 = new Path2D(part.d);
         if (part.fill && part.fill !== "none") { ctx.fillStyle = part.fill; ctx.fill(p2); }
         if (part.stroke) { ctx.strokeStyle = part.stroke; ctx.lineWidth = part.width ?? 4; ctx.lineCap = "round"; ctx.lineJoin = "round"; ctx.stroke(p2); }
       }
@@ -335,6 +360,15 @@ export async function renderPageToCanvas(
     ctx.font = `900 ${sfx.fontSize}px ${fontStack(sfx.fontFamily, "sfx")}`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
+
+    // Outer white halo for contrast over dark screentones
+    const haloW = sfx.haloWidth ?? 3;
+    if (haloW > 0) {
+      ctx.lineWidth = sfx.strokeWidth + haloW * 2;
+      ctx.strokeStyle = sfx.haloColor || "#ffffff";
+      ctx.lineJoin = "round";
+      ctx.strokeText(sfx.text, 0, 0);
+    }
 
     // Stroke border
     ctx.lineWidth = sfx.strokeWidth;
@@ -393,6 +427,7 @@ export async function exportChapterAsPdf(
   const firstFmt = pages[0].format;
   const orientation = firstFmt.height >= firstFmt.width ? "portrait" : "landscape";
 
+  const { jsPDF } = await import("jspdf");
   const pdf = new jsPDF({
     orientation,
     unit: "pt",

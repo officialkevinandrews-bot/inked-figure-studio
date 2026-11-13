@@ -20,7 +20,7 @@ function textOf(r: unknown): string {
 }
 
 export const generateAiPose = createServerFn({ method: "POST" })
-  .inputValidator((d: { prompt: string; current?: { bones: Record<string, unknown>; hipsDrop: number } | null }) => {
+  .validator((d: { prompt: string; current?: { bones: Record<string, unknown>; hipsDrop: number } | null }) => {
     const prompt = String(d?.prompt ?? "").trim().slice(0, 500);
     if (!prompt) throw new Error("Describe a pose first.");
     const current = d?.current ? sanitizeAiPose({ bones: d.current.bones, hipsDrop: d.current.hipsDrop }) : null;

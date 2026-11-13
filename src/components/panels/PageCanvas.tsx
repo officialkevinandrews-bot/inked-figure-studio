@@ -1,7 +1,8 @@
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import type { PageLayout, PlacedElement, PanelPolygon, Point } from "@/lib/manga-layout";
 import { panelBounds } from "@/lib/manga-layout";
 import { readingOrder, centroid } from "@/lib/manga-grid";
+import { buildPanelSvgPath, computeSnapPosition, type SnapGuide } from "@/lib/panel-geometry";
 import { fadeGeometry, toneTile } from "@/lib/screentone";
 import { PanelTransformer } from "./PanelTransformer";
 import { PageZoomContext } from "./zoom-context";
@@ -27,43 +28,53 @@ interface PageCanvasProps {
   onDeleteSpeedLines: (id: string) => void;
   onUpdateSFXStamp: (id: string, updated: Partial<SFXStamp>) => void;
   onDeleteSFXStamp: (id: string) => void;
-  onRePoseIn3D?: (source3d: any) => void;
+  onRePoseIn3D?: (source3d: NonNullable<PlacedElement["source3d"]>) => void;
   zoom?: number;
   tool?: CanvasTool;
   onKnife?: (a: Point, b: Point) => void;
   onMoveVertex?: (from: Point, to: Point) => void;
   showOrder?: "rtl" | "ltr" | null;
   showGuides?: boolean;
+  seamless?: boolean;
+  seamCutYs?: number[];
 }
 
 const dashFor = (p: PanelPolygon) => (p.borderStyle === "dashed" ? "8,6" : p.borderStyle === "dotted" ? "3,4" : undefined);
 
 /** SVG defs for a panel's screentone (pattern + optional fade mask). */
-function ToneDefs({ p, box }: { p: PanelPolygon; box: { minX: number; minY: number; width: number; height: number } }) {
+function ToneDefs({
+  p,
+  uid,
+  box,
+}: {
+  p: PanelPolygon;
+  uid: string;
+  box: { minX: number; minY: number; width: number; height: number };
+}) {
   if (!p.tone) return null;
   const tile = toneTile(p.tone);
   const g = fadeGeometry(p.tone.fade, box);
   return (
     <>
-      <pattern id={`tone-${p.id}`} patternUnits="userSpaceOnUse" width={tile.w} height={tile.h} patternTransform={`rotate(${p.tone.angle})`}>
+      <pattern id={`tone-${uid}`} patternUnits="userSpaceOnUse" width={tile.w} height={tile.h} patternTransform={`rotate(${p.tone.angle})`}>
         <g dangerouslySetInnerHTML={{ __html: tile.body }} />
       </pattern>
       {g && (
         <>
           {g.type === "linear" ? (
-            <linearGradient id={`tfade-${p.id}`} gradientUnits="userSpaceOnUse" x1={g.x1} y1={g.y1} x2={g.x2} y2={g.y2}>
+            <linearGradient id={`tfade-${uid}`} gradientUnits="userSpaceOnUse" x1={g.x1} y1={g.y1} x2={g.x2} y2={g.y2}>
               <stop offset="0" stopColor="#fff" />
               <stop offset="1" stopColor="#000" />
             </linearGradient>
           ) : (
-            <radialGradient id={`tfade-${p.id}`} gradientUnits="userSpaceOnUse" cx={g.cx} cy={g.cy} r={g.r}>
+            <radialGradient id={`tfade-${uid}`} gradientUnits="userSpaceOnUse" cx={g.cx} cy={g.cy} r={g.r}>
               <stop offset="0" stopColor={g.invert ? "#000" : "#fff"} />
               <stop offset={g.invert ? "0.35" : "0.2"} stopColor={g.invert ? "#000" : "#fff"} />
               <stop offset="1" stopColor={g.invert ? "#fff" : "#000"} />
             </radialGradient>
           )}
-          <mask id={`tmask-${p.id}`} maskUnits="userSpaceOnUse" x={box.minX - 20} y={box.minY - 20} width={box.width + 40} height={box.height + 40}>
-            <rect x={box.minX - 20} y={box.minY - 20} width={box.width + 40} height={box.height + 40} fill={`url(#tfade-${p.id})`} />
+          <mask id={`tmask-${uid}`} maskUnits="userSpaceOnUse" x={box.minX - 20} y={box.minY - 20} width={box.width + 40} height={box.height + 40}>
+            <rect x={box.minX - 20} y={box.minY - 20} width={box.width + 40} height={box.height + 40} fill={`url(#tfade-${uid})`} />
           </mask>
         </>
       )}
@@ -94,15 +105,52 @@ export function PageCanvas({
   onMoveVertex,
   showOrder = null,
   showGuides = false,
+  seamless = false,
+  seamCutYs = [],
 }: PageCanvasProps) {
   const { width, height, margin } = layout.format;
   const pageRef = useRef<HTMLDivElement>(null);
   const [knife, setKnife] = useState<{ a: Point; b: Point } | null>(null);
   const dragVertex = useRef<Point | null>(null);
+  const pointerDownPanelRef = useRef<string | null>(null);
+  const [snapGuides, setSnapGuides] = useState<SnapGuide[]>([]);
+
+  useEffect(() => {
+    if (snapGuides.length === 0) return;
+    const clear = () => setSnapGuides([]);
+    window.addEventListener("pointerup", clear, { once: true });
+    return () => window.removeEventListener("pointerup", clear);
+  }, [snapGuides]);
 
   // floating inset panels draw last so they sit over the panels they overlap
   const ordered = [...layout.panels].sort((a, b) => Number(!!a.floating) - Number(!!b.floating));
   const bounds = new Map(ordered.map((p) => [p.id, panelBounds(p, layout.format)]));
+
+  const handleElementChangeWithSnap = (id: string, updated: Partial<PlacedElement>) => {
+    if (
+      updated.x !== undefined &&
+      updated.y !== undefined &&
+      updated.width === undefined &&
+      updated.height === undefined
+    ) {
+      const target = layout.elements.find((e) => e.id === id);
+      if (target) {
+        const panelBoxList = Array.from(bounds.values());
+        const siblings = layout.elements
+          .filter((e) => e.id !== id)
+          .map((e) => ({ x: e.x, y: e.y, width: e.width, height: e.height }));
+        const snapped = computeSnapPosition(
+          { x: updated.x, y: updated.y, width: target.width, height: target.height },
+          panelBoxList,
+          siblings,
+        );
+        setSnapGuides(snapped.guides);
+        onUpdateElement(id, { ...updated, x: snapped.x, y: snapped.y });
+        return;
+      }
+    }
+    onUpdateElement(id, updated);
+  };
   const clippedElements = layout.elements.filter((el) => !el.breakout);
   const breakoutElements = layout.elements.filter((el) => el.breakout);
   const balloons = layout.balloons ?? [];
@@ -121,23 +169,32 @@ export function PageCanvas({
   const renderPanelGroup = (p: PanelPolygon) => {
     const b = bounds.get(p.id)!;
     const isSelected = selectedPanelId === p.id;
-    const svgPoints = b.points.map((pt) => `${pt.x},${pt.y}`).join(" ");
+    const panelPath = buildPanelSvgPath(b.points, p.cornerRadius ?? 0, Boolean(p.scalloped));
+    const uid = `${layout.id}-${p.id}`;
     const panelElements = clippedElements.filter((el) => el.panelId === p.id);
     return (
       <React.Fragment key={`grp-${p.id}`}>
         <svg
           style={{ position: "absolute", top: 0, left: 0, width, height, pointerEvents: tool === "select" ? "auto" : "none", opacity: p.opacity ?? 1, overflow: "visible" }}
+          onPointerDown={() => {
+            pointerDownPanelRef.current = p.id;
+          }}
           onClick={(e) => {
             e.stopPropagation();
+            if (pointerDownPanelRef.current !== p.id) {
+              pointerDownPanelRef.current = null;
+              return;
+            }
+            pointerDownPanelRef.current = null;
             onSelectPanel(p.id);
             onSelectItem(null);
           }}
         >
           <defs>
-            <ToneDefs p={p} box={b} />
+            <ToneDefs p={p} uid={uid} box={b} />
           </defs>
-          <polygon
-            points={svgPoints}
+          <path
+            d={panelPath}
             fill={p.backgroundColor || "#ffffff"}
             stroke={isSelected ? "#e11d2e" : "none"}
             strokeWidth={isSelected ? 2 : 0}
@@ -145,11 +202,11 @@ export function PageCanvas({
             data-panel-id={p.id}
           />
           {p.tone && (
-            <polygon points={svgPoints} fill={`url(#tone-${p.id})`} mask={p.tone.fade !== "none" ? `url(#tmask-${p.id})` : undefined} pointerEvents="none" />
+            <path d={panelPath} fill={`url(#tone-${uid})`} mask={p.tone.fade !== "none" ? `url(#tmask-${uid})` : undefined} pointerEvents="none" />
           )}
         </svg>
         {panelElements.length > 0 && (
-          <div style={{ position: "absolute", top: 0, left: 0, width, height, clipPath: `url(#clip-${p.id})`, pointerEvents: "none" }}>
+          <div style={{ position: "absolute", top: 0, left: 0, width, height, clipPath: `url(#clip-${uid})`, pointerEvents: "none" }}>
             {panelElements.map((el) => (
               <div
                 key={el.id}
@@ -159,11 +216,12 @@ export function PageCanvas({
                 <PanelTransformer
                   element={el}
                   isSelected={selectedItemId === el.id}
+                  mode="art-only"
                   onSelect={() => {
                     onSelectPanel(el.panelId);
                     onSelectItem(el.id);
                   }}
-                  onChange={(updated) => onUpdateElement(el.id, updated)}
+                  onChange={(updated) => handleElementChangeWithSnap(el.id, updated)}
                   onDelete={() => onDeleteElement(el.id)}
                 />
               </div>
@@ -172,13 +230,13 @@ export function PageCanvas({
         )}
         {/* crisp border above this panel's own art */}
         <svg style={{ position: "absolute", top: 0, left: 0, width, height, pointerEvents: "none", overflow: "visible" }}>
-          <polygon
-            points={svgPoints}
+          <path
+            d={panelPath}
             fill="none"
             stroke={isSelected ? "#e11d2e" : p.borderStyle === "none" ? "none" : p.borderColor}
             strokeWidth={isSelected ? Math.max(3.5, p.borderWidth + 1.5) : p.borderStyle === "none" ? 0 : p.borderWidth}
             strokeDasharray={dashFor(p)}
-            strokeLinejoin="miter"
+            strokeLinejoin="round"
           />
         </svg>
       </React.Fragment>
@@ -194,22 +252,36 @@ export function PageCanvas({
   const vertices = tool === "corners" && selPanel ? selPanel.points : [];
 
   return (
-    <div style={{ width: `${Math.round(width * zoom)}px`, height: `${Math.round(height * zoom)}px` }} className="relative shrink-0 m-auto">
+    <div style={{ width: `${Math.round(width * zoom)}px`, height: `${Math.round(height * zoom)}px` }} className={seamless ? "relative shrink-0 mx-auto" : "relative shrink-0 m-auto"}>
       <PageZoomContext.Provider value={zoom}>
         <div
-          id="manga-page-container"
+          id={seamless ? undefined : "manga-page-container"}
+          data-page-id={layout.id}
           ref={pageRef}
           style={{ width, height, transform: `scale(${zoom})`, transformOrigin: "top left", position: "absolute", top: 0, left: 0, backgroundColor: "#ffffff" }}
-          className="relative overflow-hidden border-2 border-foreground bg-white text-black shadow-2xl select-none"
-          onClick={() => onSelectItem(null)}
+          className={
+            seamless
+              ? "relative overflow-hidden bg-white text-black select-none"
+              : "relative overflow-hidden border-2 border-foreground bg-white text-black shadow-2xl select-none"
+          }
+          onPointerDownCapture={(e) => {
+            pointerDownPanelRef.current = e.target === e.currentTarget ? "__page__" : null;
+          }}
+          onClick={(e) => {
+            if (pointerDownPanelRef.current === "__page__" && e.target === e.currentTarget) {
+              pointerDownPanelRef.current = null;
+              onSelectItem(null);
+            }
+          }}
         >
           <svg style={{ position: "absolute", width: 0, height: 0, pointerEvents: "none" }} aria-hidden="true">
             <defs>
               {ordered.map((p) => {
                 const b = bounds.get(p.id)!;
-                const d = b.points.map((pt, i) => `${i === 0 ? "M" : "L"} ${pt.x} ${pt.y}`).join(" ") + " Z";
+                const d = buildPanelSvgPath(b.points, p.cornerRadius ?? 0, Boolean(p.scalloped));
+                const uid = `${layout.id}-${p.id}`;
                 return (
-                  <clipPath key={`clip-${p.id}`} id={`clip-${p.id}`} clipPathUnits="userSpaceOnUse">
+                  <clipPath key={`clip-${uid}`} id={`clip-${uid}`} clipPathUnits="userSpaceOnUse">
                     <path d={d} />
                   </clipPath>
                 );
@@ -248,11 +320,28 @@ export function PageCanvas({
                     onSelectPanel(el.panelId);
                     onSelectItem(el.id);
                   }}
-                  onChange={(updated) => onUpdateElement(el.id, updated)}
+                  onChange={(updated) => handleElementChangeWithSnap(el.id, updated)}
                   onDelete={() => onDeleteElement(el.id)}
                 />
               </div>
             ))}
+            {tool === "select" &&
+              clippedElements
+                .filter((el) => el.id === selectedItemId)
+                .map((el) => (
+                  <PanelTransformer
+                    key={`handles-${el.id}`}
+                    element={el}
+                    isSelected={true}
+                    mode="handles-only"
+                    onSelect={() => {
+                      onSelectPanel(el.panelId);
+                      onSelectItem(el.id);
+                    }}
+                    onChange={(updated) => handleElementChangeWithSnap(el.id, updated)}
+                    onDelete={() => onDeleteElement(el.id)}
+                  />
+                ))}
           </div>
 
           {comicMarks.map((mark) => (
@@ -395,6 +484,34 @@ export function PageCanvas({
               onPointerUp={() => (dragVertex.current = null)}
             />
           ))}
+
+          {/* Smart alignment snap guides during drag */}
+          {snapGuides.length > 0 && (
+            <svg data-testid="snap-guides" style={{ position: "absolute", inset: 0, width, height, pointerEvents: "none", zIndex: 95 }}>
+              {snapGuides.map((g, i) =>
+                g.orientation === "v" ? (
+                  <line key={i} x1={g.pos} y1={0} x2={g.pos} y2={height} stroke="#e11d2e" strokeWidth={1} strokeDasharray="4,3" />
+                ) : (
+                  <line key={i} x1={0} y1={g.pos} x2={width} y2={g.pos} stroke="#e11d2e" strokeWidth={1} strokeDasharray="4,3" />
+                ),
+              )}
+            </svg>
+          )}
+
+          {/* Webtoon 800x1280 slice seam guides */}
+          {seamCutYs.length > 0 && (
+            <svg style={{ position: "absolute", inset: 0, width, height, pointerEvents: "none", zIndex: 94 }}>
+              {seamCutYs.map((y, idx) => (
+                <g key={idx} data-testid="webtoon-seam-line">
+                  <line x1={0} y1={y} x2={width} y2={y} stroke="#0284c7" strokeWidth={1.5} strokeDasharray="8,5" />
+                  <rect x={8} y={Math.max(4, y - 16)} width={126} height={15} rx={3} fill="#0284c7" />
+                  <text x={14} y={Math.max(15, y - 5)} fill="#ffffff" fontSize={10} fontWeight="bold" fontFamily="monospace">
+                    SLICE CUT @ {Math.round(y)}px
+                  </text>
+                </g>
+              ))}
+            </svg>
+          )}
         </div>
       </PageZoomContext.Provider>
     </div>

@@ -1,9 +1,11 @@
 import * as THREE from "three";
 import { OutlineEffect } from "three/examples/jsm/effects/OutlineEffect.js";
+import { hexToOutlineRgb } from "./lighting";
 
 export interface SnapshotOptions {
   pixelRatio?: number; // 1, 2, or 4
   outlineThickness?: number;
+  outlineColor?: string;
 }
 
 export interface SnapshotResult {
@@ -21,6 +23,7 @@ export function captureTransparentSnapshot(
 ): SnapshotResult {
   const pixelRatio = options.pixelRatio ?? 2;
   const outline = options.outlineThickness ?? 3;
+  const outlineRgb = hexToOutlineRgb(options.outlineColor);
 
   // 1. Hide UI helpers, grid, joints, and floor shadows during snapshot
   const hiddenObjects: THREE.Object3D[] = [];
@@ -50,7 +53,7 @@ export function captureTransparentSnapshot(
   // 4. Render with OutlineEffect
   const effect = new OutlineEffect(gl, {
     defaultThickness: 0.004,
-    defaultColor: [0.05, 0.05, 0.05],
+    defaultColor: outlineRgb,
   });
 
   scene.traverse((o) => {
@@ -61,7 +64,7 @@ export function captureTransparentSnapshot(
     mats.forEach((mat) => {
       mat.userData["outlineParameters"] = {
         thickness: outline * 0.0015,
-        color: [0.05, 0.05, 0.05],
+        color: outlineRgb,
         visible: show,
       };
     });

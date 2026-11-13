@@ -39,6 +39,8 @@ import { TONE_PRESETS, TONE_KINDS, TONE_FADES, toneDataUrl, type Screentone } fr
 import type { Point } from "@/lib/manga-layout";
 import { PhotoFilterModal } from "./PhotoFilterModal";
 import { ExportModal } from "./ExportModal";
+import { WebtoonCanvas } from "./WebtoonCanvas";
+import { MobileWebtoonPreview } from "./MobileWebtoonPreview";
 import { PageManager } from "@/components/pages/PageManager";
 import {
   Scissors,
@@ -48,6 +50,8 @@ import {
   Trash2,
   ZoomIn,
   ZoomOut,
+  Undo2,
+  Redo2,
   FlipHorizontal,
   FlipVertical,
   RotateCw,
@@ -70,13 +74,16 @@ import {
   Eye,
   Camera,
   Compass,
+  Smartphone,
+  ScrollText,
+  BookOpen,
 } from "lucide-react";
 
 export interface PanelStudioProps {
   layout: PageLayout;
   onUpdateLayout: (updated: PageLayout) => void;
   onOpen3dStudio: () => void;
-  onRePoseIn3D?: (source3d: any) => void;
+  onRePoseIn3D?: (source3d: NonNullable<PlacedElement["source3d"]>) => void;
   allPages?: PageLayout[];
   activePageIndex?: number;
   onSelectPage?: (index: number) => void;
@@ -84,6 +91,12 @@ export interface PanelStudioProps {
   onDuplicatePage?: (index: number) => void;
   onDeletePage?: (index: number) => void;
   onMovePage?: (fromIndex: number, toIndex: number) => void;
+  onUpdatePageAt?: (index: number, updated: PageLayout) => void;
+  onInsertPageAt?: (index: number, page: PageLayout) => void;
+  canUndo?: boolean;
+  canRedo?: boolean;
+  onUndo?: () => void;
+  onRedo?: () => void;
 }
 
 type LeftTrayTab = "panels" | "backgrounds" | "characters" | "balloons";
@@ -100,17 +113,27 @@ export function PanelStudio({
   onDuplicatePage,
   onDeletePage,
   onMovePage,
+  onUpdatePageAt,
+  onInsertPageAt,
+  canUndo = false,
+  canRedo = false,
+  onUndo,
+  onRedo,
 }: PanelStudioProps) {
   const [selectedPanelId, setSelectedPanelId] = useState<string | null>(
     layout.panels[0]?.id ?? null
   );
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [zoom, setZoom] = useState(0.65);
+  const [viewMode, setViewMode] = useState<"page" | "webtoon">("page");
+  const [showSeams, setShowSeams] = useState(true);
+  const [mobilePreviewOpen, setMobilePreviewOpen] = useState(false);
   const [leftTab, setLeftTab] = useState<LeftTrayTab>("panels");
   const [bgCategory, setBgCategory] = useState<"scenery" | "action" | "mood" | "screentone">("scenery");
   const [customSfxText, setCustomSfxText] = useState("ドンッ!!");
   const [filterModalOpen, setFilterModalOpen] = useState(false);
   const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [exportInitialTab, setExportInitialTab] = useState<"image" | "pdf" | "webtoon">("image");
   const [tool, setTool] = useState<CanvasTool>("select");
   const [splitAngle, setSplitAngle] = useState(0);
   const [splitRatio, setSplitRatio] = useState(50);
@@ -143,6 +166,13 @@ export function PanelStudio({
     setZoom(Math.max(0.2, Math.min(1.2, Math.round(scale * 100) / 100)));
   }, [layout.format.width, layout.format.height]);
 
+  // Keep selectedPanelId synced when switching chapter pages/webtoon beats
+  useEffect(() => {
+    if (!layout.panels.some((p) => p.id === selectedPanelId)) {
+      setSelectedPanelId(layout.panels[0]?.id ?? null);
+    }
+  }, [layout.panels, selectedPanelId]);
+
   // Run auto-fit on initial mount and when layout dimensions change
   useEffect(() => {
     fitToScreen();
@@ -150,6 +180,153 @@ export function PanelStudio({
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
   }, [fitToScreen]);
+
+  // Canvas item keyboard shortcuts: Delete/Backspace, Arrow nudge (+Shift x10), Ctrl/Cmd+D duplicate
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!selectedItemId) return;
+      const active = document.activeElement as HTMLElement | null;
+      if (
+        active &&
+        (active.tagName === "INPUT" ||
+          active.tagName === "TEXTAREA" ||
+          active.tagName === "SELECT" ||
+          active.isContentEditable)
+      ) {
+        return;
+      }
+
+      const nudgeDelta = (axis: "x" | "y", sign: number) => {
+        const step = (e.shiftKey ? 10 : 1) * sign;
+        if (selectedElement) {
+          onUpdateLayout({
+            ...layout,
+            elements: layout.elements.map((el) =>
+              el.id === selectedElement.id ? { ...el, [axis]: el[axis] + step } : el
+            ),
+          });
+        } else if (selectedBalloon) {
+          onUpdateLayout({
+            ...layout,
+            balloons: (layout.balloons ?? []).map((b) =>
+              b.id === selectedBalloon.id ? { ...b, [axis]: b[axis] + step } : b
+            ),
+          });
+        } else if (selectedComicMark) {
+          onUpdateLayout({
+            ...layout,
+            comicMarks: (layout.comicMarks ?? []).map((m) =>
+              m.id === selectedComicMark.id ? { ...m, [axis]: m[axis] + step } : m
+            ),
+          });
+        } else if (selectedSpeedLine) {
+          const field = axis === "x" ? "centerX" : "centerY";
+          onUpdateLayout({
+            ...layout,
+            speedLines: (layout.speedLines ?? []).map((l) =>
+              l.id === selectedSpeedLine.id ? { ...l, [field]: l[field] + step } : l
+            ),
+          });
+        } else if (selectedSFX) {
+          onUpdateLayout({
+            ...layout,
+            sfxStamps: (layout.sfxStamps ?? []).map((s) =>
+              s.id === selectedSFX.id ? { ...s, [axis]: s[axis] + step } : s
+            ),
+          });
+        }
+      };
+
+      if (e.key === "Delete" || e.key === "Backspace") {
+        e.preventDefault();
+        if (selectedElement) {
+          onUpdateLayout({ ...layout, elements: layout.elements.filter((el) => el.id !== selectedElement.id) });
+        } else if (selectedBalloon) {
+          onUpdateLayout({ ...layout, balloons: (layout.balloons ?? []).filter((b) => b.id !== selectedBalloon.id) });
+        } else if (selectedComicMark) {
+          onUpdateLayout({ ...layout, comicMarks: (layout.comicMarks ?? []).filter((m) => m.id !== selectedComicMark.id) });
+        } else if (selectedSpeedLine) {
+          onUpdateLayout({ ...layout, speedLines: (layout.speedLines ?? []).filter((l) => l.id !== selectedSpeedLine.id) });
+        } else if (selectedSFX) {
+          onUpdateLayout({ ...layout, sfxStamps: (layout.sfxStamps ?? []).filter((s) => s.id !== selectedSFX.id) });
+        }
+        setSelectedItemId(null);
+      } else if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        nudgeDelta("x", -1);
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        nudgeDelta("x", 1);
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        nudgeDelta("y", -1);
+      } else if (e.key === "ArrowDown") {
+        e.preventDefault();
+        nudgeDelta("y", 1);
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "d") {
+        e.preventDefault();
+        const suffix = Date.now();
+        if (selectedElement) {
+          const copy: PlacedElement = {
+            ...selectedElement,
+            id: `${selectedElement.type}-${suffix}`,
+            x: selectedElement.x + 20,
+            y: selectedElement.y + 20,
+          };
+          onUpdateLayout({ ...layout, elements: [...layout.elements, copy] });
+          setSelectedItemId(copy.id);
+        } else if (selectedBalloon) {
+          const copy: SpeechBalloon = {
+            ...selectedBalloon,
+            id: `balloon-${suffix}`,
+            x: selectedBalloon.x + 20,
+            y: selectedBalloon.y + 20,
+          };
+          onUpdateLayout({ ...layout, balloons: [...(layout.balloons ?? []), copy] });
+          setSelectedItemId(copy.id);
+        } else if (selectedComicMark) {
+          const copy: ComicMark = {
+            ...selectedComicMark,
+            id: `mark-${suffix}`,
+            x: selectedComicMark.x + 20,
+            y: selectedComicMark.y + 20,
+          };
+          onUpdateLayout({ ...layout, comicMarks: [...(layout.comicMarks ?? []), copy] });
+          setSelectedItemId(copy.id);
+        } else if (selectedSpeedLine) {
+          const copy: SpeedLinesEffect = {
+            ...selectedSpeedLine,
+            id: `speed-${suffix}`,
+            centerX: selectedSpeedLine.centerX + 20,
+            centerY: selectedSpeedLine.centerY + 20,
+          };
+          onUpdateLayout({ ...layout, speedLines: [...(layout.speedLines ?? []), copy] });
+          setSelectedItemId(copy.id);
+        } else if (selectedSFX) {
+          const copy: SFXStamp = {
+            ...selectedSFX,
+            id: `sfx-${suffix}`,
+            x: selectedSFX.x + 20,
+            y: selectedSFX.y + 20,
+          };
+          onUpdateLayout({ ...layout, sfxStamps: [...(layout.sfxStamps ?? []), copy] });
+          setSelectedItemId(copy.id);
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [
+    layout,
+    onUpdateLayout,
+    selectedBalloon,
+    selectedComicMark,
+    selectedElement,
+    selectedItemId,
+    selectedSFX,
+    selectedSpeedLine,
+  ]);
 
   /** Re-home elements whose panel vanished (cut / new template) into the panel under their centre. */
   const rehome = (panels: PanelPolygon[], elements: PlacedElement[]) => {
@@ -235,16 +412,22 @@ export function PanelStudio({
     });
   };
 
-  // Delete selected panel
+  // Delete selected panel & its child items
   const handleDeletePanel = () => {
     if (!selectedPanel || layout.panels.length <= 1) return;
-    const remaining = layout.panels.filter((p) => p.id !== selectedPanel.id);
+    const pid = selectedPanel.id;
+    const remaining = layout.panels.filter((p) => p.id !== pid);
     onUpdateLayout({
       ...layout,
       panels: remaining,
-      elements: layout.elements.filter((el) => el.panelId !== selectedPanel.id),
+      elements: layout.elements.filter((el) => el.panelId !== pid),
+      balloons: (layout.balloons ?? []).filter((b) => b.panelId !== pid),
+      comicMarks: (layout.comicMarks ?? []).filter((m) => m.panelId !== pid),
+      speedLines: (layout.speedLines ?? []).filter((l) => l.panelId !== pid),
+      sfxStamps: (layout.sfxStamps ?? []).filter((s) => s.panelId !== pid),
     });
     setSelectedPanelId(remaining[0].id);
+    setSelectedItemId(null);
   };
 
   // Adders for Speech Balloons
@@ -533,7 +716,7 @@ export function PanelStudio({
     const el = layout.elements.find((e) => e.id === id);
     if (!el) return;
 
-    let updatedElements = [...layout.elements];
+    const updatedElements = [...layout.elements];
     const index = updatedElements.findIndex((e) => e.id === id);
 
     if (direction === "top") {
@@ -609,6 +792,7 @@ export function PanelStudio({
         <div className="flex items-center gap-1.5 text-xs">
           <span className="font-semibold text-muted-foreground hidden lg:inline">Paper:</span>
           <select
+            aria-label="Paper format"
             value={layout.format.id}
             onChange={(e) => handleFormatChange(e.target.value)}
             className="rounded-sm border border-input bg-background px-2 py-1 text-xs font-medium"
@@ -620,6 +804,72 @@ export function PanelStudio({
             ))}
           </select>
         </div>
+
+        {/* Print Page vs Infinite Webtoon Scroll Switcher + 9:16 Reader */}
+        <div className="flex items-center rounded-sm border border-foreground bg-muted/60 p-0.5 text-[11px] font-semibold">
+          <button
+            data-testid="mode-page"
+            onClick={() => setViewMode("page")}
+            className={`flex items-center gap-1 rounded-xs px-2 py-0.5 transition-colors ${
+              viewMode === "page"
+                ? "bg-foreground text-background font-bold"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <BookOpen className="h-3.5 w-3.5" />
+            <span className="hidden md:inline">Print Page</span>
+          </button>
+          <button
+            data-testid="mode-webtoon"
+            onClick={() => setViewMode("webtoon")}
+            className={`flex items-center gap-1 rounded-xs px-2 py-0.5 transition-colors ${
+              viewMode === "webtoon"
+                ? "bg-foreground text-background font-bold"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <ScrollText className="h-3.5 w-3.5" />
+            <span className="hidden md:inline">Webtoon Scroll</span>
+          </button>
+        </div>
+
+        <button
+          data-testid="mobile-preview-toggle"
+          onClick={() => setMobilePreviewOpen((o) => !o)}
+          title="Live 9:16 Mobile Webtoon Reading Preview"
+          className={`flex items-center gap-1 rounded-sm border px-2 py-1 text-xs font-semibold transition-colors ${
+            mobilePreviewOpen
+              ? "border-primary bg-primary text-primary-foreground shadow-ink"
+              : "border-border hover:border-foreground"
+          }`}
+        >
+          <Smartphone className="h-3.5 w-3.5" />
+          <span className="hidden xl:inline">Mobile 9:16</span>
+        </button>
+
+        {/* History Undo / Redo */}
+        {(onUndo || onRedo) && (
+          <div className="flex items-center gap-1 text-xs">
+            <button
+              onClick={onUndo}
+              disabled={!canUndo}
+              title="Undo (Ctrl+Z)"
+              aria-label="Undo"
+              className="rounded-sm border border-border p-1 hover:border-foreground disabled:opacity-35"
+            >
+              <Undo2 className="h-4 w-4" />
+            </button>
+            <button
+              onClick={onRedo}
+              disabled={!canRedo}
+              title="Redo (Ctrl+Y)"
+              aria-label="Redo"
+              className="rounded-sm border border-border p-1 hover:border-foreground disabled:opacity-35"
+            >
+              <Redo2 className="h-4 w-4" />
+            </button>
+          </div>
+        )}
 
         {/* Viewport Zoom & Fit Controls */}
         <div className="ml-auto flex items-center gap-1.5 text-xs">
@@ -681,7 +931,10 @@ export function PanelStudio({
 
           {/* Export Button */}
           <button
-            onClick={() => setExportModalOpen(true)}
+            onClick={() => {
+              setExportInitialTab(viewMode === "webtoon" ? "webtoon" : "image");
+              setExportModalOpen(true);
+            }}
             className="flex items-center gap-1.5 rounded-sm border-2 border-foreground bg-primary px-3.5 py-1 font-bold text-primary-foreground shadow-ink hover:-translate-y-0.5 text-xs ml-1"
           >
             <Download className="h-3.5 w-3.5" />
@@ -1106,7 +1359,9 @@ export function PanelStudio({
         {/* Center Canvas Viewport with Auto-Fit Scrolling */}
         <main
           ref={canvasContainerRef}
-          className="flex-1 min-w-0 overflow-auto p-6 flex bg-muted/30"
+          className={`flex-1 min-w-0 overflow-auto p-6 bg-muted/30 ${
+            viewMode === "webtoon" ? "block" : "flex"
+          }`}
           onWheel={(e) => {
             if (e.ctrlKey) {
               e.preventDefault();
@@ -1114,7 +1369,57 @@ export function PanelStudio({
             }
           }}
         >
-          <PageCanvas
+          {viewMode === "webtoon" ? (
+            <WebtoonCanvas
+              pages={allPages && allPages.length > 0 ? allPages : [layout]}
+              activePageIndex={activePageIndex}
+              selectedPanelId={selectedPanelId}
+              selectedItemId={selectedItemId}
+              zoom={zoom}
+              tool={tool}
+              showGuides={showGuides}
+              showOrder={showOrder}
+              showSeams={showSeams}
+              onToggleSeams={setShowSeams}
+              onSelectPage={(idx) => onSelectPage?.(idx)}
+              onSelectPanel={setSelectedPanelId}
+              onSelectItem={setSelectedItemId}
+              onUpdatePageAt={(idx, updated) => {
+                if (onUpdatePageAt) onUpdatePageAt(idx, updated);
+                else if (idx === activePageIndex) onUpdateLayout(updated);
+              }}
+              onInsertPageAt={(idx, newPage) => {
+                if (onInsertPageAt) onInsertPageAt(idx, newPage);
+                else onAddPage?.();
+              }}
+              onKnife={(pageIdx, a, b) => {
+                const target = (allPages && allPages[pageIdx]) || layout;
+                const { panels, cut } = knifeCut(target.panels, a, b);
+                if (!cut.length) return;
+                const next: PageLayout = {
+                  ...target,
+                  panels,
+                  elements: rehome(panels, target.elements),
+                  balloons: (target.balloons ?? []).map((x) =>
+                    panels.some((p) => p.id === x.panelId) ? x : { ...x, panelId: panels[0].id }
+                  ),
+                };
+                if (onUpdatePageAt) onUpdatePageAt(pageIdx, next);
+                else onUpdateLayout(next);
+              }}
+              onMoveVertex={(pageIdx, from, to) => {
+                const target = (allPages && allPages[pageIdx]) || layout;
+                const next: PageLayout = {
+                  ...target,
+                  panels: moveSharedVertex(target.panels, from, to),
+                };
+                if (onUpdatePageAt) onUpdatePageAt(pageIdx, next);
+                else onUpdateLayout(next);
+              }}
+              onRePoseIn3D={onRePoseIn3D}
+            />
+          ) : (
+            <PageCanvas
             layout={layout}
             selectedPanelId={selectedPanelId}
             selectedItemId={selectedItemId}
@@ -1199,6 +1504,7 @@ export function PanelStudio({
             onRePoseIn3D={onRePoseIn3D}
             zoom={zoom}
           />
+          )}
         </main>
 
         {/* Right Inspector: Panels, Characters, Balloons, Layers */}
@@ -1269,6 +1575,37 @@ export function PanelStudio({
                     ))}
                   </div>
                 </div>
+
+                {/* Corner Radius & Scalloped Flashback Frame */}
+                <label className="block">
+                  <div className="flex justify-between">
+                    <span>Corner Radius</span>
+                    <span className="font-mono">{selectedPanel.cornerRadius ?? 0}px</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={32}
+                    step={2}
+                    value={selectedPanel.cornerRadius ?? 0}
+                    onChange={(e) =>
+                      updatePanel(selectedPanel.id, { cornerRadius: parseInt(e.target.value, 10) })
+                    }
+                    className="w-full accent-primary mt-1"
+                  />
+                </label>
+
+                <label className="flex items-center gap-2 font-medium">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(selectedPanel.scalloped)}
+                    onChange={(e) =>
+                      updatePanel(selectedPanel.id, { scalloped: e.target.checked })
+                    }
+                    className="accent-primary"
+                  />
+                  Scalloped Memory Border
+                </label>
 
                 {/* Panel Background Color */}
                 <div>
@@ -1385,6 +1722,52 @@ export function PanelStudio({
                     );
                   })()}
                 </div>
+
+                {/* Items in this panel (selectable even when overlapped) */}
+                {(() => {
+                  const pid = selectedPanel.id;
+                  const items: { id: string; label: string }[] = [
+                    ...layout.elements
+                      .filter((el) => el.panelId === pid)
+                      .map((el) => ({
+                        id: el.id,
+                        label: `${el.type === "character" ? "🧍 Figure" : el.type === "background" ? "🖼️ Background" : "📦 Prop"}${el.breakout ? " ★" : ""}`,
+                      })),
+                    ...(layout.balloons ?? [])
+                      .filter((b) => b.panelId === pid)
+                      .map((b) => ({ id: b.id, label: `💬 ${b.text.slice(0, 18) || "Balloon"}` })),
+                    ...(layout.comicMarks ?? [])
+                      .filter((m) => m.panelId === pid)
+                      .map((m) => ({ id: m.id, label: `✨ Mark (${m.type})` })),
+                    ...(layout.speedLines ?? [])
+                      .filter((l) => l.panelId === pid)
+                      .map((l) => ({ id: l.id, label: `⚡ Speed Lines (${l.type})` })),
+                    ...(layout.sfxStamps ?? [])
+                      .filter((s) => s.panelId === pid)
+                      .map((s) => ({ id: s.id, label: `🔊 SFX: ${s.text.slice(0, 14)}` })),
+                  ];
+                  if (items.length === 0) return null;
+                  return (
+                    <div className="border-t border-border pt-2" data-testid="panel-layer-list">
+                      <span className="font-semibold block mb-1">Panel Layers ({items.length})</span>
+                      <div className="max-h-28 overflow-y-auto space-y-1">
+                        {items.map((it) => (
+                          <button
+                            key={it.id}
+                            onClick={() => setSelectedItemId(it.id)}
+                            className={`w-full text-left truncate rounded border px-2 py-1 text-[11px] font-medium transition-colors ${
+                              selectedItemId === it.id
+                                ? "border-primary bg-primary/10 font-bold text-foreground"
+                                : "border-border hover:border-foreground"
+                            }`}
+                          >
+                            {it.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             </div>
           )}
@@ -1446,7 +1829,7 @@ export function PanelStudio({
               {/* Non-Destructive Re-Pose in 3D Button */}
               {selectedElement.source3d && onRePoseIn3D && (
                 <button
-                  onClick={() => onRePoseIn3D(selectedElement.source3d)}
+                  onClick={() => selectedElement.source3d && onRePoseIn3D(selectedElement.source3d)}
                   className="w-full flex items-center justify-center gap-1.5 rounded border-2 border-foreground bg-accent py-1.5 font-bold shadow-ink text-xs hover:bg-accent/80 transition-transform hover:-translate-y-0.5"
                 >
                   <Camera className="h-3.5 w-3.5 text-primary" />
@@ -1583,6 +1966,7 @@ export function PanelStudio({
                 <label className="text-xs font-semibold block mb-1">Dialogue Text</label>
                 <textarea
                   rows={2}
+                  aria-label="Dialogue Text"
                   value={selectedBalloon.text}
                   onChange={(e) =>
                     onUpdateLayout({
@@ -1593,28 +1977,6 @@ export function PanelStudio({
                     })
                   }
                   className="w-full p-2 text-xs rounded-sm border border-input bg-background font-medium"
-                />
-              </div>
-
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-semibold">Vertical Japanese Mode</span>
-                <input
-                  type="checkbox"
-                  checked={selectedBalloon.writingMode === "vertical-rl"}
-                  onChange={(e) =>
-                    onUpdateLayout({
-                      ...layout,
-                      balloons: (layout.balloons ?? []).map((b) =>
-                        b.id === selectedBalloon.id
-                          ? {
-                              ...b,
-                              writingMode: e.target.checked ? "vertical-rl" : "horizontal-tb",
-                            }
-                          : b
-                      ),
-                    })
-                  }
-                  className="h-4 w-4 accent-primary"
                 />
               </div>
 
@@ -1712,6 +2074,8 @@ export function PanelStudio({
                       <div className="grid grid-cols-2 gap-1.5">
                         <label className="flex items-center gap-1.5"><input type="checkbox" checked={selectedBalloon.hasTail} onChange={(e) => setB({ hasTail: e.target.checked })} className="accent-primary" /> Tail</label>
                         <label className="flex items-center gap-1.5"><input type="checkbox" checked={!!selectedBalloon.isVertical} onChange={(e) => setB({ isVertical: e.target.checked, writingMode: e.target.checked ? "vertical-rl" : "horizontal-tb" })} className="accent-primary" /> Vertical (tategaki)</label>
+                        <label className="flex items-center gap-1.5"><input type="checkbox" checked={!!selectedBalloon.tailCurved} onChange={(e) => setB({ tailCurved: e.target.checked })} className="accent-primary" /> Curved Tail</label>
+                        <label className="flex items-center gap-1.5"><input type="checkbox" checked={!!selectedBalloon.hasSecondaryTail} onChange={(e) => setB({ hasSecondaryTail: e.target.checked, secondaryTail: selectedBalloon.secondaryTail ?? { x: -48, y: selectedBalloon.height * 0.8 } })} className="accent-primary" /> Dual Tail</label>
                       </div>
                       <div className="grid grid-cols-2 gap-1.5">
                         <label className="block"><span className="flex justify-between"><span>Width</span><span className="font-mono">{Math.round(selectedBalloon.width)}</span></span>
@@ -1852,6 +2216,8 @@ export function PanelStudio({
                       </div>
                       <label className="block"><span className="flex justify-between"><span>Outline width</span><span className="font-mono">{selectedSFX.strokeWidth}px</span></span>
                         <input type="range" min={0} max={14} value={selectedSFX.strokeWidth} onChange={(e) => setS({ strokeWidth: +e.target.value })} className="w-full accent-primary" /></label>
+                      <label className="block"><span className="flex justify-between"><span>White Halo</span><span className="font-mono">{selectedSFX.haloWidth ?? 3}px</span></span>
+                        <input type="range" min={0} max={8} step={0.5} value={selectedSFX.haloWidth ?? 3} onChange={(e) => setS({ haloWidth: +e.target.value })} className="w-full accent-primary" /></label>
                       <label className="block"><span className="flex justify-between"><span>Opacity</span><span className="font-mono">{Math.round((selectedSFX.opacity ?? 1) * 100)}%</span></span>
                         <input type="range" min={10} max={100} value={Math.round((selectedSFX.opacity ?? 1) * 100)} onChange={(e) => setS({ opacity: +e.target.value / 100 })} className="w-full accent-primary" /></label>
                     </div>
@@ -1903,6 +2269,24 @@ export function PanelStudio({
         onClose={() => setExportModalOpen(false)}
         currentPage={layout}
         allPages={allPages || [layout]}
+        initialTab={exportInitialTab}
+      />
+
+      {/* Mobile 9:16 Continuous Webtoon Reading Preview Drawer */}
+      <MobileWebtoonPreview
+        isOpen={mobilePreviewOpen}
+        onClose={() => setMobilePreviewOpen(false)}
+        pages={allPages && allPages.length > 0 ? allPages : [layout]}
+        activePageIndex={activePageIndex}
+        onJumpToPage={(idx) => {
+          onSelectPage?.(idx);
+          setViewMode("webtoon");
+        }}
+        onOpenExport={() => {
+          setMobilePreviewOpen(false);
+          setExportInitialTab("webtoon");
+          setExportModalOpen(true);
+        }}
       />
     </div>
   );

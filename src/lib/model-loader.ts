@@ -109,9 +109,11 @@ export async function loadCharacterModel(
       VRMUtils.removeUnnecessaryJoints(gltf.scene);
       // Ensure VRM humanoid bones have canonical names for our FK rig
       if (vrm.humanoid) {
+        type VrmBoneKey = Parameters<typeof vrm.humanoid.getNormalizedBoneNode>[0];
         Object.entries(VRM_TO_CANONICAL).forEach(([vrmBone, canon]) => {
-          const node = vrm.humanoid?.getNormalizedBoneNode(vrmBone as any) ??
-            vrm.humanoid?.getRawBoneNode(vrmBone as any);
+          const node =
+            vrm.humanoid?.getNormalizedBoneNode(vrmBone as VrmBoneKey) ??
+            vrm.humanoid?.getRawBoneNode(vrmBone as VrmBoneKey);
           if (node) {
             node.name = canon;
           }

@@ -1,5 +1,6 @@
 import { insetPanelPoints } from "./manga-grid";
 import type { SpeechBalloon, ComicMark, SpeedLinesEffect, SFXStamp } from "./manga-effects";
+import type { SerializedActorPose } from "./scene-cast";
 
 export interface Point {
   x: number;
@@ -21,11 +22,18 @@ export interface PanelPolygon {
   opacity?: number;
 }
 
+export interface CameraSnapshotPose {
+  position: [number, number, number];
+  target: [number, number, number];
+  fov?: number;
+}
+
 export interface PlacedElement {
   id: string;
   panelId: string;
   type: "character" | "prop" | "background";
   imageUrl: string;
+  imageFileId?: string;
   // Position & transform relative to the panel's bounding box
   x: number; // in pixels relative to panel min bounds
   y: number;
@@ -42,8 +50,10 @@ export interface PlacedElement {
     modelName: string;
     pose: Record<string, [number, number, number]>;
     hipsDrop: number;
-    cameraPose?: any;
+    cameraPose?: CameraSnapshotPose | null;
     fov?: number;
+    activeActorId?: string;
+    cast?: SerializedActorPose[];
   };
 }
 

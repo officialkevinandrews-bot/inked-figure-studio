@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import type { SpeechBalloon } from "@/lib/manga-effects";
-import { generateBalloonPath } from "@/lib/manga-effects";
+import { balloonPathFromSpec } from "@/lib/manga-effects";
 import { Trash2, Type, AlignVerticalJustifyCenter, MessageCircle } from "lucide-react";
 import { usePageZoom } from "./zoom-context";
 import { fontStack } from "@/lib/manga-fonts";
@@ -27,6 +27,8 @@ export function SpeechBalloonRenderer({
   const [initialPos, setInitialPos] = useState({ x: 0, y: 0 });
 
   const [draggingTail, setDraggingTail] = useState(false);
+  const [draggingCurve, setDraggingCurve] = useState(false);
+  const [draggingTail2, setDraggingTail2] = useState(false);
 
   const handlePointerDown = (e: React.PointerEvent) => {
     e.stopPropagation();
@@ -50,15 +52,32 @@ export function SpeechBalloonRenderer({
         tailX: initialPos.x + (e.clientX - dragStart.x) / zoom,
         tailY: initialPos.y + (e.clientY - dragStart.y) / zoom,
       });
+    } else if (draggingCurve) {
+      onChange({
+        tailCurveX: initialPos.x + (e.clientX - dragStart.x) / zoom,
+        tailCurveY: initialPos.y + (e.clientY - dragStart.y) / zoom,
+      });
+    } else if (draggingTail2) {
+      onChange({
+        secondaryTail: {
+          ...(balloon.secondaryTail ?? { x: -40, y: balloon.height * 0.8 }),
+          x: initialPos.x + (e.clientX - dragStart.x) / zoom,
+          y: initialPos.y + (e.clientY - dragStart.y) / zoom,
+        },
+      });
     }
   };
 
   const handlePointerUp = (e: React.PointerEvent) => {
     setDragging(false);
     setDraggingTail(false);
+    setDraggingCurve(false);
+    setDraggingTail2(false);
     try {
-      (e.target as HTMLElement).releasePointerCapture(e.pointerId);
-    } catch {}
+      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch {
+      /* pointer capture already released */
+    }
   };
 
   const handleTailPointerDown = (e: React.PointerEvent) => {
@@ -66,17 +85,32 @@ export function SpeechBalloonRenderer({
     setDraggingTail(true);
     setDragStart({ x: e.clientX, y: e.clientY });
     setInitialPos({ x: balloon.tailX ?? 0, y: balloon.tailY ?? balloon.height * 0.8 });
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   };
 
-  const svgPath = generateBalloonPath(
-    balloon.shape,
-    balloon.width,
-    balloon.height,
-    balloon.tailX,
-    balloon.tailY,
-    balloon.hasTail
-  );
+  const defaultCurveX = balloon.tailCurveX ?? (balloon.tailX ?? 0) * 0.55 + 24;
+  const defaultCurveY = balloon.tailCurveY ?? (balloon.tailY ?? balloon.height * 0.8) * 0.55;
+
+  const handleCurvePointerDown = (e: React.PointerEvent) => {
+    e.stopPropagation();
+    setDraggingCurve(true);
+    setDragStart({ x: e.clientX, y: e.clientY });
+    setInitialPos({ x: defaultCurveX, y: defaultCurveY });
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  };
+
+  const secTailX = balloon.secondaryTail?.x ?? -48;
+  const secTailY = balloon.secondaryTail?.y ?? balloon.height * 0.8;
+
+  const handleTail2PointerDown = (e: React.PointerEvent) => {
+    e.stopPropagation();
+    setDraggingTail2(true);
+    setDragStart({ x: e.clientX, y: e.clientY });
+    setInitialPos({ x: secTailX, y: secTailY });
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  };
+
+  const svgPath = balloonPathFromSpec(balloon);
 
   return (
     <div
@@ -89,6 +123,7 @@ export function SpeechBalloonRenderer({
         zIndex: balloon.zIndex,
       }}
       className={`group select-none cursor-move ${isSelected ? "ring-2 ring-primary ring-offset-1" : ""}`}
+      onClick={(e) => e.stopPropagation()}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
@@ -147,9 +182,12 @@ export function SpeechBalloonRenderer({
         )}
       </div>
 
-      {/* Draggable Tail Tip Handle (when selected) */}
+      {/* Draggable Tail Handles (Primary, Bezier Curve Midpoint, Secondary Group Tail) */}
       {isSelected && balloon.hasTail && (
         <div
+          role="button"
+          tabIndex={0}
+          aria-label="Drag primary speech tail"
           style={{
             position: "absolute",
             left: `${balloon.width / 2 + (balloon.tailX ?? 0) - 6}px`,
@@ -160,7 +198,49 @@ export function SpeechBalloonRenderer({
           className="w-3.5 h-3.5 bg-primary border-2 border-foreground rounded-full shadow-ink z-50 transition-transform hover:scale-125"
           title="Drag to aim speech tail"
           onPointerDown={handleTailPointerDown}
+          onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
+          onClick={(e) => e.stopPropagation()}
+        />
+      )}
+      {isSelected && balloon.hasTail && balloon.tailCurved && (
+        <div
+          role="button"
+          tabIndex={0}
+          aria-label="Drag curved tail bend"
+          style={{
+            position: "absolute",
+            left: `${balloon.width / 2 + defaultCurveX - 5}px`,
+            top: `${balloon.height / 2 + defaultCurveY - 5}px`,
+            cursor: "grab",
+            pointerEvents: "auto",
+          }}
+          className="w-3 h-3 bg-amber-400 border-2 border-foreground rotate-45 shadow-xs z-50 transition-transform hover:scale-125"
+          title="Drag to bend curved tail"
+          onPointerDown={handleCurvePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onClick={(e) => e.stopPropagation()}
+        />
+      )}
+      {isSelected && balloon.hasSecondaryTail && (
+        <div
+          role="button"
+          tabIndex={0}
+          aria-label="Drag secondary speech tail"
+          style={{
+            position: "absolute",
+            left: `${balloon.width / 2 + secTailX - 6}px`,
+            top: `${balloon.height / 2 + secTailY - 6}px`,
+            cursor: "crosshair",
+            pointerEvents: "auto",
+          }}
+          className="w-3.5 h-3.5 bg-sky-400 border-2 border-foreground rounded-full shadow-ink z-50 transition-transform hover:scale-125"
+          title="Drag to aim 2nd group dialogue tail"
+          onPointerDown={handleTail2PointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onClick={(e) => e.stopPropagation()}
         />
       )}
 

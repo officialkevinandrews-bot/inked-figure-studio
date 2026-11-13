@@ -111,3 +111,4 @@ export function deleteRosterItem(id: string): void {
   const updated = loadSavedRoster().filter((c) => c.id !== id);
   localStorage.setItem(ROSTER_STORAGE_KEY, JSON.stringify(updated));
 }
+

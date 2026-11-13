@@ -33,6 +33,9 @@ export interface SpeechBalloon {
   tail?: BalloonTail;
   tailX?: number;
   tailY?: number;
+  tailCurved?: boolean;
+  tailCurveX?: number;
+  tailCurveY?: number;
   secondaryTail?: BalloonTail; // For 2-person group dialogue
   hasTail: boolean;
   hasSecondaryTail?: boolean;
@@ -105,6 +108,8 @@ export interface SFXStamp {
   fillColor: string;
   strokeColor: string;
   strokeWidth: number;
+  haloColor?: string;
+  haloWidth?: number;
   rotation: number;
   skewX: number;
   opacity?: number;
@@ -179,9 +184,44 @@ export const COMIC_MARK_PRESETS = [
   { mark: "💥", label: "Impact Star Burst", type: "impact" },
 ];
 
+function buildTailSubpath(
+  w: number,
+  h: number,
+  tipX: number,
+  tipY: number,
+  isCurved = false,
+  curveX?: number,
+  curveY?: number,
+): string {
+  const rx = w / 2;
+  const ry = h / 2;
+  const cx = rx;
+  const cy = ry;
+  const rootAngle = Math.atan2(tipY - cy, tipX - cx);
+  const rootX = cx + rx * 0.8 * Math.cos(rootAngle);
+  const rootY = cy + ry * 0.8 * Math.sin(rootAngle);
+  const perpX = -Math.sin(rootAngle) * 12;
+  const perpY = Math.cos(rootAngle) * 12;
+
+  if (isCurved && curveX !== undefined && curveY !== undefined) {
+    return `
+      M ${rootX + perpX} ${rootY + perpY}
+      Q ${curveX} ${curveY} ${tipX} ${tipY}
+      Q ${curveX + perpX * 0.5} ${curveY + perpY * 0.5} ${rootX - perpX} ${rootY - perpY}
+    `;
+  }
+  const midX = (rootX + tipX) / 2 + perpX * 0.3;
+  const midY = (rootY + tipY) / 2 + perpY * 0.3;
+  return `
+    M ${rootX + perpX} ${rootY + perpY}
+    Q ${midX} ${midY} ${tipX} ${tipY}
+    Q ${midX - perpX * 0.5} ${midY - perpY * 0.5} ${rootX - perpX} ${rootY - perpY}
+  `;
+}
+
 /**
- * Generates an SVG path string for speech balloon contours with curved tail attachment.
- * Supports both object tail { x, y, curved, curveX, curveY } and numeric (tailX, tailY, hasTail).
+ * Generates an SVG path string for speech balloon contours with curved & multi-tail attachment.
+ * Supports object tail, numeric (tailX, tailY, hasTail), plus optional curve / secondary tail.
  */
 export function generateBalloonPath(
   shape: BalloonShape,
@@ -189,7 +229,8 @@ export function generateBalloonPath(
   h: number,
   tailArg?: BalloonTail | { x: number; y: number; curved?: boolean; curveX?: number; curveY?: number } | number,
   tailYArg?: number,
-  hasTailArg?: boolean
+  hasTailArg?: boolean,
+  extra?: { curved?: boolean; curveX?: number; curveY?: number; secondaryTail?: BalloonTail },
 ): string {
   const rx = w / 2;
   const ry = h / 2;
@@ -309,73 +350,95 @@ export function generateBalloonPath(
   // Determine tail parameters
   if (shape === "box" || shape === "icy") return bodyPath;
 
-  let hasTail = true;
+  const tailParts: string[] = [];
+  let hasPrimary = false;
   let tipX = 0;
   let tipY = 0;
-  let isCurved = false;
-  let curveX: number | undefined;
-  let curveY: number | undefined;
+  let isCurved = Boolean(extra?.curved);
+  let curveX = extra?.curveX;
+  let curveY = extra?.curveY;
 
   if (typeof tailArg === "number") {
-    // Numeric signature (w, h, tailX, tailY, hasTail)
-    if (hasTailArg === false) return bodyPath;
-    tipX = cx + tailArg;
-    tipY = cy + (tailYArg ?? 0);
+    if (hasTailArg !== false) {
+      hasPrimary = true;
+      tipX = cx + tailArg;
+      tipY = cy + (tailYArg ?? 0);
+    }
   } else if (tailArg && typeof tailArg === "object") {
-    // Object signature
+    hasPrimary = true;
     tipX = tailArg.x;
     tipY = tailArg.y;
-    isCurved = Boolean(tailArg.curved);
-    curveX = tailArg.curveX;
-    curveY = tailArg.curveY;
-  } else {
-    return bodyPath;
+    isCurved = Boolean(tailArg.curved ?? extra?.curved);
+    curveX = tailArg.curveX ?? extra?.curveX;
+    curveY = tailArg.curveY ?? extra?.curveY;
   }
 
-  const rootAngle = Math.atan2(tipY - cy, tipX - cx);
-  const rootX = cx + rx * 0.8 * Math.cos(rootAngle);
-  const rootY = cy + ry * 0.8 * Math.sin(rootAngle);
-  const perpX = -Math.sin(rootAngle) * 12;
-  const perpY = Math.cos(rootAngle) * 12;
-
-  let tailPath = "";
-  if (isCurved && curveX !== undefined && curveY !== undefined) {
-    tailPath = `
-      M ${rootX + perpX} ${rootY + perpY}
-      Q ${curveX} ${curveY} ${tipX} ${tipY}
-      Q ${curveX + perpX * 0.5} ${curveY + perpY * 0.5} ${rootX - perpX} ${rootY - perpY}
-    `;
-  } else {
-    // Quadratic smooth tapered tail
-    const midX = (rootX + tipX) / 2 + perpX * 0.3;
-    const midY = (rootY + tipY) / 2 + perpY * 0.3;
-    tailPath = `
-      M ${rootX + perpX} ${rootY + perpY}
-      Q ${midX} ${midY} ${tipX} ${tipY}
-      Q ${midX - perpX * 0.5} ${midY - perpY * 0.5} ${rootX - perpX} ${rootY - perpY}
-    `;
+  if (hasPrimary) {
+    tailParts.push(buildTailSubpath(w, h, tipX, tipY, isCurved, curveX, curveY));
   }
 
-  return `${bodyPath} ${tailPath}`;
+  if (extra?.secondaryTail) {
+    const s = extra.secondaryTail;
+    tailParts.push(
+      buildTailSubpath(
+        w,
+        h,
+        cx + s.x,
+        cy + s.y,
+        Boolean(s.curved),
+        s.curveX !== undefined ? cx + s.curveX : undefined,
+        s.curveY !== undefined ? cy + s.curveY : undefined,
+      ),
+    );
+  }
+
+  if (tailParts.length === 0) return bodyPath;
+  return `${bodyPath} ${tailParts.join(" ")}`;
 }
 
-/** Generates radial speed lines (focus burst) */
+/** Convenience wrapper generating full balloon SVG path directly from a SpeechBalloon object. */
+export function balloonPathFromSpec(b: SpeechBalloon): string {
+  return generateBalloonPath(
+    b.shape,
+    b.width,
+    b.height,
+    b.tailX ?? 0,
+    b.tailY ?? b.height * 0.8,
+    b.hasTail,
+    {
+      curved: b.tailCurved,
+      curveX: b.tailCurveX !== undefined ? b.width / 2 + b.tailCurveX : undefined,
+      curveY: b.tailCurveY !== undefined ? b.height / 2 + b.tailCurveY : undefined,
+      secondaryTail: b.hasSecondaryTail ? b.secondaryTail : undefined,
+    },
+  );
+}
+
+/** Deterministic PRNG in [0, 1) for crisp repeatable speed line geometry. */
+function pseudoNoise(seed: number): number {
+  const x = Math.sin(seed * 12.9898 + 78.233) * 43758.5453;
+  return x - Math.floor(x);
+}
+
+/** Generates radial speed lines (focus burst) deterministically. */
 export function generateRadialSpeedLines(
   cx: number,
   cy: number,
   innerR: number,
   outerR: number,
   density: number,
-  strokeWidth: number,
-  color: string
+  _strokeWidth: number,
+  _color: string,
 ): string[] {
   const lines: string[] = [];
   const count = Math.max(10, density);
 
   for (let i = 0; i < count; i++) {
+    const n1 = pseudoNoise(i + 1);
+    const n2 = pseudoNoise(i * 3 + 7);
     const angle = (i * 2 * Math.PI) / count + (Math.sin(i * 3.1) * 0.35 * Math.PI) / count;
-    const startR = innerR + Math.random() * (innerR * 0.3);
-    const endR = outerR + Math.random() * 40;
+    const startR = innerR + n1 * (innerR * 0.3);
+    const endR = outerR + n2 * 40;
 
     const x1 = cx + startR * Math.cos(angle);
     const y1 = cy + startR * Math.sin(angle);
@@ -385,4 +448,61 @@ export function generateRadialSpeedLines(
     lines.push(`M ${x1.toFixed(1)} ${y1.toFixed(1)} L ${x2.toFixed(1)} ${y2.toFixed(1)}`);
   }
   return lines;
+}
+
+/** Generates tapered wedge polygons for manga 集中線 radial focus lines & linear flash streaks. */
+export function generateSpeedWedges(effect: SpeedLinesEffect): { x: number; y: number }[][] {
+  const wedges: { x: number; y: number }[][] = [];
+  const count = Math.max(10, effect.density);
+  const sw = Math.max(0.8, effect.strokeWidth || 1.5);
+
+  if (effect.type === "linear") {
+    const rad = (effect.angle * Math.PI) / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    const perpX = -sin;
+    const perpY = cos;
+    for (let i = 0; i < count; i++) {
+      const n1 = pseudoNoise(i + 13);
+      const n2 = pseudoNoise(i * 5 + 3);
+      const off = (i - count / 2) * 12 + (n1 - 0.5) * 4;
+      const lenScale = 0.65 + n2 * 0.55;
+      const halfLen = effect.outerRadius * lenScale;
+      const cx = effect.centerX + off * perpX;
+      const cy = effect.centerY + off * perpY;
+      const halfW = sw * (0.65 + n1 * 0.85);
+      wedges.push([
+        { x: cx - cos * halfLen, y: cy - sin * halfLen },
+        { x: cx + perpX * halfW, y: cy + perpY * halfW },
+        { x: cx + cos * halfLen, y: cy + sin * halfLen },
+        { x: cx - perpX * halfW, y: cy - perpY * halfW },
+      ]);
+    }
+    return wedges;
+  }
+
+  for (let i = 0; i < count; i++) {
+    const n1 = pseudoNoise(i + 1);
+    const n2 = pseudoNoise(i * 3 + 7);
+    const angle = (i * 2 * Math.PI) / count + (Math.sin(i * 3.1) * 0.35 * Math.PI) / count;
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    const perpX = -sin;
+    const perpY = cos;
+    const startR = effect.innerRadius + n1 * (effect.innerRadius * 0.25);
+    const endR = effect.outerRadius + n2 * 40;
+    const baseHalf = Math.max(1.1, sw * (1.2 + n2 * 1.4));
+
+    const tipX = effect.centerX + startR * cos;
+    const tipY = effect.centerY + startR * sin;
+    const outerX = effect.centerX + endR * cos;
+    const outerY = effect.centerY + endR * sin;
+
+    wedges.push([
+      { x: outerX + perpX * baseHalf, y: outerY + perpY * baseHalf },
+      { x: tipX, y: tipY },
+      { x: outerX - perpX * baseHalf, y: outerY - perpY * baseHalf },
+    ]);
+  }
+  return wedges;
 }

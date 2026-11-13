@@ -7,14 +7,30 @@ import {
   DUMMY_MODEL, activeOutfitOf, addOutfit, customItemIds, deleteOutfit, duplicateCharacter, loadCharacters, newCharacter,
   renameOutfit, saveCharacters, updateActiveOutfit, upsertCharacter, type Character,
 } from "@/lib/characters";
+import type { VRM } from "@pixiv/three-vrm";
 import { getFile, putFile } from "@/lib/file-store";
 import { b64ToBlob, blobToB64, mergeById, parseBackup, referencedFileIds, type StudioBackup } from "@/lib/backup";
+import {
+  createDefaultPages,
+  externalizePageAssets,
+  hydratePageAssets,
+  loadChapterState,
+  saveChapterState,
+} from "@/lib/chapter-storage";
+import {
+  createHistory,
+  pushHistory,
+  redoHistory,
+  resetHistory,
+  undoHistory,
+  type HistoryState,
+} from "@/lib/history";
 import { generateAiPose } from "@/lib/ai-pose.functions";
 import { loadWardrobeAsset } from "./WardrobeRig";
 import type { CustomAsset } from "./WardrobeRig";
 import { equip, loadOutfit, saveOutfit, type Outfit } from "@/lib/wardrobe";
 import { DEFAULT_FACE, loadFace, saveFace, type FaceConfig } from "@/lib/face-library";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import {
   applyPose,
@@ -28,6 +44,13 @@ import {
   type Rot,
 } from "@/lib/rig";
 import { CATEGORIES, POSES } from "@/lib/poses";
+import { applyHandPresetToPose, HAND_PRESETS, type HandSide } from "@/lib/hand-poses";
+import {
+  LIGHT_PRESETS,
+  OUTLINE_SWATCHES,
+  lightCartesianToSpherical,
+  lightSphericalToCartesian,
+} from "@/lib/lighting";
 import {
   Viewport,
   toonify,
@@ -58,8 +81,12 @@ import {
   Plus,
   Sword,
   Package,
+  Undo2,
+  Redo2,
 } from "lucide-react";
-import { PanelStudio } from "@/components/panels/PanelStudio";
+const PanelStudio = lazy(() =>
+  import("@/components/panels/PanelStudio").then((m) => ({ default: m.PanelStudio })),
+);
 import {
   type PageLayout,
   type PlacedElement,
@@ -77,43 +104,125 @@ import {
 } from "@/lib/props";
 import { saveRosterItem } from "@/lib/character-roster";
 import { solveCCD, chainOffsets, pinFeet } from "@/lib/ik";
+import {
+  nextStagePosition,
+  serializeCastForSnapshot,
+  type StagedActor,
+} from "@/lib/scene-cast";
+import { snapPropToHand } from "@/lib/prop-grips";
+import {
+  deleteCustomPropMeta,
+  detectPropExtension,
+  loadCustomPropObject,
+  loadCustomPropsMeta,
+  saveCustomPropsMeta,
+  upsertCustomPropMeta,
+  type CustomPropMeta,
+} from "@/lib/custom-props";
 
 const AXES = ["X", "Y", "Z"] as const;
 
 export function Studio() {
   const [model, setModel] = useState<THREE.Object3D | null>(null);
   const [rig, setRig] = useState<Rig | null>(null);
-  const [vrm, setVrm] = useState<any | null>(null);
+  const [vrm, setVrm] = useState<VRM | null>(null);
   const [modelName, setModelName] = useState("");
   const [modelType, setModelType] = useState<string>("glb");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [dragOver, setDragOver] = useState(false);
 
-  // Pose state
-  const [pose, setPose] = useState<PoseData>({});
-  const [hipsDrop, setHipsDrop] = useState(0);
+  // Pose state + Undo/Redo history
+  const [poseHist, setPoseHist] = useState<HistoryState<{ pose: PoseData; hipsDrop: number }>>(() =>
+    createHistory({ pose: {}, hipsDrop: 0 }),
+  );
+  const pose = poseHist.present.pose;
+  const hipsDrop = poseHist.present.hipsDrop;
+  const canUndoPose = poseHist.past.length > 0;
+  const canRedoPose = poseHist.future.length > 0;
+  const setPoseAndDrop = useCallback(
+    (
+      updater: (cur: { pose: PoseData; hipsDrop: number }) => { pose: PoseData; hipsDrop: number },
+      coalesceMs = 0,
+    ) => {
+      setPoseHist((h) => pushHistory(h, updater(h.present), { coalesceMs }));
+    },
+    [],
+  );
+  const setPose = useCallback(
+    (valOrFn: PoseData | ((cur: PoseData) => PoseData), coalesceMs = 0) => {
+      setPoseAndDrop(
+        (cur) => ({
+          ...cur,
+          pose: typeof valOrFn === "function" ? valOrFn(cur.pose) : valOrFn,
+        }),
+        coalesceMs,
+      );
+    },
+    [setPoseAndDrop],
+  );
+  const setHipsDrop = useCallback(
+    (valOrFn: number | ((cur: number) => number), coalesceMs = 0) => {
+      setPoseAndDrop(
+        (cur) => ({
+          ...cur,
+          hipsDrop: typeof valOrFn === "function" ? valOrFn(cur.hipsDrop) : valOrFn,
+        }),
+        coalesceMs,
+      );
+    },
+    [setPoseAndDrop],
+  );
+  const undoPose = useCallback(() => setPoseHist((h) => undoHistory(h)), []);
+  const redoPose = useCallback(() => setPoseHist((h) => redoHistory(h)), []);
   const [activePose, setActivePose] = useState<string | null>(null);
   const [customPoses, setCustomPoses] = useState<CustomPose[]>([]);
   const [category, setCategory] = useState<string>("Standing");
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
 
-  // 3D Props state
+  // 3D Props & Multi-Actor Scene Cast state
   const [propsList, setPropsList] = useState<ActiveProp[]>([]);
   const [selectedPropId, setSelectedPropId] = useState<string | null>(null);
-  const [leftTab, setLeftTab] = useState<"poses" | "props" | "face" | "outfit">("poses");
+  const [customPropsMeta, setCustomPropsMeta] = useState<CustomPropMeta[]>([]);
+  const [customPropObjects, setCustomPropObjects] = useState<Record<string, THREE.Object3D>>({});
+  const customPropFileRef = useRef<HTMLInputElement>(null);
+
+  const [activeActorMeta, setActiveActorMeta] = useState<{
+    id: string;
+    modelKey: string;
+    position: [number, number, number];
+    rotationY: number;
+    visible: boolean;
+  }>({
+    id: "actor-primary",
+    modelKey: DUMMY_MODEL,
+    position: [0, 0, 0],
+    rotationY: 0,
+    visible: true,
+  });
+  const [coActors, setCoActors] = useState<StagedActor[]>([]);
+  const [stageCharPick, setStageCharPick] = useState<string>("__demo__");
+  const [stagingBusy, setStagingBusy] = useState(false);
+
+  const [leftTab, setLeftTab] = useState<"poses" | "props" | "cast" | "face" | "outfit">("poses");
   const [propCategory, setPropCategory] = useState<PropCategory>("weapons");
 
   // Camera & Rendering Settings
   const [cameraPose, setCameraPose] = useState<CameraPose | null>(null);
+  const [handSide, setHandSide] = useState<HandSide>("Both");
   const [settings, setSettings] = useState<ViewSettings>({
     outline: 3,
+    outlineColor: "#0d0d0d",
     mono: false,
     tones: 3,
+    shadowHatch: false,
     showJoints: true,
     fov: 35,
     lightIntensity: 2.2,
+    rimIntensity: 0.5,
+    fillIntensity: 0.6,
+    lightAngle: lightSphericalToCartesian(40, 46),
   });
 
   // VRM Expression sliders
@@ -162,21 +271,84 @@ export function Studio() {
     if (outfitModelRef.current === modelName && modelName && !charRef.current) saveOutfit(modelName, outfit);
   }, [outfit, modelName]);
   const [activeTab, setActiveTab] = useState<"create" | "pose" | "panels">("create");
-  const [pages, setPages] = useState<PageLayout[]>([
-    {
-      id: "page-1",
-      pageNumber: 1,
-      format: PAGE_FORMATS[0],
-      panels: getPresetPanels("classic-6"),
-      elements: [],
-      balloons: [],
-      comicMarks: [],
-      speedLines: [],
-      sfxStamps: [],
-    },
-  ]);
-  const [activePageIndex, setActivePageIndex] = useState<number>(0);
+  const [chapterHist, setChapterHist] = useState<HistoryState<{ pages: PageLayout[]; activePageIndex: number }>>(() =>
+    createHistory({ pages: createDefaultPages(), activePageIndex: 0 }),
+  );
+  const [chapterHydrated, setChapterHydrated] = useState(false);
+  const pages = chapterHist.present.pages;
+  const activePageIndex = chapterHist.present.activePageIndex;
+  const canUndoChapter = chapterHist.past.length > 0;
+  const canRedoChapter = chapterHist.future.length > 0;
   const currentPageLayout = pages[activePageIndex] || pages[0];
+
+  const commitChapter = useCallback(
+    (
+      updater: (cur: { pages: PageLayout[]; activePageIndex: number }) => {
+        pages: PageLayout[];
+        activePageIndex: number;
+      },
+      coalesceMs = 0,
+    ) => {
+      setChapterHist((h) => pushHistory(h, updater(h.present), { coalesceMs }));
+    },
+    [],
+  );
+  const undoChapter = useCallback(() => setChapterHist((h) => undoHistory(h)), []);
+  const redoChapter = useCallback(() => setChapterHist((h) => redoHistory(h)), []);
+
+  // Load persisted manga chapter pages from IndexedDB on mount
+  useEffect(() => {
+    let mounted = true;
+    loadChapterState()
+      .then((saved) => {
+        if (!mounted) return;
+        if (saved) setChapterHist(resetHistory(saved));
+      })
+      .finally(() => {
+        if (mounted) setChapterHydrated(true);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  // Persist chapter changes continuously after initial hydration
+  useEffect(() => {
+    if (!chapterHydrated) return;
+    const t = setTimeout(() => {
+      void saveChapterState(pages, activePageIndex);
+    }, 150);
+    return () => clearTimeout(t);
+  }, [pages, activePageIndex, chapterHydrated]);
+
+  // Global keyboard shortcuts for Undo / Redo across Pose Studio and Manga Panels
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      const key = e.key.toLowerCase();
+      if (key === "z" && !e.shiftKey) {
+        e.preventDefault();
+        if (activeTab === "panels") undoChapter();
+        else if (activeTab === "pose") undoPose();
+      } else if (key === "y" || (key === "z" && e.shiftKey)) {
+        e.preventDefault();
+        if (activeTab === "panels") redoChapter();
+        else if (activeTab === "pose") redoPose();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [activeTab, undoChapter, redoChapter, undoPose, redoPose]);
 
   // Snapshot & Save modals
   const [snapshotModalOpen, setSnapshotModalOpen] = useState(false);
@@ -187,9 +359,23 @@ export function Studio() {
   const fileRef = useRef<HTMLInputElement>(null);
   const viewportRef = useRef<ViewportHandle>(null);
 
-  // Load custom poses on mount
+  // Load custom poses & custom 3D props on mount
   useEffect(() => {
     setCustomPoses(loadCustomPoses());
+    const metas = loadCustomPropsMeta();
+    setCustomPropsMeta(metas);
+    metas.forEach(async (m) => {
+      const f = await getFile(m.fileId).catch(() => null);
+      if (!f) return;
+      try {
+        const obj = await loadCustomPropObject(f.blob, f.name);
+        toonify(obj, settings.tones, settings.mono, Boolean(settings.shadowHatch));
+        setCustomPropObjects((cur) => ({ ...cur, [m.id]: obj }));
+      } catch {
+        /* skip unreadable prop asset */
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const load = useCallback(async (url: string, ext: string, name: string) => {
@@ -203,8 +389,7 @@ export function Studio() {
       setModelName(name);
       setModelType(char.type);
       setSelected(null);
-      setPose({});
-      setHipsDrop(0);
+      setPoseHist(resetHistory({ pose: {}, hipsDrop: 0 }));
       setActivePose(null);
       return true;
     } catch (e) {
@@ -240,6 +425,7 @@ export function Studio() {
     setCharLoaded(null);
     setActiveCharId(c?.id ?? null);
     const key = c?.model ?? DUMMY_MODEL;
+    setActiveActorMeta((m) => ({ ...m, modelKey: key }));
     if (loadedModelKey.current !== key) {
       let ok = false;
       if (key === DUMMY_MODEL) ok = await load("/models/xbot.glb", "glb", "X Bot (demo)");
@@ -322,23 +508,36 @@ export function Studio() {
     if (file) putFile(a.id, file, file.name, a.slot).catch(() => {});
   };
 
-  // Toon shading updates
+  // Toon shading & co-actor sync updates
   useEffect(() => {
-    if (model) toonify(model, settings.tones, settings.mono);
-  }, [model, settings.tones, settings.mono]);
+    if (model) toonify(model, settings.tones, settings.mono, Boolean(settings.shadowHatch));
+    for (const co of coActors) {
+      if (co.model) toonify(co.model, settings.tones, settings.mono, Boolean(settings.shadowHatch));
+    }
+    for (const propObj of Object.values(customPropObjects)) {
+      toonify(propObj, settings.tones, settings.mono, Boolean(settings.shadowHatch));
+    }
+  }, [model, coActors, customPropObjects, settings.tones, settings.mono, settings.shadowHatch]);
 
-  // Apply pose to rig
+  // Apply pose to rig (active actor + co-actors)
   useEffect(() => {
     if (rig) applyPose(rig, activeTab === "create" ? {} : pose, activeTab === "create" ? 0 : hipsDrop);
   }, [rig, pose, hipsDrop, activeTab]);
 
+  useEffect(() => {
+    for (const co of coActors) {
+      if (co.rig) applyPose(co.rig, co.pose, co.hipsDrop);
+    }
+  }, [coActors]);
+
   // Update VRM expressions
   useEffect(() => {
-    if (vrm?.expressionManager) {
+    const em = vrm?.expressionManager;
+    if (em) {
       Object.entries(vrmExpressions).forEach(([name, val]) => {
-        vrm.expressionManager.setValue(name, val);
+        em.setValue(name, val);
       });
-      vrm.expressionManager.update();
+      em.update();
     }
   }, [vrm, vrmExpressions]);
 
@@ -373,7 +572,8 @@ export function Studio() {
   const applyAiVariation = (v: { bones: PoseData; hipsDrop: number; note: string }, i: number) => {
     let hd = v.hipsDrop;
     if (aiGround && rig && hd >= 0) hd = Math.max(-0.6, Math.min(1.2, groundedHipsDrop(rig, v.bones, hd)));
-    setPose({ ...v.bones }); setHipsDrop(+hd.toFixed(3)); setActivePose(null); setAiPick(i);
+    setPoseAndDrop(() => ({ pose: { ...v.bones }, hipsDrop: +hd.toFixed(3) }));
+    setActivePose(null); setAiPick(i);
     setAiNote(v.note || "Pose applied — fine-tune with the joint controls.");
   };
   const runAiPose = async () => {
@@ -388,12 +588,26 @@ export function Studio() {
   };
 
   const exportBackup = async () => {
+    const externalPages = await externalizePageAssets(pages);
     const files = [];
-    for (const id of referencedFileIds(characters)) {
+    for (const id of referencedFileIds(
+      characters,
+      externalPages,
+      customPropsMeta.map((p) => p.fileId),
+    )) {
       const f = await getFile(id).catch(() => null);
       if (f) files.push({ id, name: f.name, slot: f.slot, type: f.blob.type || "application/octet-stream", data: await blobToB64(f.blob) });
     }
-    const b: StudioBackup = { app: "koma-studio", version: 1, exported: Date.now(), characters, facePacks, files };
+    const b: StudioBackup = {
+      app: "koma-studio",
+      version: 1,
+      exported: Date.now(),
+      characters,
+      facePacks,
+      files,
+      pages: externalPages,
+      activePageIndex,
+    };
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([JSON.stringify(b)], { type: "application/json" }));
     a.download = `manga-studio-backup-${new Date().toISOString().slice(0, 10)}.json`; a.click();
@@ -405,7 +619,12 @@ export function Studio() {
       for (const f of b.files) await putFile(f.id, b64ToBlob(f.data, f.type), f.name, f.slot);
       commitChars((l) => mergeById(l, b.characters));
       updateFacePacks(mergeById(facePacks, b.facePacks));
-      alert(`Restored ${b.characters.length} character(s), ${b.facePacks.length} face pack(s) and ${b.files.length} file(s). The page will reload to load them.`);
+      if (b.pages && b.pages.length > 0) {
+        const hydrated = await hydratePageAssets(b.pages);
+        await saveChapterState(hydrated, b.activePageIndex ?? 0);
+      }
+      const pageCount = b.pages?.length ?? 0;
+      alert(`Restored ${b.characters.length} character(s), ${b.facePacks.length} face pack(s), ${pageCount} page(s), and ${b.files.length} file(s). The page will reload to load them.`);
       location.reload();
     } catch (e) { alert(e instanceof Error ? e.message : "Couldn't read that backup."); }
   };
@@ -415,17 +634,19 @@ export function Studio() {
     if (preset.partial) {
       setPose((cur) => ({ ...cur, ...preset.bones }));
     } else {
-      setPose({ ...preset.bones });
-      setHipsDrop(preset.hipsDrop ?? 0);
+      setPoseAndDrop(() => ({ pose: { ...preset.bones }, hipsDrop: preset.hipsDrop ?? 0 }));
     }
   };
 
   const setRot = (bone: string, axis: number, v: number) =>
-    setPose((cur) => {
-      const r: Rot = [...(cur[bone] ?? [0, 0, 0])] as Rot;
-      r[axis] = v;
-      return { ...cur, [bone]: r };
-    });
+    setPose(
+      (cur) => {
+        const r: Rot = [...(cur[bone] ?? [0, 0, 0])] as Rot;
+        r[axis] = v;
+        return { ...cur, [bone]: r };
+      },
+      350,
+    );
 
   const [ikMode, setIkMode] = useState(true);
   const [pinFeetOn, setPinFeetOn] = useState(true);
@@ -443,19 +664,18 @@ export function Studio() {
       const drop = Math.max(-0.3, Math.min(1.2, (rig.hipsRestWorld.y - world.y) / rig.scale));
       applyPose(rig, pose, drop);
       const legs = pinFeet(rig, feet as Record<string, THREE.Vector3>);
-      setHipsDrop(drop);
-      setPose((cur) => ({ ...cur, ...legs }));
+      setPoseAndDrop((cur) => ({ pose: { ...cur.pose, ...legs }, hipsDrop: drop }), 350);
       return;
     }
     solveCCD(rig, effector, world);
     const offs = chainOffsets(rig, effector);
-    setPose((cur) => ({ ...cur, ...offs }));
+    setPose((cur) => ({ ...cur, ...offs }), 350);
   };
 
   const onBoneDrag = () => {
     if (!rig || !selected) return;
     const r = offsetFromBone(rig, selected);
-    setPose((cur) => ({ ...cur, [selected]: r }));
+    setPose((cur) => ({ ...cur, [selected]: r }), 350);
   };
 
   // 3D Props Handlers
@@ -495,6 +715,225 @@ export function Studio() {
     setSelectedPropId(dup.id);
   };
 
+  const handleSnapPropToHand = (hand: "RightHand" | "LeftHand") => {
+    if (!selectedProp) return;
+    const { propPatch, posePatch } = snapPropToHand(selectedProp, hand);
+    handleUpdateProp(selectedProp.id, propPatch);
+    setPose((cur) => ({ ...cur, ...posePatch }));
+  };
+
+  const handleImportCustomProp = async (file: File | undefined) => {
+    if (!file) return;
+    const ext = detectPropExtension(file.name);
+    if (!ext) {
+      alert("Unsupported prop format. Please upload .glb, .gltf, .fbx, or .obj.");
+      return;
+    }
+    try {
+      const fileId = `propfile:${crypto.randomUUID()}`;
+      await putFile(fileId, file, file.name, "prop");
+      const obj = await loadCustomPropObject(file, file.name);
+      toonify(obj, settings.tones, settings.mono, Boolean(settings.shadowHatch));
+      const cleanName = file.name.replace(/\.[^.]+$/, "");
+      const meta: CustomPropMeta = {
+        id: `customprop:${crypto.randomUUID()}`,
+        name: cleanName,
+        fileId,
+        ext,
+        defaultBone: "RightHand",
+      };
+      setCustomPropObjects((cur) => ({ ...cur, [meta.id]: obj }));
+      setCustomPropsMeta((cur) => {
+        const next = upsertCustomPropMeta(cur, meta);
+        saveCustomPropsMeta(next);
+        return next;
+      });
+      const spawned: ActiveProp = {
+        id: `prop-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        propDefId: meta.id,
+        name: cleanName,
+        attachedBone: meta.defaultBone,
+        transform: { position: [0.01, -0.01, 0.03], rotation: [85, 0, 0], scale: [1, 1, 1] },
+        visible: true,
+      };
+      setPropsList((cur) => [...cur, spawned]);
+      setSelectedPropId(spawned.id);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Could not load custom prop file.");
+    }
+  };
+
+  const handleSpawnCustomProp = (meta: CustomPropMeta) => {
+    const spawned: ActiveProp = {
+      id: `prop-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      propDefId: meta.id,
+      name: meta.name,
+      attachedBone: meta.defaultBone,
+      transform: { position: [0.01, -0.01, 0.03], rotation: [85, 0, 0], scale: [1, 1, 1] },
+      visible: true,
+    };
+    setPropsList((cur) => [...cur, spawned]);
+    setSelectedPropId(spawned.id);
+  };
+
+  const handleRemoveCustomProp = (id: string) => {
+    setCustomPropsMeta((cur) => {
+      const next = deleteCustomPropMeta(cur, id);
+      saveCustomPropsMeta(next);
+      return next;
+    });
+  };
+
+  // Multi-actor Scene Cast helpers
+  const buildStagedActorFromChar = useCallback(
+    async (
+      charOrNull: Character | null,
+      position: [number, number, number],
+      rotationY = 0,
+      poseInit: PoseData = {},
+      hipsInit = 0,
+      actorId = `actor-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+    ): Promise<StagedActor | null> => {
+      const key = charOrNull?.model ?? DUMMY_MODEL;
+      let loaded: LoadedCharacter;
+      if (key === DUMMY_MODEL) {
+        loaded = await loadCharacterModel("/models/xbot.glb", "glb", "X Bot (demo)");
+      } else {
+        const f = await getFile(key).catch(() => null);
+        if (!f) return null;
+        const url = URL.createObjectURL(f.blob);
+        try {
+          loaded = await loadCharacterModel(url, f.name.split(".").pop()?.toLowerCase() ?? "glb", f.name);
+        } finally {
+          URL.revokeObjectURL(url);
+        }
+      }
+      const wAssets: Record<string, CustomAsset> = {};
+      if (charOrNull) {
+        await Promise.all(
+          customItemIds(charOrNull).map(async (id) => {
+            const f = await getFile(id).catch(() => null);
+            if (!f) return;
+            try {
+              const a = await loadWardrobeAsset(new File([f.blob], f.name), (f.slot ?? "top") as CustomAsset["slot"]);
+              wAssets[id] = { ...a, id, name: f.name.replace(/\.[^.]+$/, "") };
+            } catch {
+              /* skip broken item */
+            }
+          }),
+        );
+      }
+      toonify(loaded.object, settings.tones, settings.mono, Boolean(settings.shadowHatch));
+      if (loaded.rig) applyPose(loaded.rig, poseInit, hipsInit);
+      const activeOutfit = charOrNull ? activeOutfitOf(charOrNull) : null;
+      return {
+        id: actorId,
+        characterId: charOrNull?.id ?? null,
+        name: charOrNull?.name ?? "X Bot (demo)",
+        modelKey: key,
+        position,
+        rotationY,
+        pose: { ...poseInit },
+        hipsDrop: hipsInit,
+        face: charOrNull ? charOrNull.face : loadFace("X Bot (demo)"),
+        outfit: activeOutfit ? { ...activeOutfit.outfit } : loadOutfit("X Bot (demo)"),
+        props: activeOutfit ? activeOutfit.props.map((p) => ({ ...p })) : [],
+        vrmExpressions: { happy: 0, angry: 0, sad: 0, relaxed: 0, surprised: 0, blink: 0 },
+        visible: true,
+        model: loaded.object,
+        rig: loaded.rig,
+        vrm: loaded.vrm ?? null,
+        wardrobeAssets: wAssets,
+      };
+    },
+    [settings.tones, settings.mono, settings.shadowHatch],
+  );
+
+  const handleStageCharacter = async () => {
+    if (stagingBusy) return;
+    setStagingBusy(true);
+    try {
+      const targetChar =
+        stageCharPick === "__demo__"
+          ? null
+          : characters.find((c) => c.id === stageCharPick) ?? null;
+      const slotPos = nextStagePosition(1 + coActors.length);
+      const staged = await buildStagedActorFromChar(targetChar, slotPos, 0);
+      if (staged) setCoActors((cur) => [...cur, staged]);
+      else setError("Selected character's model file is missing from browser storage.");
+    } finally {
+      setStagingBusy(false);
+    }
+  };
+
+  const switchActiveActor = (targetId: string) => {
+    if (targetId === activeActorMeta.id) return;
+    const target = coActors.find((a) => a.id === targetId);
+    if (!target) return;
+    const currentSnapshotActor: StagedActor = {
+      id: activeActorMeta.id,
+      characterId: activeCharId,
+      name: activeChar?.name ?? (modelName || "Primary Figure"),
+      modelKey: activeActorMeta.modelKey,
+      position: [...activeActorMeta.position],
+      rotationY: activeActorMeta.rotationY,
+      pose: { ...pose },
+      hipsDrop,
+      face,
+      outfit,
+      props: propsList.map((p) => ({ ...p })),
+      vrmExpressions: { ...vrmExpressions },
+      visible: activeActorMeta.visible,
+      model,
+      rig,
+      vrm,
+      wardrobeAssets,
+    };
+    setCoActors((cur) => cur.map((a) => (a.id === targetId ? currentSnapshotActor : a)));
+    charRef.current = target.characterId;
+    loadedModelKey.current = target.modelKey;
+    setActiveCharId(target.characterId);
+    setCharLoaded(target.characterId);
+    setActiveActorMeta({
+      id: target.id,
+      modelKey: target.modelKey,
+      position: [...target.position],
+      rotationY: target.rotationY,
+      visible: target.visible,
+    });
+    setModel(target.model);
+    setRig(target.rig);
+    setVrm(target.vrm);
+    setModelName(target.name);
+    setPoseHist(resetHistory({ pose: { ...target.pose }, hipsDrop: target.hipsDrop }));
+    setFace(target.face);
+    setOutfit(target.outfit);
+    setPropsList(target.props);
+    setWardrobeAssets(target.wardrobeAssets);
+    setVrmExpressions(target.vrmExpressions);
+    setSelected(null);
+    setSelectedPropId(null);
+  };
+
+  const handleToggleActorVisibility = (actorId: string) => {
+    if (actorId === activeActorMeta.id) {
+      setActiveActorMeta((m) => ({ ...m, visible: !m.visible }));
+      return;
+    }
+    setCoActors((cur) => cur.map((a) => (a.id === actorId ? { ...a, visible: !a.visible } : a)));
+  };
+
+  const handleRemoveStagedActor = (actorId: string) => {
+    if (coActors.length === 0) return;
+    if (actorId === activeActorMeta.id) {
+      const nextPrimary = coActors[0];
+      switchActiveActor(nextPrimary.id);
+      setCoActors((cur) => cur.filter((a) => a.id !== activeActorMeta.id));
+      return;
+    }
+    setCoActors((cur) => cur.filter((a) => a.id !== actorId));
+  };
+
   const selectedProp = propsList.find((p) => p.id === selectedPropId);
 
   // Snapshot triggers
@@ -503,6 +942,7 @@ export function Studio() {
     const result = viewportRef.current.captureSnapshot({
       pixelRatio,
       outlineThickness: settings.outline,
+      outlineColor: settings.outlineColor,
     });
     if (result) {
       setCurrentSnapshot(result);
@@ -540,82 +980,168 @@ export function Studio() {
 
   const sel = selected ? pose[selected] ?? [0, 0, 0] : null;
 
-  // Multi-Page Management Handlers
+  // Multi-Page Management Handlers (backed by undo/redo + IndexedDB persistence)
   const handleUpdateCurrentPage = (updated: PageLayout) => {
-    setPages((cur) => cur.map((p, idx) => (idx === activePageIndex ? updated : p)));
+    commitChapter(
+      (cur) => ({
+        ...cur,
+        pages: cur.pages.map((p, idx) => (idx === cur.activePageIndex ? updated : p)),
+      }),
+      350,
+    );
+  };
+
+  const handleSelectPage = (index: number) => {
+    commitChapter((cur) => ({
+      ...cur,
+      activePageIndex: Math.max(0, Math.min(index, cur.pages.length - 1)),
+    }));
   };
 
   const handleAddPage = () => {
-    const newPage: PageLayout = {
-      id: `page-${Date.now()}`,
-      pageNumber: pages.length + 1,
-      format: currentPageLayout.format,
-      panels: getPresetPanels("classic-6"),
-      elements: [],
-      balloons: [],
-      comicMarks: [],
-      speedLines: [],
-      sfxStamps: [],
-    };
-    setPages((cur) => [...cur, newPage]);
-    setActivePageIndex(pages.length);
+    commitChapter((cur) => {
+      const fmt = (cur.pages[cur.activePageIndex] || cur.pages[0]).format;
+      const newPage: PageLayout = {
+        id: `page-${Date.now()}`,
+        pageNumber: cur.pages.length + 1,
+        format: fmt,
+        panels: getPresetPanels("classic-6"),
+        elements: [],
+        balloons: [],
+        comicMarks: [],
+        speedLines: [],
+        sfxStamps: [],
+      };
+      return {
+        pages: [...cur.pages, newPage],
+        activePageIndex: cur.pages.length,
+      };
+    });
   };
 
   const handleDuplicatePage = (index: number) => {
-    const target = pages[index];
-    if (!target) return;
-    const copy: PageLayout = {
-      ...target,
-      id: `page-${Date.now()}`,
-      pageNumber: index + 2,
-      elements: target.elements.map((el) => ({
-        ...el,
-        id: `el-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      })),
-    };
-    const updated = [...pages];
-    updated.splice(index + 1, 0, copy);
-    setPages(updated);
-    setActivePageIndex(index + 1);
+    commitChapter((cur) => {
+      const target = cur.pages[index];
+      if (!target) return cur;
+      const copy: PageLayout = {
+        ...target,
+        id: `page-${Date.now()}`,
+        pageNumber: index + 2,
+        elements: target.elements.map((el) => ({
+          ...el,
+          id: `el-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        })),
+      };
+      const updated = [...cur.pages];
+      updated.splice(index + 1, 0, copy);
+      return { pages: updated, activePageIndex: index + 1 };
+    });
   };
 
   const handleDeletePage = (index: number) => {
-    if (pages.length <= 1) return;
-    const updated = pages.filter((_, idx) => idx !== index);
-    setPages(updated);
-    setActivePageIndex((cur) => Math.min(cur, updated.length - 1));
+    commitChapter((cur) => {
+      if (cur.pages.length <= 1) return cur;
+      const updated = cur.pages.filter((_, idx) => idx !== index);
+      return {
+        pages: updated,
+        activePageIndex: Math.min(cur.activePageIndex, updated.length - 1),
+      };
+    });
   };
 
   const handleMovePage = (fromIndex: number, toIndex: number) => {
-    if (toIndex < 0 || toIndex >= pages.length) return;
-    const updated = [...pages];
-    const [moved] = updated.splice(fromIndex, 1);
-    updated.splice(toIndex, 0, moved);
-    setPages(updated);
-    setActivePageIndex(toIndex);
+    commitChapter((cur) => {
+      if (toIndex < 0 || toIndex >= cur.pages.length) return cur;
+      const updated = [...cur.pages];
+      const [moved] = updated.splice(fromIndex, 1);
+      updated.splice(toIndex, 0, moved);
+      return { pages: updated, activePageIndex: toIndex };
+    });
   };
 
-  // If in 2D Panels Studio mode, render full Manga Studio
+  const handleUpdatePageAt = (index: number, updatedPage: PageLayout) => {
+    commitChapter(
+      (cur) => ({
+        pages: cur.pages.map((p, idx) => (idx === index ? updatedPage : p)),
+        activePageIndex: cur.activePageIndex,
+      }),
+      350,
+    );
+  };
+
+  const handleInsertPageAt = (index: number, newPage: PageLayout) => {
+    commitChapter((cur) => {
+      const updated = [...cur.pages];
+      const clamped = Math.max(0, Math.min(index, updated.length));
+      updated.splice(clamped, 0, newPage);
+      return { pages: updated, activePageIndex: clamped };
+    });
+  };
+
+  // If in 2D Panels Studio mode, render full Manga Studio (code-split)
   const panelsView = activeTab === "panels" && (
+      <Suspense fallback={<div className="flex h-screen items-center justify-center text-sm font-semibold">Loading Manga Panel Studio...</div>}>
       <PanelStudio
         layout={currentPageLayout}
         onUpdateLayout={handleUpdateCurrentPage}
         onOpen3dStudio={() => setActiveTab("pose")}
         onRePoseIn3D={(source3d) => {
-          if (source3d.pose) setPose(source3d.pose);
-          if (source3d.hipsDrop !== undefined) setHipsDrop(source3d.hipsDrop);
+          if (source3d.cast && source3d.cast.length > 0) {
+            const targetActiveId = source3d.activeActorId ?? source3d.cast[0].id;
+            const primarySpec =
+              source3d.cast.find((c) => c.id === targetActiveId) ?? source3d.cast[0];
+            const otherSpecs = source3d.cast.filter((c) => c.id !== primarySpec.id);
+            setPoseAndDrop(() => ({
+              pose: { ...primarySpec.pose },
+              hipsDrop: primarySpec.hipsDrop ?? 0,
+            }));
+            setActiveActorMeta((m) => ({
+              ...m,
+              id: primarySpec.id,
+              position: [...primarySpec.position],
+              rotationY: primarySpec.rotationY ?? 0,
+            }));
+            Promise.all(
+              otherSpecs.map((spec) =>
+                buildStagedActorFromChar(
+                  spec.characterId
+                    ? characters.find((ch) => ch.id === spec.characterId) ?? null
+                    : null,
+                  spec.position,
+                  spec.rotationY,
+                  spec.pose,
+                  spec.hipsDrop,
+                  spec.id,
+                ),
+              ),
+            ).then((loadedOthers) => {
+              setCoActors(loadedOthers.filter((x): x is StagedActor => x !== null));
+            });
+          } else {
+            setPoseAndDrop(() => ({
+              pose: source3d.pose ?? pose,
+              hipsDrop: source3d.hipsDrop ?? hipsDrop,
+            }));
+          }
           if (source3d.cameraPose) setCameraPose(source3d.cameraPose);
           if (source3d.fov) setSettings((s) => ({ ...s, fov: source3d.fov }));
           setActiveTab("pose");
         }}
         allPages={pages}
         activePageIndex={activePageIndex}
-        onSelectPage={setActivePageIndex}
+        onSelectPage={handleSelectPage}
         onAddPage={handleAddPage}
         onDuplicatePage={handleDuplicatePage}
         onDeletePage={handleDeletePage}
         onMovePage={handleMovePage}
+        onUpdatePageAt={handleUpdatePageAt}
+        onInsertPageAt={handleInsertPageAt}
+        canUndo={canUndoChapter}
+        canRedo={canRedoChapter}
+        onUndo={undoChapter}
+        onRedo={redoChapter}
       />
+      </Suspense>
   );
 
   return (
@@ -743,6 +1269,17 @@ export function Studio() {
               🗡️ Props {propsList.length > 0 && `(${propsList.length})`}
             </button>
             <button
+              hidden={activeTab === "create"}
+              onClick={() => setLeftTab("cast")}
+              className={`flex-1 py-2 text-center transition-colors ${
+                leftTab === "cast"
+                  ? "border-b-2 border-primary bg-card text-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              👥 Cast ({1 + coActors.length})
+            </button>
+            <button
               onClick={() => setLeftTab("face")}
               className={`flex-1 py-2 text-center transition-colors ${
                 leftTab === "face"
@@ -801,6 +1338,8 @@ export function Studio() {
                 </div>
 
                 <input
+                  id="pose-search"
+                  aria-label="Search poses"
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                   placeholder={`Search ${allAvailablePoses.length} poses…`}
@@ -927,8 +1466,26 @@ export function Studio() {
                 )}
                 {aiNote && <p className="text-[10px] text-muted-foreground">{aiNote}</p>}
               </div>
-              {/* Quick Mirror & Reset Tools */}
-              <div className="flex gap-2 border-t border-border p-3">
+              {/* Undo / Redo, Mirror & Reset Tools */}
+              <div className="flex gap-1.5 border-t border-border p-3">
+                <button
+                  disabled={!rig || !canUndoPose}
+                  onClick={undoPose}
+                  title="Undo Pose (Ctrl+Z)"
+                  aria-label="Undo Pose"
+                  className="rounded-sm border-2 border-foreground px-2 py-1.5 hover:bg-accent disabled:opacity-35"
+                >
+                  <Undo2 className="h-4 w-4" />
+                </button>
+                <button
+                  disabled={!rig || !canRedoPose}
+                  onClick={redoPose}
+                  title="Redo Pose (Ctrl+Y)"
+                  aria-label="Redo Pose"
+                  className="rounded-sm border-2 border-foreground px-2 py-1.5 hover:bg-accent disabled:opacity-35"
+                >
+                  <Redo2 className="h-4 w-4" />
+                </button>
                 <button
                   disabled={!rig}
                   onClick={() => {
@@ -942,8 +1499,7 @@ export function Studio() {
                 <button
                   disabled={!rig}
                   onClick={() => {
-                    setPose({});
-                    setHipsDrop(0);
+                    setPoseAndDrop(() => ({ pose: {}, hipsDrop: 0 }));
                     setActivePose(null);
                   }}
                   className="flex-1 rounded-sm border-2 border-foreground py-1.5 text-sm font-semibold hover:bg-accent transition-transform hover:-translate-y-0.5"
@@ -952,6 +1508,190 @@ export function Studio() {
                 </button>
               </div>
             </>
+          ) : leftTab === "cast" ? (
+            /* Multi-Character Scene Cast Panel */
+            <div className="flex flex-1 flex-col overflow-y-auto p-3 space-y-3 text-xs">
+              <div className="space-y-1.5 border-b border-border pb-3">
+                <h2 className="font-display text-base">Stage Scene Cast</h2>
+                <p className="text-[11px] text-muted-foreground">
+                  Pose up to 4+ characters together with shared lighting, shadows, and transparent 2D cutout export.
+                </p>
+                <div className="flex gap-1.5 pt-1">
+                  <select
+                    aria-label="Character to stage"
+                    value={stageCharPick}
+                    onChange={(e) => setStageCharPick(e.target.value)}
+                    className="flex-1 rounded border border-input bg-background p-1.5 text-xs"
+                  >
+                    <option value="__demo__">X Bot (demo)</option>
+                    {characters.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    disabled={stagingBusy}
+                    onClick={handleStageCharacter}
+                    className="rounded border-2 border-foreground bg-primary px-2.5 py-1 text-xs font-bold text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                  >
+                    {stagingBusy ? "…" : "+ Add"}
+                  </button>
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <span className="font-display text-xs uppercase tracking-wider text-muted-foreground">
+                  Active Stage Roster ({1 + coActors.length})
+                </span>
+                {[
+                  {
+                    id: activeActorMeta.id,
+                    name: activeChar?.name ?? (modelName || "X Bot (demo)"),
+                    visible: activeActorMeta.visible,
+                    isActive: true,
+                    pos: activeActorMeta.position,
+                  },
+                  ...coActors.map((co) => ({
+                    id: co.id,
+                    name: co.name,
+                    visible: co.visible,
+                    isActive: false,
+                    pos: co.position,
+                  })),
+                ].map((actor) => (
+                  <div
+                    key={actor.id}
+                    onClick={() => !actor.isActive && switchActiveActor(actor.id)}
+                    className={`flex items-center justify-between rounded border p-2 cursor-pointer transition-colors ${
+                      actor.isActive
+                        ? "border-primary bg-primary/10 font-bold"
+                        : "border-border hover:border-foreground"
+                    }`}
+                  >
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5 truncate">
+                        <span className="truncate">{actor.name}</span>
+                        {actor.isActive && (
+                          <span className="rounded bg-primary px-1 py-0.2 text-[9px] text-primary-foreground">
+                            ACTIVE
+                          </span>
+                        )}
+                      </div>
+                      <span className="text-[10px] font-mono text-muted-foreground">
+                        x:{actor.pos[0].toFixed(2)}m z:{actor.pos[2].toFixed(2)}m
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        type="button"
+                        title="Toggle Visibility"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleToggleActorVisibility(actor.id);
+                        }}
+                        className="p-1 hover:text-primary"
+                      >
+                        {actor.visible ? (
+                          <Eye className="h-3.5 w-3.5" />
+                        ) : (
+                          <EyeOff className="h-3.5 w-3.5 opacity-50" />
+                        )}
+                      </button>
+                      {coActors.length > 0 && (
+                        <button
+                          type="button"
+                          title="Remove from Scene"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleRemoveStagedActor(actor.id);
+                          }}
+                          className="p-1 hover:text-destructive"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="space-y-2 border-t border-border pt-3">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold">Selected Character Floor Placement</span>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setActiveActorMeta((m) => ({ ...m, position: [0, 0, 0], rotationY: 0 }))
+                    }
+                    className="rounded border border-border px-1.5 py-0.5 text-[10px] hover:bg-accent"
+                  >
+                    Center
+                  </button>
+                </div>
+                <label className="block text-[11px]">
+                  <span className="flex justify-between">
+                    <span>Floor Left / Right (X)</span>
+                    <span className="font-mono">{activeActorMeta.position[0].toFixed(2)}m</span>
+                  </span>
+                  <input
+                    type="range"
+                    aria-label="Actor Floor X"
+                    min={-2.5}
+                    max={2.5}
+                    step={0.05}
+                    value={activeActorMeta.position[0]}
+                    onChange={(e) =>
+                      setActiveActorMeta((m) => ({
+                        ...m,
+                        position: [+e.target.value, m.position[1], m.position[2]],
+                      }))
+                    }
+                    className="w-full accent-primary"
+                  />
+                </label>
+                <label className="block text-[11px]">
+                  <span className="flex justify-between">
+                    <span>Floor Depth (Z)</span>
+                    <span className="font-mono">{activeActorMeta.position[2].toFixed(2)}m</span>
+                  </span>
+                  <input
+                    type="range"
+                    aria-label="Actor Floor Z"
+                    min={-2.5}
+                    max={2.5}
+                    step={0.05}
+                    value={activeActorMeta.position[2]}
+                    onChange={(e) =>
+                      setActiveActorMeta((m) => ({
+                        ...m,
+                        position: [m.position[0], m.position[1], +e.target.value],
+                      }))
+                    }
+                    className="w-full accent-primary"
+                  />
+                </label>
+                <label className="block text-[11px]">
+                  <span className="flex justify-between">
+                    <span>Facing Angle (Yaw)</span>
+                    <span className="font-mono">{activeActorMeta.rotationY}°</span>
+                  </span>
+                  <input
+                    type="range"
+                    aria-label="Actor Facing Yaw"
+                    min={-180}
+                    max={180}
+                    step={5}
+                    value={activeActorMeta.rotationY}
+                    onChange={(e) =>
+                      setActiveActorMeta((m) => ({ ...m, rotationY: +e.target.value }))
+                    }
+                    className="w-full accent-primary"
+                  />
+                </label>
+              </div>
+            </div>
           ) : (
             /* 3D Props Panel */
             <div className="flex flex-1 flex-col overflow-y-auto">
@@ -985,6 +1725,53 @@ export function Studio() {
                       <span className="truncate">{propDef.name}</span>
                     </button>
                   ))}
+                </div>
+
+                {/* Custom 3D Prop Import */}
+                <div className="border-t border-border pt-2 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-semibold text-muted-foreground">Custom 3D Props</span>
+                    <button
+                      type="button"
+                      onClick={() => customPropFileRef.current?.click()}
+                      className="rounded border border-foreground px-2 py-0.5 text-[10px] font-bold hover:bg-accent"
+                    >
+                      + Import .glb / .fbx / .obj
+                    </button>
+                    <input
+                      ref={customPropFileRef}
+                      type="file"
+                      accept=".glb,.gltf,.fbx,.obj"
+                      className="hidden"
+                      onChange={(e) => {
+                        void handleImportCustomProp(e.target.files?.[0]);
+                        e.target.value = "";
+                      }}
+                    />
+                  </div>
+                  {customPropsMeta.length > 0 && (
+                    <div className="flex flex-wrap gap-1">
+                      {customPropsMeta.map((cp) => (
+                        <div key={cp.id} className="flex items-center rounded border border-border bg-muted/40 text-[10px]">
+                          <button
+                            type="button"
+                            onClick={() => handleSpawnCustomProp(cp)}
+                            className="px-1.5 py-0.5 font-semibold hover:bg-accent"
+                          >
+                            + {cp.name}
+                          </button>
+                          <button
+                            type="button"
+                            aria-label={`Remove ${cp.name}`}
+                            onClick={() => handleRemoveCustomProp(cp.id)}
+                            className="px-1 py-0.5 text-muted-foreground hover:text-destructive"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -1062,10 +1849,11 @@ export function Studio() {
                     <span className="text-[11px] font-mono text-primary">{selectedProp.name}</span>
                   </h3>
 
-                  {/* Bone Attachment */}
+                  {/* Bone Attachment + 1-Click Smart Hand Grip Snap */}
                   <div>
                     <label className="font-semibold block mb-1">Attached Bone</label>
                     <select
+                      aria-label="Attached Bone"
                       value={selectedProp.attachedBone}
                       onChange={(e) =>
                         handleUpdateProp(selectedProp.id, { attachedBone: e.target.value })
@@ -1078,6 +1866,22 @@ export function Studio() {
                         </option>
                       ))}
                     </select>
+                    <div className="grid grid-cols-2 gap-1 pt-1.5">
+                      <button
+                        type="button"
+                        onClick={() => handleSnapPropToHand("LeftHand")}
+                        className="rounded border border-border bg-muted/40 py-1 text-[10px] font-semibold hover:border-foreground hover:bg-accent"
+                      >
+                        🤚 Snap Left Grip
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleSnapPropToHand("RightHand")}
+                        className="rounded border border-border bg-muted/40 py-1 text-[10px] font-semibold hover:border-foreground hover:bg-accent"
+                      >
+                        ✋ Snap Right Grip
+                      </button>
+                    </div>
                   </div>
 
                   {/* Translation Sliders */}
@@ -1226,11 +2030,20 @@ export function Studio() {
               propsList={propsList}
               selectedPropId={selectedPropId}
               onSelectProp={setSelectedPropId}
+              customPropObjects={customPropObjects}
               face={activeTab === "create" ? { ...face, expression: "Neutral", overrides: {}, fx: [] } : face}
               facePack={activeFacePack}
               faceFitRequest={faceFitRequest}
               outfit={outfit}
               wardrobeAssets={wardrobeAssets}
+              primaryStageTransform={
+                activeTab === "create"
+                  ? { position: [0, 0, 0], rotationY: 0 }
+                  : { position: activeActorMeta.position, rotationY: activeActorMeta.rotationY }
+              }
+              primaryVisible={activeTab === "create" ? true : activeActorMeta.visible}
+              coActors={activeTab === "create" ? [] : coActors}
+              onSelectActor={switchActiveActor}
               onFaceFit={(offsetZ, offsetY) => setFace((f) => ({ ...f, fitted: true, calib: { ...f.calib, offsetZ, offsetY } }))}
             />
           </div>
@@ -1266,10 +2079,20 @@ export function Studio() {
           )}
 
           <div className="absolute bottom-6 left-8 flex items-center gap-4 text-xs text-muted-foreground pointer-events-none">
-            <span>🖱️ Click joint sphere to rotate</span>
-            <span>· Drag gizmo ring to articulate</span>
-            <span>· Left drag empty space to orbit</span>
-            <span>· Right drag to pan</span>
+            {ikMode ? (
+              <>
+                <span>✋ Drag any limb or joint to bend with IK</span>
+                <span>· Drag empty space to orbit</span>
+                <span>· Right drag to pan</span>
+              </>
+            ) : (
+              <>
+                <span>🖱️ Click joint sphere to rotate</span>
+                <span>· Drag gizmo ring to articulate</span>
+                <span>· Left drag empty space to orbit</span>
+                <span>· Right drag to pan</span>
+              </>
+            )}
           </div>
         </main>
 
@@ -1300,6 +2123,8 @@ export function Studio() {
                 <>
                   Selected: <span className="font-semibold text-foreground">{selected}</span>
                 </>
+              ) : ikMode ? (
+                "Drag a limb in the viewport, or click a joint sphere for fine sliders"
               ) : (
                 "Click a joint sphere in the viewport"
               )}
@@ -1353,10 +2178,43 @@ export function Studio() {
                 max={1}
                 step={0.01}
                 value={hipsDrop}
-                onChange={(e) => setHipsDrop(+e.target.value)}
+                onChange={(e) => setHipsDrop(+e.target.value, 350)}
                 className="w-full accent-primary"
               />
             </label>
+          </section>
+
+          {/* 1-Click Left / Right / Both Hand Pose Presets */}
+          <section className="border-b border-border p-3 space-y-2 text-xs">
+            <div className="flex items-center justify-between gap-2">
+              <h2 className="font-display text-base">Hand Poses</h2>
+              <div className="flex rounded-sm border border-border overflow-hidden text-[10px] font-semibold">
+                {(["Left", "Right", "Both"] as HandSide[]).map((side) => (
+                  <button
+                    key={side}
+                    type="button"
+                    onClick={() => setHandSide(side)}
+                    className={`px-1.5 py-0.5 ${
+                      handSide === side ? "bg-primary text-primary-foreground" : "bg-background hover:bg-accent"
+                    }`}
+                  >
+                    {side}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="grid grid-cols-3 gap-1">
+              {HAND_PRESETS.map((preset) => (
+                <button
+                  key={preset.id}
+                  type="button"
+                  onClick={() => setPose((cur) => applyHandPresetToPose(cur, handSide, preset.id))}
+                  className="rounded-sm border border-border px-1.5 py-1 text-[11px] font-medium hover:bg-accent"
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
           </section>
 
           {/* VRM Blendshape Facial Expressions (if VRM avatar loaded) */}
@@ -1387,9 +2245,157 @@ export function Studio() {
             </section>
           )}
 
-          {/* Manga Cel-Shading & Inking */}
+          {/* Manga Cel-Shading & Studio Lighting */}
           <section className="space-y-3 p-3 text-xs">
-            <h2 className="font-display text-base">Manga Cel-Shading</h2>
+            <h2 className="font-display text-base">Manga Cel-Shading & Light</h2>
+            {(() => {
+              const curLight = lightCartesianToSpherical(settings.lightAngle ?? [2.5, 4, 3]);
+              const setSpherical = (az: number, el: number) =>
+                setSettings((s) => ({
+                  ...s,
+                  lightAngle: lightSphericalToCartesian(az, el),
+                }));
+              const dialX = 44 + Math.sin((curLight.azimuth * Math.PI) / 180) * 32;
+              const dialY = 44 - (curLight.elevation / 85) * 32;
+              const updateDialFromPointer = (e: React.PointerEvent<SVGSVGElement>) => {
+                const r = e.currentTarget.getBoundingClientRect();
+                const nx = Math.max(-1, Math.min(1, ((e.clientX - r.left) / r.width) * 2 - 1));
+                const ny = Math.max(-1, Math.min(1, ((e.clientY - r.top) / r.height) * 2 - 1));
+                const az = Math.round(nx * 180);
+                const el = Math.round(-ny * 85);
+                setSpherical(az, el);
+              };
+              return (
+                <div className="space-y-2 rounded-sm border border-border bg-muted/30 p-2">
+                  <div className="flex flex-wrap gap-1">
+                    {LIGHT_PRESETS.map((lp) => (
+                      <button
+                        key={lp.id}
+                        type="button"
+                        onClick={() =>
+                          setSettings((s) => ({
+                            ...s,
+                            lightAngle: lightSphericalToCartesian(lp.azimuth, lp.elevation),
+                            lightIntensity: lp.lightIntensity,
+                            rimIntensity: lp.rimIntensity,
+                            fillIntensity: lp.fillIntensity,
+                          }))
+                        }
+                        className="rounded-sm border border-border bg-background px-1.5 py-0.5 text-[10px] font-medium hover:bg-accent"
+                      >
+                        {lp.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex items-center gap-2.5">
+                    <svg
+                      width={88}
+                      height={88}
+                      viewBox="0 0 88 88"
+                      role="slider"
+                      aria-label="Key light direction pad"
+                      aria-valuetext={`Azimuth ${curLight.azimuth}°, Elevation ${curLight.elevation}°`}
+                      className="shrink-0 cursor-crosshair rounded-full border border-border bg-card"
+                      onPointerDown={(e) => {
+                        (e.currentTarget as Element).setPointerCapture(e.pointerId);
+                        updateDialFromPointer(e);
+                      }}
+                      onPointerMove={(e) => {
+                        if (e.buttons === 1) updateDialFromPointer(e);
+                      }}
+                    >
+                      <circle cx={44} cy={44} r={34} fill="none" stroke="#999" strokeDasharray="3,3" strokeWidth={1} />
+                      <line x1={44} y1={6} x2={44} y2={82} stroke="#bbb" strokeWidth={0.75} />
+                      <line x1={6} y1={44} x2={82} y2={44} stroke="#bbb" strokeWidth={0.75} />
+                      <line x1={44} y1={44} x2={dialX} y2={dialY} stroke="#e11d2e" strokeWidth={1.5} />
+                      <circle cx={dialX} cy={dialY} r={5.5} fill="#e11d2e" stroke="#111" strokeWidth={1.5} />
+                    </svg>
+                    <div className="flex-1 space-y-1.5">
+                      <label className="block">
+                        <span className="flex justify-between text-[11px]">
+                          <span>Azimuth</span>
+                          <span className="tabular-nums">{curLight.azimuth}°</span>
+                        </span>
+                        <input
+                          type="range"
+                          aria-label="Key Light Azimuth"
+                          min={-180}
+                          max={180}
+                          value={curLight.azimuth}
+                          onChange={(e) => setSpherical(+e.target.value, curLight.elevation)}
+                          className="w-full accent-primary"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="flex justify-between text-[11px]">
+                          <span>Elevation</span>
+                          <span className="tabular-nums">{curLight.elevation}°</span>
+                        </span>
+                        <input
+                          type="range"
+                          aria-label="Key Light Elevation"
+                          min={-60}
+                          max={85}
+                          value={curLight.elevation}
+                          onChange={(e) => setSpherical(curLight.azimuth, +e.target.value)}
+                          className="w-full accent-primary"
+                        />
+                      </label>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-1.5 pt-0.5">
+                    <label className="block">
+                      <span className="flex justify-between text-[10px]">
+                        <span>Key</span>
+                        <span>{(settings.lightIntensity ?? 2.2).toFixed(1)}</span>
+                      </span>
+                      <input
+                        type="range"
+                        aria-label="Key Light Intensity"
+                        min={0}
+                        max={4.5}
+                        step={0.1}
+                        value={settings.lightIntensity ?? 2.2}
+                        onChange={(e) => setSettings((s) => ({ ...s, lightIntensity: +e.target.value }))}
+                        className="w-full accent-primary"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="flex justify-between text-[10px]">
+                        <span>Rim</span>
+                        <span>{(settings.rimIntensity ?? 0.5).toFixed(1)}</span>
+                      </span>
+                      <input
+                        type="range"
+                        aria-label="Rim Light Intensity"
+                        min={0}
+                        max={3}
+                        step={0.1}
+                        value={settings.rimIntensity ?? 0.5}
+                        onChange={(e) => setSettings((s) => ({ ...s, rimIntensity: +e.target.value }))}
+                        className="w-full accent-primary"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="flex justify-between text-[10px]">
+                        <span>Fill</span>
+                        <span>{(settings.fillIntensity ?? 0.6).toFixed(1)}</span>
+                      </span>
+                      <input
+                        type="range"
+                        aria-label="Fill Light Intensity"
+                        min={0}
+                        max={1.5}
+                        step={0.05}
+                        value={settings.fillIntensity ?? 0.6}
+                        onChange={(e) => setSettings((s) => ({ ...s, fillIntensity: +e.target.value }))}
+                        className="w-full accent-primary"
+                      />
+                    </label>
+                  </div>
+                </div>
+              );
+            })()}
             <label className="block">
               <span className="flex justify-between">
                 <span>Ink Outline Width</span>
@@ -1405,6 +2411,33 @@ export function Studio() {
                 className="w-full accent-primary"
               />
             </label>
+            <div className="flex items-center justify-between gap-2">
+              <span>Ink Color</span>
+              <div className="flex items-center gap-1">
+                {OUTLINE_SWATCHES.map((sw) => (
+                  <button
+                    key={sw.hex}
+                    type="button"
+                    title={sw.label}
+                    aria-label={`Ink Color ${sw.label}`}
+                    onClick={() => setSettings((s) => ({ ...s, outlineColor: sw.hex }))}
+                    style={{ backgroundColor: sw.hex }}
+                    className={`h-5 w-5 rounded-full border ${
+                      (settings.outlineColor ?? "#0d0d0d") === sw.hex
+                        ? "ring-2 ring-primary ring-offset-1 border-white"
+                        : "border-border"
+                    }`}
+                  />
+                ))}
+                <input
+                  type="color"
+                  aria-label="Custom Ink Outline Color"
+                  value={settings.outlineColor ?? "#0d0d0d"}
+                  onChange={(e) => setSettings((s) => ({ ...s, outlineColor: e.target.value }))}
+                  className="h-5 w-6 cursor-pointer rounded-sm border border-border bg-transparent p-0"
+                />
+              </div>
+            </div>
             <label className="block">
               <span className="flex justify-between">
                 <span>Shading Tone Steps</span>
@@ -1433,7 +2466,7 @@ export function Studio() {
                 className="w-full accent-primary"
               />
             </label>
-            <div className="flex gap-4 pt-1">
+            <div className="flex flex-wrap gap-3 pt-1">
               <label className="flex items-center gap-1.5 cursor-pointer">
                 <input
                   type="checkbox"
@@ -1442,6 +2475,15 @@ export function Studio() {
                   className="accent-primary"
                 />
                 <span>Manga Monochrome</span>
+              </label>
+              <label className="flex items-center gap-1.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={Boolean(settings.shadowHatch)}
+                  onChange={(e) => setSettings((s) => ({ ...s, shadowHatch: e.target.checked }))}
+                  className="accent-primary"
+                />
+                <span>Print Hatching</span>
               </label>
               <label className="flex items-center gap-1.5 cursor-pointer">
                 <input
@@ -1467,6 +2509,7 @@ export function Studio() {
           const res = viewportRef.current.captureSnapshot({
             pixelRatio,
             outlineThickness: settings.outline,
+            outlineColor: settings.outlineColor,
           });
           if (res) setCurrentSnapshot(res);
         }}
@@ -1501,6 +2544,29 @@ export function Studio() {
               hipsDrop,
               cameraPose,
               fov: settings.fov,
+              activeActorId: activeActorMeta.id,
+              cast: serializeCastForSnapshot([
+                {
+                  id: activeActorMeta.id,
+                  characterId: activeCharId,
+                  name: activeChar?.name ?? (modelName || "Figure"),
+                  modelKey: activeActorMeta.modelKey,
+                  position: activeActorMeta.position,
+                  rotationY: activeActorMeta.rotationY,
+                  pose,
+                  hipsDrop,
+                  face,
+                  outfit,
+                  props: propsList,
+                  vrmExpressions,
+                  visible: activeActorMeta.visible,
+                  model,
+                  rig,
+                  vrm,
+                  wardrobeAssets,
+                },
+                ...coActors,
+              ]),
             },
           };
           saveRosterItem({
