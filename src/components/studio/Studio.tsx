@@ -8,6 +8,8 @@ import {
   renameOutfit, saveCharacters, updateActiveOutfit, upsertCharacter, type Character,
 } from "@/lib/characters";
 import { getFile, putFile } from "@/lib/file-store";
+import { b64ToBlob, blobToB64, mergeById, parseBackup, referencedFileIds, type StudioBackup } from "@/lib/backup";
+import { generateAiPose } from "@/lib/ai-pose.functions";
 import { loadWardrobeAsset } from "./WardrobeRig";
 import type { CustomAsset } from "./WardrobeRig";
 import { equip, loadOutfit, saveOutfit, type Outfit } from "@/lib/wardrobe";
@@ -360,6 +362,44 @@ export function Studio() {
     return Array.from(cats);
   }, [allAvailablePoses, customPoses]);
 
+  const [aiPrompt, setAiPrompt] = useState("");
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiNote, setAiNote] = useState("");
+  const runAiPose = async () => {
+    if (!aiPrompt.trim() || aiBusy) return;
+    setAiBusy(true); setAiNote("");
+    try {
+      const r = await generateAiPose({ data: { prompt: aiPrompt } });
+      if ("error" in r) { setAiNote(r.error); return; }
+      if (!Object.keys(r.bones).length) { setAiNote("The AI didn't return any usable joints. Try rewording."); return; }
+      setPose({ ...r.bones }); setHipsDrop(r.hipsDrop); setActivePose(null);
+      setAiNote(r.note || "Pose applied — fine-tune with the joint controls.");
+    } catch { setAiNote("Couldn't reach the AI. Try again."); } finally { setAiBusy(false); }
+  };
+
+  const exportBackup = async () => {
+    const files = [];
+    for (const id of referencedFileIds(characters)) {
+      const f = await getFile(id).catch(() => null);
+      if (f) files.push({ id, name: f.name, slot: f.slot, type: f.blob.type || "application/octet-stream", data: await blobToB64(f.blob) });
+    }
+    const b: StudioBackup = { app: "koma-studio", version: 1, exported: Date.now(), characters, facePacks, files };
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(b)], { type: "application/json" }));
+    a.download = `manga-studio-backup-${new Date().toISOString().slice(0, 10)}.json`; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  };
+  const importBackup = async (file: File) => {
+    try {
+      const b = parseBackup(await file.text());
+      for (const f of b.files) await putFile(f.id, b64ToBlob(f.data, f.type), f.name, f.slot);
+      commitChars((l) => mergeById(l, b.characters));
+      updateFacePacks(mergeById(facePacks, b.facePacks));
+      alert(`Restored ${b.characters.length} character(s), ${b.facePacks.length} face pack(s) and ${b.files.length} file(s). The page will reload to load them.`);
+      location.reload();
+    } catch (e) { alert(e instanceof Error ? e.message : "Couldn't read that backup."); }
+  };
+
   const applyPreset = (preset: Pose | CustomPose) => {
     setActivePose(preset.id);
     if (preset.partial) {
@@ -651,6 +691,8 @@ export function Studio() {
           {/* Tabs: Poser vs 3D Props */}
           {activeTab === "create" && (
             <CharacterPanel
+              onExport={exportBackup}
+              onImport={importBackup}
               characters={characters}
               active={activeChar}
               onSelect={(id) => showCharacter(characters.find((c) => c.id === id) ?? null)}
@@ -840,6 +882,17 @@ export function Studio() {
                   <input type="checkbox" checked={cameraLocked} onChange={(e) => setCameraLocked(e.target.checked)} />
                   Lock camera
                 </label>
+              </div>
+              <div className="space-y-1.5 border-t border-border p-3" data-testid="ai-pose">
+                <p className="text-xs font-semibold">✨ Describe a pose (AI)</p>
+                <textarea value={aiPrompt} onChange={(e) => setAiPrompt(e.target.value)} rows={2} aria-label="Pose description"
+                  placeholder="e.g. furious hero pointing at the enemy, leaning forward"
+                  className="w-full rounded-sm border border-input bg-background px-2 py-1 text-xs outline-none focus:border-foreground" />
+                <button disabled={!rig || aiBusy || !aiPrompt.trim()} onClick={runAiPose}
+                  className="w-full rounded-sm border-2 border-foreground bg-primary py-1 text-xs font-semibold text-primary-foreground disabled:opacity-40">
+                  {aiBusy ? "Posing…" : "Generate pose"}
+                </button>
+                {aiNote && <p className="text-[10px] text-muted-foreground">{aiNote}</p>}
               </div>
               {/* Quick Mirror & Reset Tools */}
               <div className="flex gap-2 border-t border-border p-3">

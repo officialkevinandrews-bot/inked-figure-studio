@@ -3,7 +3,8 @@ import { activeOutfitOf, type Character } from "@/lib/characters";
 
 /** Create Character tab: character roster, name, base body and the outfit shelf. */
 export function CharacterPanel({ characters, active, onSelect, onNew, onRename, onDuplicate, onDelete, onModelFile, onUseDummy,
-  onSelectOutfit, onAddOutfit, onDuplicateOutfit, onRenameOutfit, onDeleteOutfit, onPose }: {
+  onSelectOutfit, onAddOutfit, onDuplicateOutfit, onRenameOutfit, onDeleteOutfit, onPose, onExport, onImport }: {
+  onExport: () => void; onImport: (f: File) => void;
   characters: Character[]; active: Character | null;
   onSelect: (id: string) => void; onNew: () => void; onRename: (name: string) => void; onDuplicate: () => void; onDelete: () => void;
   onModelFile: (f: File) => void; onUseDummy: () => void;
@@ -11,6 +12,7 @@ export function CharacterPanel({ characters, active, onSelect, onNew, onRename, 
   onPose: () => void;
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
+  const backupRef = useRef<HTMLInputElement>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const btn = "rounded-sm border-2 border-border px-1.5 py-1 text-[11px] font-semibold hover:border-foreground hover:bg-accent disabled:opacity-40";
   const cur = active ? activeOutfitOf(active) : null;
@@ -20,6 +22,11 @@ export function CharacterPanel({ characters, active, onSelect, onNew, onRename, 
       <div className="flex items-center justify-between">
         <h2 className="font-display text-lg">Characters</h2>
         <button onClick={onNew} className="rounded-sm border-2 border-foreground bg-primary px-2 py-0.5 text-xs font-semibold text-primary-foreground">+ New character</button>
+      </div>
+      <div className="flex gap-1.5">
+        <button className={btn} onClick={onExport} disabled={!characters.length}>⬇ Back up studio</button>
+        <button className={btn} onClick={() => backupRef.current?.click()}>⬆ Restore backup</button>
+        <input ref={backupRef} type="file" accept=".json,application/json" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) onImport(f); e.target.value = ""; }} />
       </div>
       {characters.length > 0 ? (
         <div className="flex max-h-28 flex-wrap gap-1.5 overflow-y-auto">
