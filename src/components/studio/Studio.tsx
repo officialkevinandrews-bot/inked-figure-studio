@@ -236,6 +236,7 @@ export function Studio() {
   const [handSide, setHandSide] = useState<HandSide>("Both");
   const [settings, setSettings] = useState<ViewSettings>({
     outline: 3,
+    muscleLines: 4.5,
     outlineColor: "#0d0d0d",
     mono: false,
     tones: 3,
@@ -247,6 +248,14 @@ export function Studio() {
     fillIntensity: 0.6,
     lightAngle: lightSphericalToCartesian(40, 46),
   });
+  const mangaRef = useRef({
+    muscleLines: settings.muscleLines ?? 4.5,
+    outlineColor: settings.outlineColor ?? "#0d0d0d",
+  });
+  mangaRef.current = {
+    muscleLines: settings.muscleLines ?? 4.5,
+    outlineColor: settings.outlineColor ?? "#0d0d0d",
+  };
 
   // VRM Expression sliders
   const [vrmExpressions, setVrmExpressions] = useState<Record<string, number>>({
@@ -445,6 +454,8 @@ export function Studio() {
   const [characters, setCharacters] = useState<Character[]>([]);
   const [activeCharId, setActiveCharId] = useState<string | null>(null);
   const [charLoaded, setCharLoaded] = useState<string | null>(null);
+  const [previewSkinColor, setPreviewSkinColor] = useState<string | undefined>(undefined);
+  const [previewSkinMaterials, setPreviewSkinMaterials] = useState<string[] | undefined>(undefined);
   const commitBaseModels = useCallback((fn: (list: CustomBaseModel[]) => CustomBaseModel[]) => {
     setBaseModels((cur) => {
       const next = fn(cur);
@@ -552,7 +563,8 @@ export function Studio() {
       ...c,
       model: curKey,
       modelName: curName,
-      skinMaterials: curLib?.skinMaterials,
+      skinColor: activeChar ? undefined : previewSkinColor,
+      skinMaterials: (activeChar ? undefined : previewSkinMaterials) ?? curLib?.skinMaterials,
       face: !activeChar
         ? { ...face, expression: "Neutral", overrides: {}, fx: [], ...(cachedCalib && !face.fitted ? { fitted: true, calib: cachedCalib } : {}) }
         : { ...c.face, ...(cachedCalib ? { fitted: true, calib: cachedCalib } : {}) },
@@ -685,15 +697,20 @@ export function Studio() {
 
   // Toon shading & selective skin tinting sync updates
   useEffect(() => {
+    const { muscleLines: ml, outlineColor: oc } = mangaRef.current;
     if (model) {
       const libMats = baseModels.find((b) => b.key === activeActorMeta.modelKey)?.skinMaterials;
+      const effectiveSkin = activeChar ? activeChar.skinColor : previewSkinColor;
+      const effectiveMats = activeChar ? activeChar.skinMaterials : previewSkinMaterials;
       toonify(
         model,
         settings.tones,
         settings.mono,
         Boolean(settings.shadowHatch),
-        activeChar?.skinColor,
-        activeChar?.skinMaterials ?? libMats,
+        effectiveSkin,
+        effectiveMats ?? libMats,
+        ml,
+        oc,
       );
     }
     for (const co of coActors) {
@@ -706,11 +723,13 @@ export function Studio() {
           Boolean(settings.shadowHatch),
           co.skinColor,
           co.skinMaterials ?? libMats,
+          ml,
+          oc,
         );
       }
     }
     for (const propObj of Object.values(customPropObjects)) {
-      toonify(propObj, settings.tones, settings.mono, Boolean(settings.shadowHatch));
+      toonify(propObj, settings.tones, settings.mono, Boolean(settings.shadowHatch), undefined, undefined, ml, oc);
     }
   }, [
     model,
@@ -721,8 +740,9 @@ export function Studio() {
     settings.tones,
     settings.mono,
     settings.shadowHatch,
-    activeChar?.skinColor,
-    activeChar?.skinMaterials,
+    activeChar,
+    previewSkinColor,
+    previewSkinMaterials,
   ]);
 
   // Apply pose to rig (active actor + co-actors)
@@ -1046,7 +1066,16 @@ export function Studio() {
       }
       const libMats = baseModels.find((b) => b.key === key)?.skinMaterials;
       const skinMaterials = charOrNull?.skinMaterials ?? libMats;
-      toonify(loaded.object, settings.tones, settings.mono, Boolean(settings.shadowHatch), charOrNull?.skinColor, skinMaterials);
+      toonify(
+        loaded.object,
+        settings.tones,
+        settings.mono,
+        Boolean(settings.shadowHatch),
+        charOrNull?.skinColor,
+        skinMaterials,
+        mangaRef.current.muscleLines,
+        mangaRef.current.outlineColor,
+      );
       if (loaded.rig) applyPose(loaded.rig, poseInit, hipsInit);
       const activeOutfit = charOrNull ? activeOutfitOf(charOrNull) : null;
       const fallbackName = bm?.name ?? "X Bot (demo)";
@@ -1103,8 +1132,8 @@ export function Studio() {
       characterId: activeCharId,
       name: activeChar?.name ?? (modelName || "Primary Figure"),
       modelKey: activeActorMeta.modelKey,
-      skinColor: activeChar?.skinColor,
-      skinMaterials: activeChar?.skinMaterials,
+      skinColor: activeChar ? activeChar.skinColor : previewSkinColor,
+      skinMaterials: activeChar ? activeChar.skinMaterials : previewSkinMaterials,
       position: [...activeActorMeta.position],
       rotationY: activeActorMeta.rotationY,
       pose: { ...pose },
@@ -1141,6 +1170,10 @@ export function Studio() {
     setPropsList(target.props);
     setWardrobeAssets(target.wardrobeAssets);
     setVrmExpressions(target.vrmExpressions);
+    if (!target.characterId) {
+      setPreviewSkinColor(target.skinColor);
+      setPreviewSkinMaterials(target.skinMaterials);
+    }
     setSelected(null);
     setSelectedPropId(null);
   };
@@ -1471,17 +1504,25 @@ export function Studio() {
               onUseDummy={() => setCharacterBody(null)}
               onPickBody={(key) => setCharacterBody(key)}
               savedBodies={uploadedBodies(characters, baseModels)}
-              onSkin={(hex) => activeChar && patchChar(activeChar.id, (c) => ({ ...c, skinColor: hex }))}
+              skinColor={activeChar ? activeChar.skinColor : previewSkinColor}
+              onSkin={(hex) => {
+                if (activeChar) patchChar(activeChar.id, (c) => ({ ...c, skinColor: hex }));
+                else setPreviewSkinColor(hex);
+              }}
               activeModelKey={activeActorMeta.modelKey}
               rigInfo={rigInfo}
               materialInfo={materialInfo}
+              skinMaterials={activeChar ? activeChar.skinMaterials : previewSkinMaterials}
               onSkinMaterials={(mats) => {
-                if (!activeChar) return;
-                patchChar(activeChar.id, (c) => ({ ...c, skinMaterials: mats }));
-                if (activeChar.model.startsWith("file:")) {
-                  commitBaseModels((list) =>
-                    list.map((b) => (b.key === activeChar.model ? { ...b, skinMaterials: mats } : b)),
-                  );
+                if (activeChar) {
+                  patchChar(activeChar.id, (c) => ({ ...c, skinMaterials: mats }));
+                  if (activeChar.model.startsWith("file:")) {
+                    commitBaseModels((list) =>
+                      list.map((b) => (b.key === activeChar.model ? { ...b, skinMaterials: mats } : b)),
+                    );
+                  }
+                } else {
+                  setPreviewSkinMaterials(mats);
                 }
               }}
               onRenameBody={handleRenameBaseModel}
@@ -2675,6 +2716,21 @@ export function Studio() {
                 step={0.5}
                 value={settings.outline}
                 onChange={(e) => setSettings((s) => ({ ...s, outline: +e.target.value }))}
+                className="w-full accent-primary"
+              />
+            </label>
+            <label className="block">
+              <span className="flex justify-between">
+                <span>Muscle Definition Lines</span>
+                <span>{(settings.muscleLines ?? 4.5) <= 0 ? "Off" : (settings.muscleLines ?? 4.5)}</span>
+              </span>
+              <input
+                type="range"
+                min={0}
+                max={8}
+                step={0.5}
+                value={settings.muscleLines ?? 4.5}
+                onChange={(e) => setSettings((s) => ({ ...s, muscleLines: +e.target.value }))}
                 className="w-full accent-primary"
               />
             </label>

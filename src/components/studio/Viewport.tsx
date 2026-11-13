@@ -15,9 +15,11 @@ import { WardrobeRig, type CustomAsset } from "./WardrobeRig";
 import type { Outfit } from "@/lib/wardrobe";
 import { type ActiveProp, type PropTransform, getPropById } from "@/lib/props";
 import { hexToOutlineRgb } from "@/lib/lighting";
+import { createMangaToonMaterial, ensureCreaseAttribute, updateMangaUniforms } from "@/lib/manga-shader";
 
 export interface ViewSettings {
   outline: number;
+  muscleLines?: number;
   outlineColor?: string;
   mono: boolean;
   tones: number;
@@ -63,7 +65,7 @@ function makeGradient(tones: number, highContrast = false) {
   return t;
 }
 
-/** Replaces the model's materials with toon materials (keeps original colour maps). */
+/** Replaces the model's materials with toon materials (keeps original colour maps + adds manga crease ink). */
 export function toonify(
   root: THREE.Object3D,
   tones: number,
@@ -71,6 +73,8 @@ export function toonify(
   shadowHatch = false,
   tint?: string,
   skinMaterials?: string[],
+  muscleLines = 4.5,
+  outlineColor = "#0d0d0d",
 ) {
   const grad = makeGradient(tones, shadowHatch);
   const allMatNames = tint ? collectMaterialNames(root) : [];
@@ -79,54 +83,49 @@ export function toonify(
     if (!m.isMesh) return;
     m.castShadow = true;
     m.frustumCulled = false;
+    if (!m.userData["noOutline"] && m.geometry) {
+      ensureCreaseAttribute(m.geometry);
+    }
     const orig = (m.userData["origMat"] ??= m.material) as THREE.Material | THREE.Material[];
     const conv = (mat: THREE.Material, idx: number) => {
       const src = mat as THREE.MeshStandardMaterial;
       const matId = src.name?.trim() || `${m.name || "mesh"}#${idx}`;
       const hasMap = !!src.map;
+      const isSkinTarget = !!tint && shouldTintMaterial(matId, allMatNames, skinMaterials);
       const color = hasMap
         ? new THREE.Color(0xffffff)
         : src.color ? src.color.clone() : new THREE.Color(0xdddddd);
-      if (tint && shouldTintMaterial(matId, allMatNames, skinMaterials)) {
-        color.multiply(new THREE.Color(tint));
+      if (isSkinTarget && tint && (!hasMap || mono || shadowHatch)) {
+        color.copy(new THREE.Color(tint));
       }
       if (src.map) src.map.colorSpace = THREE.SRGBColorSpace;
       if (mono || shadowHatch) {
         const l = color.getHSL({ h: 0, s: 0, l: 0 }).l;
-        color.setHSL(0, 0, shadowHatch ? Math.min(1, 0.72 + l * 0.28) : 0.55 + l * 0.45);
+        if (isSkinTarget && tint) {
+          color.setHSL(0, 0, shadowHatch ? Math.min(1, 0.45 + l * 0.55) : 0.25 + l * 0.75);
+        } else {
+          color.setHSL(0, 0, shadowHatch ? Math.min(1, 0.72 + l * 0.28) : 0.55 + l * 0.45);
+        }
       }
-      const toon = new THREE.MeshToonMaterial({
+      return createMangaToonMaterial({
         color,
         map: mono || shadowHatch ? null : src.map ?? null,
         gradientMap: grad,
         transparent: src.transparent,
         alphaTest: src.alphaTest,
         side: src.side,
+        hasSkinTint: isSkinTarget && hasMap && !mono && !shadowHatch,
+        skinColor: tint,
+        muscleLines,
+        inkColor: outlineColor,
+        shadowHatch,
       });
-      if (shadowHatch) {
-        toon.customProgramCacheKey = () => "manga-hatch-v1";
-        toon.onBeforeCompile = (shader) => {
-          shader.fragmentShader = shader.fragmentShader.replace(
-            "#include <dithering_fragment>",
-            `#include <dithering_fragment>
-            float hatchLum = dot(gl_FragColor.rgb, vec3(0.299, 0.587, 0.114));
-            if (hatchLum < 0.52) {
-              float d1 = mod(gl_FragCoord.x + gl_FragCoord.y, 7.0);
-              float d2 = mod(gl_FragCoord.x - gl_FragCoord.y + 700.0, 7.0);
-              if (d1 < 2.2 || (hatchLum < 0.30 && d2 < 1.9)) {
-                gl_FragColor.rgb *= 0.25;
-              }
-            }`,
-          );
-        };
-      }
-      return toon;
     };
     m.material = Array.isArray(orig) ? orig.map((mat, i) => conv(mat, i)) : conv(orig, 0);
   });
 }
 
-function MangaRenderer({ outline, outlineColor }: { outline: number; outlineColor?: string }) {
+function MangaRenderer({ outline, muscleLines, outlineColor }: { outline: number; muscleLines?: number; outlineColor?: string }) {
   const { gl, scene, camera } = useThree();
   const rgb = useMemo(() => hexToOutlineRgb(outlineColor), [outlineColor]);
   const effect = useMemo(
@@ -141,6 +140,7 @@ function MangaRenderer({ outline, outlineColor }: { outline: number; outlineColo
   }, [effect, gl]);
 
   useFrame(() => {
+    updateMangaUniforms(scene, muscleLines ?? 4.5, outlineColor);
     scene.traverse((o) => {
       const m = o as THREE.Mesh;
       if (!m.isMesh && !(o as THREE.Line).isLine) return;
@@ -582,7 +582,7 @@ export const Viewport = forwardRef<
       onCreated={({ gl }) => gl.setClearColor(new THREE.Color("#f7f4ec"))}
     >
       <SceneBridge handleRef={ref} outline={settings.outline} outlineColor={settings.outlineColor} />
-      <MangaRenderer outline={settings.outline} outlineColor={settings.outlineColor} />
+      <MangaRenderer outline={settings.outline} muscleLines={settings.muscleLines} outlineColor={settings.outlineColor} />
       <ambientLight intensity={fillIntensity} />
       <directionalLight
         position={lightAngle}

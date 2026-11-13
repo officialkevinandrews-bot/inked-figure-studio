@@ -37,7 +37,7 @@ export const BUILTIN_MODELS: BuiltinModel[] = [
 export const builtinModel = (key: string) => BUILTIN_MODELS.find((m) => m.key === key);
 export const isBuiltinModel = (key: string) => key.startsWith("builtin:") && !!builtinModel(key);
 
-export const SKIN_SWATCHES = ["#ffe4cf", "#f7d2b6", "#eebf9c", "#d9a07a", "#b97c55", "#8d5a3b", "#5e3a25", "#ffffff"];
+export const SKIN_SWATCHES = ["#fff0e5", "#f9dcc8", "#f0c5a6", "#dfa57d", "#c6855c", "#9e613e", "#734229", "#4b2b1a"];
 
 const BASE_MODELS_KEY = "koma-base-models";
 

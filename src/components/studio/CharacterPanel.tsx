@@ -5,20 +5,21 @@ import { ColorPicker } from "./ColorPicker";
 
 /** Create Character tab: character roster, name, base body and the outfit shelf. */
 export function CharacterPanel({
-  characters, active, onSelect, onNew, onRename, onDuplicate, onDelete, onModelFile, onUseDummy, onPickBody, savedBodies, onSkin,
+  characters, active, onSelect, onNew, onRename, onDuplicate, onDelete, onModelFile, onUseDummy, onPickBody, savedBodies, skinColor, onSkin,
   onSelectOutfit, onAddOutfit, onDuplicateOutfit, onRenameOutfit, onDeleteOutfit, onPose, onExport, onImport,
-  activeModelKey, rigInfo, materialInfo, onSkinMaterials, onRenameBody, onDeleteBody,
+  activeModelKey, rigInfo, materialInfo, skinMaterials, onSkinMaterials, onRenameBody, onDeleteBody,
 }: {
   onExport: () => void; onImport: (f: File) => void;
   characters: Character[]; active: Character | null;
   onSelect: (id: string) => void; onNew: () => void; onRename: (name: string) => void; onDuplicate: () => void; onDelete: () => void;
   onModelFile: (f: File) => void; onUseDummy: () => void;
-  onPickBody: (key: string) => void; savedBodies: { key: string; name: string }[]; onSkin: (hex: string) => void;
+  onPickBody: (key: string) => void; savedBodies: { key: string; name: string }[]; skinColor?: string; onSkin: (hex: string | undefined) => void;
   onSelectOutfit: (id: string) => void; onAddOutfit: () => void; onDuplicateOutfit: () => void; onRenameOutfit: (id: string, name: string) => void; onDeleteOutfit: (id: string) => void;
   onPose: () => void;
   activeModelKey?: string;
   rigInfo?: { mapped: number; totalCanonical: number; hasFullHands: boolean } | null;
   materialInfo?: { all: string[]; targets: string[]; isSingleMaterial: boolean } | null;
+  skinMaterials?: string[];
   onSkinMaterials?: (mats: string[]) => void;
   onRenameBody?: (key: string, name: string) => void;
   onDeleteBody?: (key: string) => void;
@@ -33,9 +34,8 @@ export function CharacterPanel({
   const currentBodyKey = active?.model ?? activeModelKey ?? "builtin:xbot";
   const isCustomBody = currentBodyKey.startsWith("file:");
   const currentBodyEntry = savedBodies.find((b) => b.key === currentBodyKey);
-  const effectiveSkinMats = active?.skinMaterials && active.skinMaterials.length > 0
-    ? active.skinMaterials
-    : materialInfo?.targets ?? [];
+  const effectiveSkin = active ? active.skinColor : skinColor;
+  const effectiveSkinMats = (active?.skinMaterials?.length ? active.skinMaterials : skinMaterials?.length ? skinMaterials : materialInfo?.targets) ?? [];
   void onUseDummy;
 
   const baseSelectorBlock = (
@@ -82,6 +82,47 @@ export function CharacterPanel({
     </div>
   );
 
+  const skinColorBlock = (
+    <div className="space-y-1">
+      <ColorPicker
+        label="Skin colour"
+        value={effectiveSkin ?? "#f9dcc8"}
+        onChange={(hex) => onSkin(hex)}
+        onReset={effectiveSkin ? () => onSkin(undefined) : undefined}
+        swatches={SKIN_SWATCHES}
+      />
+      {materialInfo && materialInfo.all.length > 1 && onSkinMaterials && (
+        <div>
+          <button type="button" onClick={() => setShowMatTargets((v) => !v)} className="text-[10px] font-semibold text-muted-foreground underline">
+            {showMatTargets ? "Hide skin materials" : `Tint targets (${effectiveSkinMats.length}/${materialInfo.all.length} materials)`}
+          </button>
+          {showMatTargets && (
+            <div className="mt-1 flex flex-wrap gap-1 rounded-sm border border-border bg-muted/40 p-1.5">
+              {materialInfo.all.map((matName) => {
+                const checked = effectiveSkinMats.includes(matName);
+                return (
+                  <label key={matName} className="flex items-center gap-1 rounded bg-background px-1.5 py-0.5 text-[10px]">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(e) => {
+                        const next = e.target.checked
+                          ? [...new Set([...effectiveSkinMats, matName])]
+                          : effectiveSkinMats.filter((x) => x !== matName);
+                        onSkinMaterials(next);
+                      }}
+                    />
+                    {matName}
+                  </label>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <div className="space-y-2 border-b-2 border-foreground p-3 text-sm" data-testid="character-panel">
       <div className="flex items-center justify-between">
@@ -105,8 +146,16 @@ export function CharacterPanel({
         </div>
       ) : (
         <div className="space-y-2 rounded-sm border border-border p-2">
-          <p className="text-[11px] text-muted-foreground">Pick a base model below, or click + New character to save your design.</p>
+          <p className="text-[11px] text-muted-foreground">Pick a base model &amp; skin colour below, or click + New character to save your design.</p>
           {baseSelectorBlock}
+          {skinColorBlock}
+        </div>
+      )}
+
+      {!active && characters.length > 0 && (
+        <div className="space-y-2 rounded-sm border border-border p-2">
+          {baseSelectorBlock}
+          {skinColorBlock}
         </div>
       )}
 
@@ -117,38 +166,7 @@ export function CharacterPanel({
               className="mt-1 w-full rounded-sm border border-input bg-background px-2 py-1 text-sm outline-none focus:border-foreground" />
           </label>
           {baseSelectorBlock}
-          <div className="space-y-1">
-            <ColorPicker label="Skin colour" value={active.skinColor ?? "#ffffff"} onChange={onSkin} swatches={SKIN_SWATCHES} />
-            {materialInfo && materialInfo.all.length > 1 && onSkinMaterials && (
-              <div>
-                <button type="button" onClick={() => setShowMatTargets((v) => !v)} className="text-[10px] font-semibold text-muted-foreground underline">
-                  {showMatTargets ? "Hide skin materials" : `Tint targets (${effectiveSkinMats.length}/${materialInfo.all.length} materials)`}
-                </button>
-                {showMatTargets && (
-                  <div className="mt-1 flex flex-wrap gap-1 rounded-sm border border-border bg-muted/40 p-1.5">
-                    {materialInfo.all.map((matName) => {
-                      const checked = effectiveSkinMats.includes(matName);
-                      return (
-                        <label key={matName} className="flex items-center gap-1 rounded bg-background px-1.5 py-0.5 text-[10px]">
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={(e) => {
-                              const next = e.target.checked
-                                ? [...new Set([...effectiveSkinMats, matName])]
-                                : effectiveSkinMats.filter((x) => x !== matName);
-                              onSkinMaterials(next);
-                            }}
-                          />
-                          {matName}
-                        </label>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
+          {skinColorBlock}
           <div>
             <p className="text-xs font-semibold">Outfits</p>
             <div className="mt-1 space-y-1" data-testid="outfit-list">

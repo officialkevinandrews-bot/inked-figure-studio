@@ -117,16 +117,21 @@ test.describe("Inked Figure Studio End-to-End Regression", () => {
     await page.goto("/");
     await expect(page.locator("[data-scene-ready]")).toBeVisible();
 
-    // 1. Switch Base Model to Shonen Hero Base & create a character
+    // 1. Switch Base Model to Shonen Hero Base & test preview Skin Colour + RGB before saving character
     const baseSelect = page.getByLabel("Base model");
     await baseSelect.selectOption("builtin:shonen-base");
     await expect(page.getByText(/52\/52 bones · 5-finger · 1\.8m/)).toBeVisible({ timeout: 20000 });
     await expect(page.locator("[data-scene-ready]")).toBeVisible();
 
+    await page.getByRole("button", { name: "Skin colour RGB sliders" }).click();
+    await expect(page.getByLabel("Skin colour R", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Skin colour #dfa57d" }).click();
+
     await page.getByRole("button", { name: "+ New character" }).click();
     await expect(page.getByLabel("Character name")).toHaveValue("Character 1");
+    await expect(page.getByLabel("Skin colour hex")).toHaveValue("#dfa57d");
 
-    // 2. Apply skin color swatch & check Face Auto-Fit ran
+    // 2. Apply custom hex/RGB skin & check Face Auto-Fit ran
     await page.getByLabel("Skin colour hex").fill("#d9a07a");
     await page.getByLabel("Skin colour hex").press("Enter");
 
@@ -135,8 +140,13 @@ test.describe("Inked Figure Studio End-to-End Regression", () => {
     const forwardVal = await page.getByLabel("Forward / back").inputValue();
     expect(Number(forwardVal)).toBeGreaterThan(0.11);
 
-    // 3. Stage X Bot alongside Shonen Hero Base in Pose Studio -> Cast
+    // 3. Stage X Bot alongside Shonen Hero Base & verify Muscle Definition Lines slider in Ink/Render
     await page.getByRole("button", { name: /Pose this character/ }).click();
+    const muscleSlider = page.getByLabel(/Muscle Definition Lines/i);
+    await expect(muscleSlider).toHaveValue("4.5");
+    await muscleSlider.fill("6");
+    await expect(muscleSlider).toHaveValue("6");
+
     await page.getByRole("button", { name: /👥 Cast/ }).click();
     await page.getByLabel("Character to stage").selectOption("__demo__");
     await page.getByRole("button", { name: /\+ Add$/i }).click();
