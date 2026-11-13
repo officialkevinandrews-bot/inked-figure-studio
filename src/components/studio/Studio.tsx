@@ -18,6 +18,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import {
   applyPose,
+  groundedHipsDrop,
   mirrorBoneName,
   mirrorPose,
   offsetFromBone,
@@ -365,15 +366,24 @@ export function Studio() {
   const [aiPrompt, setAiPrompt] = useState("");
   const [aiBusy, setAiBusy] = useState(false);
   const [aiNote, setAiNote] = useState("");
+  const [aiFromCurrent, setAiFromCurrent] = useState(false);
+  const [aiGround, setAiGround] = useState(true);
+  const [aiVariations, setAiVariations] = useState<{ bones: PoseData; hipsDrop: number; note: string }[]>([]);
+  const [aiPick, setAiPick] = useState(0);
+  const applyAiVariation = (v: { bones: PoseData; hipsDrop: number; note: string }, i: number) => {
+    let hd = v.hipsDrop;
+    if (aiGround && rig && hd >= 0) hd = Math.max(-0.6, Math.min(1.2, groundedHipsDrop(rig, v.bones, hd)));
+    setPose({ ...v.bones }); setHipsDrop(+hd.toFixed(3)); setActivePose(null); setAiPick(i);
+    setAiNote(v.note || "Pose applied — fine-tune with the joint controls.");
+  };
   const runAiPose = async () => {
     if (!aiPrompt.trim() || aiBusy) return;
     setAiBusy(true); setAiNote("");
     try {
-      const r = await generateAiPose({ data: { prompt: aiPrompt } });
+      const r = await generateAiPose({ data: { prompt: aiPrompt, current: aiFromCurrent ? { bones: pose, hipsDrop } : null } });
       if ("error" in r) { setAiNote(r.error); return; }
-      if (!Object.keys(r.bones).length) { setAiNote("The AI didn't return any usable joints. Try rewording."); return; }
-      setPose({ ...r.bones }); setHipsDrop(r.hipsDrop); setActivePose(null);
-      setAiNote(r.note || "Pose applied — fine-tune with the joint controls.");
+      setAiVariations(r.variations);
+      applyAiVariation(r.variations[0], 0);
     } catch { setAiNote("Couldn't reach the AI. Try again."); } finally { setAiBusy(false); }
   };
 
@@ -892,6 +902,29 @@ export function Studio() {
                   className="w-full rounded-sm border-2 border-foreground bg-primary py-1 text-xs font-semibold text-primary-foreground disabled:opacity-40">
                   {aiBusy ? "Posing…" : "Generate pose"}
                 </button>
+                <label className="flex items-center gap-2 text-xs">
+                  <input type="checkbox" checked={aiFromCurrent} onChange={(e) => setAiFromCurrent(e.target.checked)} />
+                  Edit current pose (keep what's already there)
+                </label>
+                <label className="flex items-center gap-2 text-xs">
+                  <input type="checkbox" checked={aiGround} onChange={(e) => setAiGround(e.target.checked)} />
+                  Keep feet on the floor
+                </label>
+                {aiVariations.length > 1 && (
+                  <div className="flex gap-1" aria-label="AI variations">
+                    {aiVariations.map((v, i) => (
+                      <button key={i} onClick={() => applyAiVariation(v, i)}
+                        className={`flex-1 rounded-sm border-2 py-1 text-xs font-semibold ${aiPick === i ? "border-foreground bg-foreground text-background" : "border-border"}`}>
+                        {"ABC"[i]}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {aiVariations.length > 0 && (
+                  <button onClick={handleOpenSavePose} className="w-full rounded-sm border border-foreground py-1 text-xs font-semibold">
+                    💾 Save to Custom poses
+                  </button>
+                )}
                 {aiNote && <p className="text-[10px] text-muted-foreground">{aiNote}</p>}
               </div>
               {/* Quick Mirror & Reset Tools */}

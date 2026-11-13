@@ -127,3 +127,16 @@ export function offsetFromBone(rig: Rig, name: string): Rot {
   const r = (v: number) => Math.round(v / D);
   return [r(_e.x), r(_e.y), r(_e.z)];
 }
+
+/** Hip drop that puts the lowest foot/toe back on the rest-pose floor level (leaves the rig posed). */
+export function groundedHipsDrop(rig: Rig, pose: PoseData, hipsDrop: number): number {
+  const feet = ["LeftFoot", "RightFoot", "LeftToeBase", "RightToeBase"].map((n) => rig.bones.get(n)).filter(Boolean) as THREE.Bone[];
+  if (!feet.length || !rig.scale) return hipsDrop;
+  const v = new THREE.Vector3();
+  const lowest = () => { rig.root.updateMatrixWorld(true); return Math.min(...feet.map((b) => b.getWorldPosition(v).y)); };
+  applyPose(rig, {}, 0);
+  const rest = lowest();
+  applyPose(rig, pose, hipsDrop);
+  const posed = lowest();
+  return hipsDrop + (posed - rest) / rig.scale;
+}

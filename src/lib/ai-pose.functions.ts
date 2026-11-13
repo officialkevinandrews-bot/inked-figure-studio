@@ -20,22 +20,32 @@ function textOf(r: unknown): string {
 }
 
 export const generateAiPose = createServerFn({ method: "POST" })
-  .inputValidator((d: { prompt: string }) => {
+  .inputValidator((d: { prompt: string; current?: { bones: Record<string, unknown>; hipsDrop: number } | null }) => {
     const prompt = String(d?.prompt ?? "").trim().slice(0, 500);
     if (!prompt) throw new Error("Describe a pose first.");
-    return { prompt };
+    const current = d?.current ? sanitizeAiPose({ bones: d.current.bones, hipsDrop: d.current.hipsDrop }) : null;
+    return { prompt, current };
   })
-  .handler(async ({ data }): Promise<AiPoseResult | { error: string }> => {
+  .handler(async ({ data }): Promise<{ variations: AiPoseResult[] } | { error: string }> => {
     const { generateResponse, GatewayError, RateLimitError, PaymentRequiredError } = await import("@lovable.dev/ai-gateway");
+    const flavours = ["the most natural reading", "a more dramatic, exaggerated manga version", "a distinct alternative interpretation"];
+    const base = data.current
+      ? `CURRENT POSE (keep everything not mentioned exactly as is; return only bones you change plus hipsDrop): ${JSON.stringify({ bones: data.current.bones, hipsDrop: data.current.hipsDrop })}\nEdit: ${data.prompt}`
+      : `Pose: ${data.prompt}`;
     try {
-      const res = await generateResponse({
-        model: "openai/gpt-6-astra",
-        instructions: SYSTEM,
-        input: `Pose: ${data.prompt}`,
-      });
-      const raw = textOf(res);
-      const json = JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1));
-      return sanitizeAiPose(json);
+      const results = await Promise.allSettled(flavours.map(async (f) => {
+        const res = await generateResponse({ model: "openai/gpt-6-astra", instructions: SYSTEM, input: `${base}\nVariation style: ${f}.` });
+        const raw = textOf(res);
+        const r = sanitizeAiPose(JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1)));
+        if (data.current) {
+          const o = raw.includes('"hipsDrop"') ? r.hipsDrop : data.current.hipsDrop;
+          return { ...r, bones: { ...data.current.bones, ...r.bones }, hipsDrop: o };
+        }
+        return r;
+      }));
+      const ok = results.filter((r): r is PromiseFulfilledResult<AiPoseResult> => r.status === "fulfilled" && Object.keys(r.value.bones).length > 0).map((r) => r.value);
+      if (!ok.length) { const bad = results.find((r) => r.status === "rejected") as PromiseRejectedResult | undefined; throw bad?.reason ?? new Error("empty"); }
+      return { variations: ok };
     } catch (e) {
       console.error("ai pose failed", e);
       if (e instanceof RateLimitError) return { error: "Too many requests right now, try again in a moment." };
