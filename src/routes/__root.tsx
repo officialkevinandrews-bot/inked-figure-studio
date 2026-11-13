@@ -1,3 +1,4 @@
+import { GOOGLE_FONTS_HREF } from "@/lib/manga-fonts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   Outlet,
@@ -97,6 +98,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       },
       { rel: "preconnect", href: "https://fonts.googleapis.com" },
       { rel: "stylesheet", href: "https://fonts.googleapis.com/css2?family=Dela+Gothic+One&family=Zen+Kaku+Gothic+New:wght@400;700&display=swap" },
+      { rel: "stylesheet", href: GOOGLE_FONTS_HREF },
       { rel: "icon", href: "/favicon.ico", type: "image/x-icon" },
     ],
   }),

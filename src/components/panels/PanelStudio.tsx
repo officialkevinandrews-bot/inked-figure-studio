@@ -16,11 +16,27 @@ import {
   type SpeedLinesEffect,
   type SFXStamp,
   SFX_PRESETS,
-  COMIC_MARK_PRESETS,
+  SFX_STYLES,
 } from "@/lib/manga-effects";
+import { VECTOR_MARKS, markPath } from "@/lib/manga-marks";
+import { MANGA_FONTS, fontStack } from "@/lib/manga-fonts";
 import { MANGA_BACKGROUNDS, getMangaBackgroundDataUrl, type MangaBackground } from "@/lib/manga-backgrounds";
 import { PRESET_ROSTER, loadSavedRoster, type RosterCharacter } from "@/lib/character-roster";
-import { PageCanvas } from "./PageCanvas";
+import { PageCanvas, type CanvasTool } from "./PageCanvas";
+import {
+  GRID_TEMPLATES,
+  TEMPLATE_CATEGORIES,
+  type TemplateCategory,
+  buildTemplate,
+  knifeCut,
+  angledSplit,
+  moveSharedVertex,
+  mirrorPanels,
+  pointInPolygon,
+  insetPanelPoints,
+} from "@/lib/manga-grid";
+import { TONE_PRESETS, TONE_KINDS, TONE_FADES, toneDataUrl, type Screentone } from "@/lib/screentone";
+import type { Point } from "@/lib/manga-layout";
 import { PhotoFilterModal } from "./PhotoFilterModal";
 import { ExportModal } from "./ExportModal";
 import { PageManager } from "@/components/pages/PageManager";
@@ -95,6 +111,12 @@ export function PanelStudio({
   const [customSfxText, setCustomSfxText] = useState("ドンッ!!");
   const [filterModalOpen, setFilterModalOpen] = useState(false);
   const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [tool, setTool] = useState<CanvasTool>("select");
+  const [splitAngle, setSplitAngle] = useState(0);
+  const [splitRatio, setSplitRatio] = useState(50);
+  const [tplCat, setTplCat] = useState<TemplateCategory | "all">("all");
+  const [showOrder, setShowOrder] = useState<"rtl" | "ltr" | null>(null);
+  const [showGuides, setShowGuides] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const canvasContainerRef = useRef<HTMLDivElement>(null);
@@ -129,18 +151,35 @@ export function PanelStudio({
     return () => window.removeEventListener("resize", handleResize);
   }, [fitToScreen]);
 
-  // Template change
-  const handleApplyTemplate = (templateName: string) => {
-    const newPanels = getPresetPanels(templateName);
+  /** Re-home elements whose panel vanished (cut / new template) into the panel under their centre. */
+  const rehome = (panels: PanelPolygon[], elements: PlacedElement[]) => {
+    const f = layout.format;
+    return elements.map((el) => {
+      if (panels.some((p) => p.id === el.panelId)) return el;
+      const c = {
+        x: (el.x + el.width / 2 - f.margin) / (f.width - f.margin * 2),
+        y: (el.y + el.height / 2 - f.margin) / (f.height - f.margin * 2),
+      };
+      const home = [...panels].reverse().find((p) => pointInPolygon(c, p.points)) ?? panels[0];
+      return { ...el, panelId: home.id };
+    });
+  };
+
+  const commitPanels = (panels: PanelPolygon[], select?: string) => {
     onUpdateLayout({
       ...layout,
-      panels: newPanels,
-      elements: layout.elements.map((el) => ({
-        ...el,
-        panelId: newPanels[0].id,
-      })),
+      panels,
+      elements: rehome(panels, layout.elements),
+      balloons: (layout.balloons ?? []).map((x) => (panels.some((p) => p.id === x.panelId) ? x : { ...x, panelId: panels[0].id })),
     });
-    setSelectedPanelId(newPanels[0].id);
+    if (select) setSelectedPanelId(select);
+    else if (!panels.some((p) => p.id === selectedPanelId)) setSelectedPanelId(panels[0]?.id ?? null);
+  };
+
+  // Template change
+  const handleApplyTemplate = (templateName: string) => {
+    const newPanels = buildTemplate(templateName) ?? getPresetPanels(templateName);
+    commitPanels(newPanels, newPanels[0].id);
   };
 
   // Format change
@@ -153,16 +192,47 @@ export function PanelStudio({
   };
 
   // Knife Cut tools
-  const handleKnifeSplit = (type: "horizontal" | "vertical" | "diagonal") => {
+  const handleKnifeSplit = (type: "horizontal" | "vertical" | "diagonal" | "custom") => {
     if (!selectedPanel) return;
-    const [p1, p2] = splitPanel(selectedPanel, type);
-    const updatedPanels = layout.panels.flatMap((p) => (p.id === selectedPanel.id ? [p1, p2] : [p]));
+    const angle = type === "horizontal" ? 0 : type === "vertical" ? 90 : type === "diagonal" ? -12 : splitAngle;
+    const res = angledSplit(selectedPanel, angle, splitRatio / 100);
+    if (!res) return;
+    commitPanels(
+      layout.panels.flatMap((p) => (p.id === selectedPanel.id ? res : [p])),
+      res[0].id
+    );
+  };
 
-    onUpdateLayout({
-      ...layout,
-      panels: updatedPanels,
+  const handleKnifeStroke = (a: Point, b: Point) => {
+    const { panels, cut } = knifeCut(layout.panels, a, b);
+    if (cut.length) commitPanels(panels);
+  };
+
+  const handleMoveVertex = (from: Point, to: Point) => {
+    onUpdateLayout({ ...layout, panels: moveSharedVertex(layout.panels, from, to) });
+  };
+
+  const updatePanel = (id: string, patch: Partial<PanelPolygon>) =>
+    onUpdateLayout({ ...layout, panels: layout.panels.map((p) => (p.id === id ? { ...p, ...patch } : p)) });
+
+  const handleAddInset = () => {
+    const id = `inset-${Date.now()}`;
+    const pts = [
+      { x: 0.55, y: 0.06 }, { x: 0.94, y: 0.06 }, { x: 0.94, y: 0.3 }, { x: 0.55, y: 0.3 },
+    ];
+    commitPanels(
+      [...layout.panels, { id, points: pts, borderWidth: 3.5, borderColor: "#000000", borderStyle: "solid", backgroundColor: "#ffffff", floating: true }],
+      id
+    );
+  };
+
+  const nudgePanel = (dx: number, dy: number, scale = 1) => {
+    if (!selectedPanel) return;
+    const xs = selectedPanel.points.map((p) => p.x), ys = selectedPanel.points.map((p) => p.y);
+    const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+    updatePanel(selectedPanel.id, {
+      points: selectedPanel.points.map((p) => ({ x: cx + (p.x - cx) * scale + dx, y: cy + (p.y - cy) * scale + dy })),
     });
-    setSelectedPanelId(p1.id);
   };
 
   // Delete selected panel
@@ -235,9 +305,10 @@ export function PanelStudio({
       id: `mark-${Date.now()}`,
       panelId: selectedPanel.id,
       type,
-      x: bounds.minX + bounds.width * 0.4,
-      y: bounds.minY + bounds.height * 0.2,
-      size: 38,
+      markType: type as ComicMark["markType"],
+      x: bounds.minX + bounds.width * 0.5,
+      y: bounds.minY + bounds.height * 0.3,
+      size: 60,
       rotation: 0,
       zIndex: (layout.comicMarks?.length ?? 0) + 50,
     };
@@ -666,57 +737,95 @@ export function PanelStudio({
           {/* Tray 1: Panels, Knife Tools & Templates */}
           {leftTab === "panels" && (
             <div className="flex-1 overflow-y-auto p-3 space-y-4 text-xs">
-              {/* Knife Slash Tools */}
+              {/* Canvas tools */}
               <div>
                 <h2 className="font-display text-sm flex items-center gap-1.5 mb-1.5">
-                  <Scissors className="h-4 w-4 text-primary" /> Knife Split
+                  <Scissors className="h-4 w-4 text-primary" /> Panel Tools
                 </h2>
-                <p className="text-[11px] text-muted-foreground mb-2">
-                  Slice selected panel into dynamic action cuts with automatic gutters.
+                <div className="grid grid-cols-3 gap-1" role="group" aria-label="Canvas tool">
+                  {([
+                    { id: "select", label: "Select" },
+                    { id: "knife", label: "✂ Knife" },
+                    { id: "corners", label: "◇ Corners" },
+                  ] as const).map((t) => (
+                    <button
+                      key={t.id}
+                      aria-pressed={tool === t.id}
+                      onClick={() => setTool(t.id)}
+                      className={`rounded-sm border border-border py-1.5 text-[11px] font-semibold hover:border-foreground hover:bg-accent disabled:opacity-40 ${tool === t.id ? "bg-foreground text-background border-foreground" : ""}`}
+                    >
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[10px] text-muted-foreground mt-1.5 leading-snug">
+                  {tool === "knife"
+                    ? "Drag a line across the page to slice every panel it crosses. Hold Shift to snap the angle."
+                    : tool === "corners"
+                    ? "Drag the dots on the selected panel. Shared corners move neighbouring panels too."
+                    : "Click a panel to select it. Switch to Knife or Corners to reshape the grid."}
                 </p>
-                <div className="grid grid-cols-2 gap-1.5">
-                  <button
-                    disabled={!selectedPanel}
-                    onClick={() => handleKnifeSplit("horizontal")}
-                    className="flex items-center justify-center gap-1 rounded-sm border border-border py-1.5 text-xs font-semibold hover:border-foreground hover:bg-accent disabled:opacity-40"
-                  >
-                    <SplitSquareHorizontal className="h-3.5 w-3.5" /> Horiz Cut
+              </div>
+
+              {/* Quick splits */}
+              <div className="border-t border-border pt-3 space-y-2">
+                <h3 className="font-display text-xs">Split Selected Panel</h3>
+                <div className="grid grid-cols-3 gap-1">
+                  <button disabled={!selectedPanel} onClick={() => handleKnifeSplit("horizontal")} className="rounded-sm border border-border py-1.5 text-[11px] font-semibold hover:border-foreground hover:bg-accent disabled:opacity-40 flex items-center justify-center gap-1">
+                    <SplitSquareHorizontal className="h-3.5 w-3.5" /> Horiz
                   </button>
-                  <button
-                    disabled={!selectedPanel}
-                    onClick={() => handleKnifeSplit("vertical")}
-                    className="flex items-center justify-center gap-1 rounded-sm border border-border py-1.5 text-xs font-semibold hover:border-foreground hover:bg-accent disabled:opacity-40"
-                  >
-                    <SplitSquareVertical className="h-3.5 w-3.5" /> Vert Cut
+                  <button disabled={!selectedPanel} onClick={() => handleKnifeSplit("vertical")} className="rounded-sm border border-border py-1.5 text-[11px] font-semibold hover:border-foreground hover:bg-accent disabled:opacity-40 flex items-center justify-center gap-1">
+                    <SplitSquareVertical className="h-3.5 w-3.5" /> Vert
                   </button>
-                  <button
-                    disabled={!selectedPanel}
-                    onClick={() => handleKnifeSplit("diagonal")}
-                    className="col-span-2 flex items-center justify-center gap-1.5 rounded-sm border-2 border-primary bg-primary/10 py-1.5 text-xs font-bold hover:bg-primary/20 disabled:opacity-40"
-                  >
-                    <Scissors className="h-3.5 w-3.5 text-primary" /> Action Slash (Diagonal)
+                  <button disabled={!selectedPanel} onClick={() => handleKnifeSplit("diagonal")} className="rounded-sm border border-border py-1.5 text-[11px] font-semibold hover:border-foreground hover:bg-accent disabled:opacity-40">
+                    ⟋ Slash
                   </button>
+                </div>
+                <label className="block">
+                  <span className="flex justify-between"><span>Cut angle</span><span className="font-mono">{splitAngle}°</span></span>
+                  <input type="range" min={-90} max={90} value={splitAngle} onChange={(e) => setSplitAngle(+e.target.value)} className="w-full accent-primary" />
+                </label>
+                <label className="block">
+                  <span className="flex justify-between"><span>Cut position</span><span className="font-mono">{splitRatio}%</span></span>
+                  <input type="range" min={15} max={85} value={splitRatio} onChange={(e) => setSplitRatio(+e.target.value)} className="w-full accent-primary" />
+                </label>
+                <button disabled={!selectedPanel} onClick={() => handleKnifeSplit("custom")} className="w-full rounded-sm border-2 border-primary bg-primary/10 py-1.5 text-xs font-bold hover:bg-primary/20 disabled:opacity-40">
+                  ✂ Cut at {splitAngle}°
+                </button>
+                <div className="grid grid-cols-2 gap-1">
+                  <button onClick={handleAddInset} className="rounded-sm border border-border py-1.5 text-[11px] font-semibold hover:border-foreground hover:bg-accent disabled:opacity-40">＋ Inset panel</button>
+                  <button onClick={() => commitPanels(mirrorPanels(layout.panels))} className="rounded-sm border border-border py-1.5 text-[11px] font-semibold hover:border-foreground hover:bg-accent disabled:opacity-40" title="Flip the grid left↔right">⇋ Mirror page</button>
                 </div>
               </div>
 
               {/* Layout Template Gallery */}
               <div className="border-t border-border pt-3">
                 <h2 className="font-display text-sm flex items-center gap-1.5 mb-2">
-                  <Compass className="h-4 w-4 text-primary" /> Manga Grid Templates
+                  <Compass className="h-4 w-4 text-primary" /> Grid Templates
+                  <span className="ml-auto text-[10px] font-normal text-muted-foreground">{GRID_TEMPLATES.length} layouts</span>
                 </h2>
-                <div className="grid grid-cols-2 gap-1.5">
-                  {PRESET_LAYOUT_CATALOG.map((tmpl) => (
+                <div className="flex flex-wrap gap-1 mb-2">
+                  {TEMPLATE_CATEGORIES.map((c) => (
+                    <button
+                      key={c.id}
+                      onClick={() => setTplCat(c.id)}
+                      className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${tplCat === c.id ? "bg-foreground text-background border-foreground" : "border-border hover:border-foreground"}`}
+                    >
+                      {c.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="grid grid-cols-3 gap-1.5" data-testid="template-grid">
+                  {GRID_TEMPLATES.filter((t) => tplCat === "all" || t.category === tplCat).map((tmpl) => (
                     <button
                       key={tmpl.id}
                       onClick={() => handleApplyTemplate(tmpl.id)}
-                      className="rounded border border-border p-2 text-left hover:border-foreground hover:bg-accent/40 transition-all group"
+                      title={tmpl.description}
+                      aria-label={`Template ${tmpl.label}`}
+                      className="rounded border border-border p-1 text-left hover:border-foreground hover:bg-accent/40 transition-all group"
                     >
-                      <div className="font-semibold text-foreground group-hover:text-primary">
-                        {tmpl.label}
-                      </div>
-                      <div className="text-[10px] text-muted-foreground line-clamp-1">
-                        {tmpl.description}
-                      </div>
+                      <TemplateThumb panels={tmpl.build()} />
+                      <div className="mt-1 text-[10px] font-semibold leading-tight text-foreground group-hover:text-primary line-clamp-1">{tmpl.label}</div>
                     </button>
                   ))}
                 </div>
@@ -724,45 +833,52 @@ export function PanelStudio({
 
               {/* Gutters & Margins Settings */}
               <div className="space-y-2 border-t border-border pt-3">
-                <h3 className="font-display text-xs">Gutters & Margins</h3>
+                <div className="flex items-center justify-between">
+                  <h3 className="font-display text-xs">Gutters & Margins</h3>
+                  <button
+                    onClick={() => onUpdateLayout({ ...layout, format: { ...layout.format, gutter: 10, gutterY: 24 } })}
+                    className="rounded border border-border px-1.5 py-0.5 text-[10px] font-semibold hover:border-foreground"
+                    title="Thin column gutters, wide tier gutters — the eye reads across before moving down"
+                  >
+                    Manga ratio
+                  </button>
+                </div>
                 <label className="block">
-                  <span className="flex justify-between">
-                    <span>Gutter Width:</span>
-                    <span className="font-semibold">{layout.format.gutter}px</span>
-                  </span>
-                  <input
-                    type="range"
-                    min={4}
-                    max={40}
-                    value={layout.format.gutter}
-                    onChange={(e) =>
-                      onUpdateLayout({
-                        ...layout,
-                        format: { ...layout.format, gutter: +e.target.value },
-                      })
-                    }
-                    className="w-full accent-primary"
-                  />
+                  <span className="flex justify-between"><span>Column gutter (↔)</span><span className="font-semibold">{layout.format.gutter}px</span></span>
+                  <input type="range" min={0} max={48} value={layout.format.gutter}
+                    onChange={(e) => onUpdateLayout({ ...layout, format: { ...layout.format, gutter: +e.target.value } })}
+                    className="w-full accent-primary" />
                 </label>
                 <label className="block">
-                  <span className="flex justify-between">
-                    <span>Outer Page Margin:</span>
-                    <span className="font-semibold">{layout.format.margin}px</span>
-                  </span>
-                  <input
-                    type="range"
-                    min={8}
-                    max={60}
-                    value={layout.format.margin}
-                    onChange={(e) =>
-                      onUpdateLayout({
-                        ...layout,
-                        format: { ...layout.format, margin: +e.target.value },
-                      })
-                    }
-                    className="w-full accent-primary"
-                  />
+                  <span className="flex justify-between"><span>Tier gutter (↕)</span><span className="font-semibold">{layout.format.gutterY ?? layout.format.gutter}px</span></span>
+                  <input type="range" min={0} max={60} value={layout.format.gutterY ?? layout.format.gutter}
+                    onChange={(e) => onUpdateLayout({ ...layout, format: { ...layout.format, gutterY: +e.target.value } })}
+                    className="w-full accent-primary" />
                 </label>
+                <label className="block">
+                  <span className="flex justify-between"><span>Outer page margin</span><span className="font-semibold">{layout.format.margin}px</span></span>
+                  <input type="range" min={0} max={80} value={layout.format.margin}
+                    onChange={(e) => onUpdateLayout({ ...layout, format: { ...layout.format, margin: +e.target.value } })}
+                    className="w-full accent-primary" />
+                </label>
+              </div>
+
+              {/* Page guides */}
+              <div className="space-y-1.5 border-t border-border pt-3">
+                <h3 className="font-display text-xs">Page Guides</h3>
+                <label className="flex items-center gap-2">
+                  <input type="checkbox" checked={showGuides} onChange={(e) => setShowGuides(e.target.checked)} className="accent-primary" />
+                  Print guides (crop marks, trim, safe area)
+                </label>
+                <div className="flex items-center gap-1">
+                  <span className="mr-1">Reading order:</span>
+                  {([["off", null], ["Manga ←", "rtl"], ["Comic →", "ltr"]] as const).map(([lbl, v]) => (
+                    <button key={lbl} onClick={() => setShowOrder(v)}
+                      className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${showOrder === v ? "bg-foreground text-background border-foreground" : "border-border hover:border-foreground"}`}>
+                      {lbl}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
           )}
@@ -880,6 +996,11 @@ export function PanelStudio({
                       { id: "box", label: "📜 Narration Box" },
                       { id: "electric", label: "📻 Broadcast" },
                       { id: "heart", label: "❤️ Idol / Heart" },
+                      { id: "rounded", label: "▢ Rounded" },
+                      { id: "scream", label: "😱 Ragged Scream" },
+                      { id: "wavy", label: "〰 Nervous / Weak" },
+                      { id: "flash", label: "✴ Uni-Flash" },
+                      { id: "icy", label: "🧊 Icy / Menace" },
                     ] as const
                   ).map((b) => (
                     <button
@@ -900,15 +1021,20 @@ export function PanelStudio({
                   <Smile className="h-4 w-4 text-primary" /> Comic Emotion Marks
                 </h2>
                 <div className="grid grid-cols-4 gap-1">
-                  {COMIC_MARK_PRESETS.map((m) => (
+                  {VECTOR_MARKS.map((m) => (
                     <button
-                      key={m.label}
+                      key={m.type}
                       disabled={!selectedPanel}
-                      onClick={() => handleAddComicMark(m.mark)}
+                      onClick={() => handleAddComicMark(m.type)}
                       title={m.label}
-                      className="rounded-sm border border-border py-1.5 text-base hover:border-foreground hover:bg-accent disabled:opacity-40 flex items-center justify-center transition-transform hover:scale-110"
+                      aria-label={`Mark ${m.label}`}
+                      className="rounded-sm border border-border p-1 hover:border-foreground hover:bg-accent disabled:opacity-40 flex items-center justify-center bg-white"
                     >
-                      {m.mark}
+                      <svg viewBox="0 0 100 100" className="h-6 w-6" style={{ overflow: "visible" }}>
+                        {(markPath(m.type) ?? []).map((part, i) => (
+                          <path key={i} d={part.d} fill={part.fill ?? "none"} stroke={part.stroke} strokeWidth={part.width ?? 4} strokeLinecap="round" strokeLinejoin="round" />
+                        ))}
+                      </svg>
                     </button>
                   ))}
                 </div>
@@ -992,6 +1118,11 @@ export function PanelStudio({
             layout={layout}
             selectedPanelId={selectedPanelId}
             selectedItemId={selectedItemId}
+            tool={tool}
+            onKnife={handleKnifeStroke}
+            onMoveVertex={handleMoveVertex}
+            showOrder={showOrder}
+            showGuides={showGuides}
             onSelectPanel={setSelectedPanelId}
             onSelectItem={setSelectedItemId}
             onUpdateElement={(id, u) =>
@@ -1168,6 +1299,91 @@ export function PanelStudio({
                       </button>
                     ))}
                   </div>
+                </div>
+
+                {/* Panel shape flags */}
+                <div className="grid grid-cols-2 gap-1.5 pt-1">
+                  <label className="flex items-center gap-1.5">
+                    <input type="checkbox" checked={!!selectedPanel.bleed} onChange={(e) => updatePanel(selectedPanel.id, { bleed: e.target.checked })} className="accent-primary" />
+                    Full bleed
+                  </label>
+                  <label className="flex items-center gap-1.5">
+                    <input type="checkbox" checked={!!selectedPanel.floating} onChange={(e) => updatePanel(selectedPanel.id, { floating: e.target.checked })} className="accent-primary" />
+                    Floating inset
+                  </label>
+                </div>
+                <div>
+                  <span className="block mb-1 font-semibold">Border colour</span>
+                  <div className="flex items-center gap-1.5">
+                    {["#000000", "#ffffff", "#52525b", "#e11d2e"].map((c) => (
+                      <button key={c} aria-label={`Border ${c}`} onClick={() => updatePanel(selectedPanel.id, { borderColor: c })}
+                        className={`h-5 w-5 rounded-full border ${selectedPanel.borderColor === c ? "ring-2 ring-primary" : "border-border"}`} style={{ backgroundColor: c }} />
+                    ))}
+                    <input type="color" value={selectedPanel.borderColor} onChange={(e) => updatePanel(selectedPanel.id, { borderColor: e.target.value })} className="h-6 w-8 cursor-pointer rounded border border-border" />
+                    <span className="ml-auto">Fill</span>
+                    <input type="color" value={selectedPanel.backgroundColor} onChange={(e) => updatePanel(selectedPanel.id, { backgroundColor: e.target.value })} className="h-6 w-8 cursor-pointer rounded border border-border" />
+                  </div>
+                </div>
+                {selectedPanel.floating && (
+                  <div>
+                    <span className="block mb-1 font-semibold">Move / resize inset</span>
+                    <div className="grid grid-cols-6 gap-1">
+                      <button className="rounded border px-1.5 py-0.5 text-[10px] font-semibold border-border" onClick={() => nudgePanel(-0.02, 0)}>←</button>
+                      <button className="rounded border px-1.5 py-0.5 text-[10px] font-semibold border-border" onClick={() => nudgePanel(0.02, 0)}>→</button>
+                      <button className="rounded border px-1.5 py-0.5 text-[10px] font-semibold border-border" onClick={() => nudgePanel(0, -0.02)}>↑</button>
+                      <button className="rounded border px-1.5 py-0.5 text-[10px] font-semibold border-border" onClick={() => nudgePanel(0, 0.02)}>↓</button>
+                      <button className="rounded border px-1.5 py-0.5 text-[10px] font-semibold border-border" onClick={() => nudgePanel(0, 0, 1.08)}>＋</button>
+                      <button className="rounded border px-1.5 py-0.5 text-[10px] font-semibold border-border" onClick={() => nudgePanel(0, 0, 0.92)}>－</button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Screentone */}
+                <div className="border-t border-border pt-2" data-testid="tone-section">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="font-semibold">Screentone</span>
+                    {selectedPanel.tone && (
+                      <button className="text-[10px] text-destructive hover:underline" onClick={() => updatePanel(selectedPanel.id, { tone: null })}>Remove</button>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-4 gap-1">
+                    {TONE_PRESETS.map((t) => (
+                      <button key={t.id} title={t.label} aria-label={`Tone ${t.label}`}
+                        onClick={() => updatePanel(selectedPanel.id, { tone: { ...t.tone } })}
+                        className="rounded border border-border p-0.5 hover:border-foreground">
+                        <div className="h-7 w-full rounded-sm bg-white" style={{ backgroundImage: `url("${toneDataUrl(t.tone)}")` }} />
+                        <div className="text-[8px] leading-tight mt-0.5 line-clamp-1">{t.label}</div>
+                      </button>
+                    ))}
+                  </div>
+                  {selectedPanel.tone && (() => {
+                    const tone = selectedPanel.tone as Screentone;
+                    const setTone = (patch: Partial<Screentone>) => updatePanel(selectedPanel.id, { tone: { ...tone, ...patch } });
+                    return (
+                      <div className="mt-2 space-y-1.5">
+                        <div className="flex flex-wrap gap-1">
+                          {TONE_KINDS.map((k) => (
+                            <button key={k.id} onClick={() => setTone({ kind: k.id })}
+                              className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${tone.kind === k.id ? "bg-foreground text-background border-foreground" : "border-border"}`}>{k.label}</button>
+                          ))}
+                        </div>
+                        <label className="block"><span className="flex justify-between"><span>Density</span><span className="font-mono">{Math.round(tone.density * 100)}%</span></span>
+                          <input type="range" min={2} max={90} value={Math.round(tone.density * 100)} onChange={(e) => setTone({ density: +e.target.value / 100 })} className="w-full accent-primary" /></label>
+                        <label className="block"><span className="flex justify-between"><span>Line pitch (coarse ↔ fine)</span><span className="font-mono">{tone.cell}px</span></span>
+                          <input type="range" min={3} max={24} value={tone.cell} onChange={(e) => setTone({ cell: +e.target.value })} className="w-full accent-primary" /></label>
+                        <label className="block"><span className="flex justify-between"><span>Angle</span><span className="font-mono">{tone.angle}°</span></span>
+                          <input type="range" min={0} max={180} value={tone.angle} onChange={(e) => setTone({ angle: +e.target.value })} className="w-full accent-primary" /></label>
+                        <div className="flex flex-wrap gap-1">
+                          {TONE_FADES.map((f) => (
+                            <button key={f.id} onClick={() => setTone({ fade: f.id })}
+                              className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${tone.fade === f.id ? "bg-foreground text-background border-foreground" : "border-border"}`}>{f.label}</button>
+                          ))}
+                        </div>
+                        <label className="flex items-center gap-2">Ink colour
+                          <input type="color" value={tone.color} onChange={(e) => setTone({ color: e.target.value })} className="h-6 w-8 cursor-pointer rounded border border-border" /></label>
+                      </div>
+                    );
+                  })()}
                 </div>
               </div>
             </div>
@@ -1461,6 +1677,51 @@ export function PanelStudio({
                     className="w-full accent-primary mt-1"
                   />
                 </label>
+                {(() => {
+                  const setB = (patch: Partial<SpeechBalloon>) => onUpdateLayout({ ...layout, balloons: (layout.balloons ?? []).map((b) => (b.id === selectedBalloon.id ? { ...b, ...patch } : b)) });
+                  return (
+                    <div className="space-y-2" data-testid="balloon-lettering">
+                      <label className="block">
+                        <span className="block mb-1 font-semibold">Lettering font</span>
+                        <select value={selectedBalloon.fontFamily ?? "comic-neue"} onChange={(e) => setB({ fontFamily: e.target.value })}
+                          className="w-full rounded border border-border bg-background px-1.5 py-1" style={{ fontFamily: fontStack(selectedBalloon.fontFamily) }}>
+                          {MANGA_FONTS.filter((f) => f.use !== "sfx").map((f) => (
+                            <option key={f.id} value={f.id} style={{ fontFamily: fontStack(f.id) }}>{f.label}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <button onClick={() => setB({ fontWeight: selectedBalloon.fontWeight === "normal" ? "bold" : "normal" })}
+                          className="rounded border border-border px-2 py-0.5 font-bold">{selectedBalloon.fontWeight === "normal" ? "Regular" : "Bold"}</button>
+                        <label className="flex items-center gap-1">Text <input type="color" value={selectedBalloon.fontColor ?? "#000000"} onChange={(e) => setB({ fontColor: e.target.value })} className="h-6 w-7 rounded border border-border" /></label>
+                        <label className="flex items-center gap-1">Fill <input type="color" value={selectedBalloon.backgroundColor ?? "#ffffff"} onChange={(e) => setB({ backgroundColor: e.target.value })} className="h-6 w-7 rounded border border-border" /></label>
+                        <label className="flex items-center gap-1">Line <input type="color" value={selectedBalloon.borderColor ?? "#000000"} onChange={(e) => setB({ borderColor: e.target.value })} className="h-6 w-7 rounded border border-border" /></label>
+                      </div>
+                      <label className="block">
+                        <span className="flex justify-between"><span>Outline</span><span className="font-mono">{selectedBalloon.borderWidth ?? 2.5}px</span></span>
+                        <input type="range" min={0} max={8} step={0.5} value={selectedBalloon.borderWidth ?? 2.5} onChange={(e) => setB({ borderWidth: +e.target.value })} className="w-full accent-primary" />
+                      </label>
+                      <label className="block">
+                        <span className="block mb-1 font-semibold">Shape</span>
+                        <select value={selectedBalloon.shape} onChange={(e) => setB({ shape: e.target.value as BalloonShape })} className="w-full rounded border border-border bg-background px-1.5 py-1">
+                          {["oval", "rounded", "burst", "double_burst", "scream", "cloud", "whisper", "wavy", "flash", "box", "electric", "heart", "icy"].map((sh) => (
+                            <option key={sh} value={sh}>{sh.replace("_", " ")}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        <label className="flex items-center gap-1.5"><input type="checkbox" checked={selectedBalloon.hasTail} onChange={(e) => setB({ hasTail: e.target.checked })} className="accent-primary" /> Tail</label>
+                        <label className="flex items-center gap-1.5"><input type="checkbox" checked={!!selectedBalloon.isVertical} onChange={(e) => setB({ isVertical: e.target.checked, writingMode: e.target.checked ? "vertical-rl" : "horizontal-tb" })} className="accent-primary" /> Vertical (tategaki)</label>
+                      </div>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        <label className="block"><span className="flex justify-between"><span>Width</span><span className="font-mono">{Math.round(selectedBalloon.width)}</span></span>
+                          <input type="range" min={60} max={500} value={selectedBalloon.width} onChange={(e) => setB({ width: +e.target.value })} className="w-full accent-primary" /></label>
+                        <label className="block"><span className="flex justify-between"><span>Height</span><span className="font-mono">{Math.round(selectedBalloon.height)}</span></span>
+                          <input type="range" min={40} max={400} value={selectedBalloon.height} onChange={(e) => setB({ height: +e.target.value })} className="w-full accent-primary" /></label>
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             </div>
           )}
@@ -1567,6 +1828,35 @@ export function PanelStudio({
                     className="w-full accent-primary mt-1"
                   />
                 </label>
+                {(() => {
+                  const setS = (patch: Partial<SFXStamp>) => onUpdateLayout({ ...layout, sfxStamps: (layout.sfxStamps ?? []).map((x) => (x.id === selectedSFX.id ? { ...x, ...patch } : x)) });
+                  return (
+                    <div className="space-y-2" data-testid="sfx-style">
+                      <label className="block">
+                        <span className="block mb-1 font-semibold">SFX font</span>
+                        <select value={selectedSFX.fontFamily ?? "dela-gothic"} onChange={(e) => setS({ fontFamily: e.target.value })}
+                          className="w-full rounded border border-border bg-background px-1.5 py-1">
+                          {MANGA_FONTS.filter((f) => f.use !== "dialogue").map((f) => (
+                            <option key={f.id} value={f.id}>{f.label}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <div className="grid grid-cols-3 gap-1">
+                        {SFX_STYLES.map((st) => (
+                          <button key={st.id} onClick={() => setS(st.patch)} className="rounded border border-border px-1 py-0.5 text-[10px] font-semibold hover:border-foreground">{st.label}</button>
+                        ))}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <label className="flex items-center gap-1">Fill <input type="color" value={selectedSFX.fillColor?.startsWith("#") ? selectedSFX.fillColor : "#ffffff"} onChange={(e) => setS({ fillColor: e.target.value })} className="h-6 w-7 rounded border border-border" /></label>
+                        <label className="flex items-center gap-1">Outline <input type="color" value={selectedSFX.strokeColor ?? "#000000"} onChange={(e) => setS({ strokeColor: e.target.value })} className="h-6 w-7 rounded border border-border" /></label>
+                      </div>
+                      <label className="block"><span className="flex justify-between"><span>Outline width</span><span className="font-mono">{selectedSFX.strokeWidth}px</span></span>
+                        <input type="range" min={0} max={14} value={selectedSFX.strokeWidth} onChange={(e) => setS({ strokeWidth: +e.target.value })} className="w-full accent-primary" /></label>
+                      <label className="block"><span className="flex justify-between"><span>Opacity</span><span className="font-mono">{Math.round((selectedSFX.opacity ?? 1) * 100)}%</span></span>
+                        <input type="range" min={10} max={100} value={Math.round((selectedSFX.opacity ?? 1) * 100)} onChange={(e) => setS({ opacity: +e.target.value / 100 })} className="w-full accent-primary" /></label>
+                    </div>
+                  );
+                })()}
               </div>
             </div>
           )}
@@ -1615,5 +1905,25 @@ export function PanelStudio({
         allPages={allPages || [layout]}
       />
     </div>
+  );
+}
+
+/** Tiny page preview of a grid template. */
+function TemplateThumb({ panels }: { panels: PanelPolygon[] }) {
+  const W = 60, H = 86;
+  const ordered = [...panels].sort((a, b) => Number(!!a.floating) - Number(!!b.floating));
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full rounded-sm bg-white" aria-hidden="true">
+      {ordered.map((p) => (
+        <polygon
+          key={p.id}
+          points={insetPanelPoints(p.points, W, H, 4, 2, 3, { bleed: p.bleed, floating: p.floating }).map((q) => `${q.x},${q.y}`).join(" ")}
+          fill={p.backgroundColor === "#ffffff" ? "#fff" : p.backgroundColor}
+          stroke={p.borderStyle === "none" ? "#bbb" : "#111"}
+          strokeDasharray={p.borderStyle === "none" || p.borderStyle === "dashed" ? "2,1.5" : undefined}
+          strokeWidth={1}
+        />
+      ))}
+    </svg>
   );
 }

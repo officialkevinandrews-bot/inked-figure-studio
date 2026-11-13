@@ -1,3 +1,4 @@
+import { insetPanelPoints } from "./manga-grid";
 import type { SpeechBalloon, ComicMark, SpeedLinesEffect, SFXStamp } from "./manga-effects";
 
 export interface Point {
@@ -13,6 +14,9 @@ export interface PanelPolygon {
   borderStyle: "solid" | "dashed" | "dotted" | "none";
   cornerRadius?: number; // px rounding
   scalloped?: boolean; // Flashback / memory wavy scalloped border
+  bleed?: boolean; // page-edge sides run off the trim
+  floating?: boolean; // inset panel laid over others; no gutter inset
+  tone?: import("./screentone").Screentone | null; // halftone screentone fill
   backgroundColor: string;
   opacity?: number;
 }
@@ -48,7 +52,8 @@ export interface PageFormat {
   name: string;
   width: number;
   height: number;
-  gutter: number; // default gutter in px
+  gutter: number; // default gutter in px (space between columns)
+  gutterY?: number; // space between tiers; defaults to gutter
   margin: number; // default outer page margin in px
 }
 
@@ -441,36 +446,23 @@ export function getPanelPixelBounds(
   pageWidth: number,
   pageHeight: number,
   margin: number,
-  gutter: number
+  gutter: number,
+  gutterY: number = gutter
 ): { minX: number; minY: number; width: number; height: number; points: Point[] } {
-  const printableW = pageWidth - margin * 2;
-  const printableH = pageHeight - margin * 2;
-  const halfGutter = gutter / 2;
-
-  const points = panel.points.map((pt) => {
-    const rawX = margin + pt.x * printableW;
-    const rawY = margin + pt.y * printableH;
-
-    const adjustedX = rawX + (pt.x === 0 ? 1 : pt.x === 1 ? -1 : pt.x > 0.5 ? 1 : -1) * halfGutter;
-    const adjustedY = rawY + (pt.y === 0 ? 1 : pt.y === 1 ? -1 : pt.y > 0.5 ? 1 : -1) * halfGutter;
-
-    return { x: adjustedX, y: adjustedY };
+  const points = insetPanelPoints(panel.points, pageWidth, pageHeight, margin, gutter, gutterY, {
+    bleed: panel.bleed,
+    floating: panel.floating,
   });
-
   const xs = points.map((p) => p.x);
   const ys = points.map((p) => p.y);
   const minX = Math.min(...xs);
-  const maxX = Math.max(...xs);
   const minY = Math.min(...ys);
-  const maxY = Math.max(...ys);
+  return { minX, minY, width: Math.max(...xs) - minX, height: Math.max(...ys) - minY, points };
+}
 
-  return {
-    minX,
-    minY,
-    width: maxX - minX,
-    height: maxY - minY,
-    points,
-  };
+/** Pixel bounds using the page format's own gutters. */
+export function panelBounds(panel: PanelPolygon, f: PageFormat) {
+  return getPanelPixelBounds(panel, f.width, f.height, f.margin, f.gutter, f.gutterY ?? f.gutter);
 }
 
 /** Interactive Knife Split calculations */

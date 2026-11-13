@@ -3,6 +3,9 @@ import type { ComicMark, SpeedLinesEffect, SFXStamp } from "@/lib/manga-effects"
 import { generateRadialSpeedLines } from "@/lib/manga-effects";
 import { Trash2, RotateCw } from "lucide-react";
 import { usePageZoom } from "./zoom-context";
+import { markPath } from "@/lib/manga-marks";
+import { fontStack } from "@/lib/manga-fonts";
+import { COMIC_MARK_PRESETS } from "@/lib/manga-effects";
 
 // ── 1. Comic Marks Renderer
 export function ComicMarkRenderer({
@@ -65,7 +68,9 @@ export function ComicMarkRenderer({
         left: `${mark.x}px`,
         top: `${mark.y}px`,
         fontSize: `${mark.size}px`,
-        transform: `rotate(${mark.rotation}deg)`,
+        lineHeight: 1,
+        opacity: mark.opacity ?? 1,
+        transform: `translate(-50%, -50%) rotate(${mark.rotation}deg)`,
         zIndex: mark.zIndex,
       }}
       className={`group select-none cursor-move p-1 ${isSelected ? "ring-2 ring-primary rounded-xs" : ""}`}
@@ -73,7 +78,18 @@ export function ComicMarkRenderer({
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
     >
-      <span className="drop-shadow-md select-none">{symbolMap[mark.type] || "✨"}</span>
+      {(() => {
+        const vec = markPath(mark.markType ?? COMIC_MARK_PRESETS.find((p) => p.mark === mark.type)?.type);
+        if (vec)
+          return (
+            <svg width={mark.size} height={mark.size} viewBox="0 0 100 100" style={{ display: "block", overflow: "visible" }}>
+              {vec.map((part, i) => (
+                <path key={i} d={part.d} fill={part.fill ?? "none"} stroke={part.stroke} strokeWidth={part.width ?? 4} strokeLinecap="round" strokeLinejoin="round" />
+              ))}
+            </svg>
+          );
+        return <span className="drop-shadow-md select-none">{symbolMap[mark.type] || mark.type || "✨"}</span>;
+      })()}
 
       {isSelected && (
         <div
@@ -114,15 +130,23 @@ export function SpeedLinesRenderer({
   onChange: (updated: Partial<SpeedLinesEffect>) => void;
   onDelete: () => void;
 }) {
-  const lines = generateRadialSpeedLines(
-    effect.centerX,
-    effect.centerY,
-    effect.innerRadius,
-    effect.outerRadius,
-    effect.density,
-    effect.strokeWidth,
-    effect.color
-  );
+  const lines = React.useMemo(() => {
+    if (effect.type === "linear") {
+      const rad = (effect.angle * Math.PI) / 180;
+      const cos = Math.cos(rad), sin = Math.sin(rad);
+      const out: string[] = [];
+      for (let i = 0; i < effect.density; i++) {
+        const off = (i - effect.density / 2) * 12;
+        const x1 = effect.centerX + off * -sin - cos * effect.outerRadius;
+        const y1 = effect.centerY + off * cos - sin * effect.outerRadius;
+        const x2 = effect.centerX + off * -sin + cos * effect.outerRadius;
+        const y2 = effect.centerY + off * cos + sin * effect.outerRadius;
+        out.push(`M ${x1.toFixed(1)} ${y1.toFixed(1)} L ${x2.toFixed(1)} ${y2.toFixed(1)}`);
+      }
+      return out;
+    }
+    return generateRadialSpeedLines(effect.centerX, effect.centerY, effect.innerRadius, effect.outerRadius, effect.density, effect.strokeWidth, effect.color);
+  }, [effect.type, effect.angle, effect.centerX, effect.centerY, effect.innerRadius, effect.outerRadius, effect.density, effect.strokeWidth, effect.color]);
   const zoom = usePageZoom();
 
   return (
@@ -237,7 +261,10 @@ export function SFXStampRenderer({
         left: `${stamp.x}px`,
         top: `${stamp.y}px`,
         fontSize: `${stamp.fontSize}px`,
-        transform: `rotate(${stamp.rotation}deg) skewX(${stamp.skewX}deg)`,
+        opacity: stamp.opacity ?? 1,
+        whiteSpace: "nowrap",
+        lineHeight: 1,
+        transform: `translate(-50%, -50%) rotate(${stamp.rotation}deg) skewX(${stamp.skewX}deg)`,
         zIndex: stamp.zIndex,
       }}
       className={`group select-none cursor-move p-2 ${isSelected ? "ring-2 ring-primary rounded-xs" : ""}`}
@@ -247,9 +274,9 @@ export function SFXStampRenderer({
     >
       <span
         style={{
-          fontFamily: "'Dela Gothic One', sans-serif",
+          fontFamily: fontStack(stamp.fontFamily, "sfx"),
           color: stamp.fillColor || "#ffffff",
-          WebkitTextStroke: `${stamp.strokeWidth || 3}px ${stamp.strokeColor || "#000000"}`,
+          WebkitTextStroke: `${stamp.strokeWidth ?? 3}px ${stamp.strokeColor || "#000000"}`,
           paintOrder: "stroke fill",
         }}
         className="font-black tracking-widest drop-shadow-xl select-none"

@@ -3,6 +3,7 @@ import type { SpeechBalloon } from "@/lib/manga-effects";
 import { generateBalloonPath } from "@/lib/manga-effects";
 import { Trash2, Type, AlignVerticalJustifyCenter, MessageCircle } from "lucide-react";
 import { usePageZoom } from "./zoom-context";
+import { fontStack } from "@/lib/manga-fonts";
 
 interface SpeechBalloonRendererProps {
   balloon: SpeechBalloon;
@@ -108,7 +109,7 @@ export function SpeechBalloonRenderer({
         <path
           d={svgPath}
           fill={balloon.backgroundColor || "#ffffff"}
-          stroke={balloon.borderColor || "#000000"}
+          stroke={balloon.borderColor || balloon.strokeColor || "#000000"}
           strokeWidth={balloon.borderWidth || 2.5}
           strokeDasharray={balloon.shape === "whisper" ? "5,3" : undefined}
           strokeLinejoin="round"
@@ -124,10 +125,11 @@ export function SpeechBalloonRenderer({
           alignItems: "center",
           justifyContent: "center",
           fontSize: `${balloon.fontSize}px`,
-          fontFamily: balloon.fontFamily || "inherit",
-          writingMode: balloon.isVertical ? "vertical-rl" : "horizontal-tb",
+          fontFamily: fontStack(balloon.fontFamily),
+          fontWeight: balloon.fontWeight === "normal" ? 400 : 700,
+          writingMode: balloon.isVertical || balloon.writingMode === "vertical-rl" ? "vertical-rl" : "horizontal-tb",
           lineHeight: 1.25,
-          color: "#000000",
+          color: balloon.fontColor || "#000000",
         }}
         className="text-center font-bold overflow-hidden select-text"
       >

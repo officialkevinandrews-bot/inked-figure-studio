@@ -27,8 +27,8 @@ describe("Phase 2: Manga Layout & Templates", () => {
       format.gutter
     );
 
-    expect(bounds.minX).toBe(format.margin + format.gutter / 2);
-    expect(bounds.minY).toBe(format.margin + format.gutter / 2);
+    expect(bounds.minX).toBe(format.margin); // page edges sit on the margin; gutters only between panels
+    expect(bounds.minY).toBe(format.margin);
     expect(bounds.width).toBeGreaterThan(600);
     expect(bounds.height).toBeGreaterThan(1000);
   });

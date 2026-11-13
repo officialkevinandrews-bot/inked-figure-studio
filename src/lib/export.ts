@@ -1,7 +1,58 @@
 import { jsPDF } from "jspdf";
 import type { PageLayout, PlacedElement } from "./manga-layout";
-import { getPanelPixelBounds } from "./manga-layout";
+import { panelBounds } from "./manga-layout";
+import { toneDataUrl, fadeGeometry, type Screentone } from "./screentone";
+import { fontStack, ensureFontsLoaded } from "./manga-fonts";
+import { COMIC_MARK_PRESETS } from "./manga-effects";
+
+/** Fill a polygon with a screentone, honouring rotation and fade. */
+async function drawTone(
+  ctx: CanvasRenderingContext2D,
+  pts: { x: number; y: number }[],
+  box: { minX: number; minY: number; width: number; height: number },
+  tone: Screentone,
+  W: number,
+  H: number,
+  scale: number
+) {
+  const tile = await loadImage(toneDataUrl(tone));
+  const off = document.createElement("canvas");
+  off.width = Math.round(W * scale);
+  off.height = Math.round(H * scale);
+  const o = off.getContext("2d")!;
+  o.scale(scale, scale);
+  const pat = o.createPattern(tile, "repeat");
+  if (!pat) return;
+  pat.setTransform(new DOMMatrix().rotateSelf(tone.angle));
+  o.beginPath();
+  pts.forEach((p, i) => (i ? o.lineTo(p.x, p.y) : o.moveTo(p.x, p.y)));
+  o.closePath();
+  o.fillStyle = pat;
+  o.fill();
+  const g = fadeGeometry(tone.fade, box);
+  if (g) {
+    o.globalCompositeOperation = "destination-in";
+    let grad: CanvasGradient;
+    if (g.type === "linear") {
+      grad = o.createLinearGradient(g.x1, g.y1, g.x2, g.y2);
+      grad.addColorStop(0, "rgba(0,0,0,1)");
+      grad.addColorStop(1, "rgba(0,0,0,0)");
+    } else {
+      grad = o.createRadialGradient(g.cx, g.cy, 0, g.cx, g.cy, g.r);
+      grad.addColorStop(0, g.invert ? "rgba(0,0,0,0)" : "rgba(0,0,0,1)");
+      grad.addColorStop(g.invert ? 0.35 : 0.2, g.invert ? "rgba(0,0,0,0)" : "rgba(0,0,0,1)");
+      grad.addColorStop(1, g.invert ? "rgba(0,0,0,1)" : "rgba(0,0,0,0)");
+    }
+    o.fillStyle = grad;
+    o.fillRect(box.minX - 20, box.minY - 20, box.width + 40, box.height + 40);
+  }
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.drawImage(off, 0, 0);
+  ctx.restore();
+}
 import { generateBalloonPath } from "./manga-effects";
+import { markPath } from "./manga-marks";
 
 export interface ExportOptions {
   scale?: number; // 1 = 72 DPI, 2 = 150 DPI, 3 or 4 = 300 DPI high-res print
@@ -31,7 +82,8 @@ export async function renderPageToCanvas(
   scale = 2
 ): Promise<HTMLCanvasElement> {
   const canvas = document.createElement("canvas");
-  const { width, height, margin, gutter } = layout.format;
+  const { width, height } = layout.format;
+  await ensureFontsLoaded();
 
   canvas.width = Math.round(width * scale);
   canvas.height = Math.round(height * scale);
@@ -60,8 +112,9 @@ export async function renderPageToCanvas(
   );
 
   // 2. Draw Panel Backgrounds & Inside Elements
-  for (const panel of layout.panels) {
-    const bounds = getPanelPixelBounds(panel, width, height, margin, gutter);
+  const orderedPanels = [...layout.panels].sort((a, b) => Number(!!a.floating) - Number(!!b.floating));
+  for (const panel of orderedPanels) {
+    const bounds = panelBounds(panel, layout.format);
     const pts = bounds.points;
     if (pts.length < 3) continue;
 
@@ -75,6 +128,15 @@ export async function renderPageToCanvas(
     ctx.closePath();
     ctx.fillStyle = panel.backgroundColor || "#ffffff";
     ctx.fill();
+    if (panel.tone) {
+      ctx.restore();
+      await drawTone(ctx, pts, bounds, panel.tone, width, height, scale);
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+      ctx.closePath();
+    }
 
     // Clip to panel geometry
     ctx.clip();
@@ -152,10 +214,10 @@ export async function renderPageToCanvas(
     ctx.closePath();
     ctx.lineWidth = panel.borderWidth;
     ctx.strokeStyle = panel.borderColor;
-    if (panel.borderStyle === "dashed") {
-      ctx.setLineDash([6, 4]);
-    }
-    ctx.stroke();
+    ctx.lineJoin = "miter";
+    if (panel.borderStyle === "dashed") ctx.setLineDash([8, 6]);
+    if (panel.borderStyle === "dotted") ctx.setLineDash([3, 4]);
+    if (panel.borderStyle !== "none" && panel.borderWidth > 0) ctx.stroke();
     ctx.restore();
   }
 
@@ -179,15 +241,16 @@ export async function renderPageToCanvas(
   // 5. Speech Balloons
   for (const b of layout.balloons ?? []) {
     ctx.save();
-    const pathD = generateBalloonPath(b.shape, b.width, b.height, b.tail);
+    const pathD = generateBalloonPath(b.shape, b.width, b.height, b.tailX, b.tailY, b.hasTail);
     const p2d = new Path2D(pathD);
 
     ctx.translate(b.x, b.y);
     ctx.fillStyle = b.backgroundColor || "#ffffff";
     ctx.fill(p2d);
 
-    ctx.lineWidth = b.strokeWidth ?? 2.5;
-    ctx.strokeStyle = b.strokeColor || "#000000";
+    ctx.lineWidth = b.borderWidth ?? b.strokeWidth ?? 2.5;
+    ctx.strokeStyle = b.borderColor || b.strokeColor || "#000000";
+    ctx.lineJoin = "round";
     if (b.shape === "whisper") {
       ctx.setLineDash([5, 4]);
     }
@@ -195,11 +258,11 @@ export async function renderPageToCanvas(
 
     // Render Text
     ctx.fillStyle = b.fontColor || "#000000";
-    ctx.font = `${b.fontWeight === "bold" ? "bold " : ""}${b.fontSize}px sans-serif`;
+    ctx.font = `${b.fontWeight === "normal" ? "" : "bold "}${b.fontSize}px ${fontStack(b.fontFamily)}`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
 
-    if (b.writingMode === "vertical-rl") {
+    if (b.writingMode === "vertical-rl" || b.isVertical) {
       // Vertical Japanese reading order
       const chars = b.text.split("");
       const startY = b.height / 2 - ((chars.length - 1) * b.fontSize * 1.1) / 2;
@@ -238,10 +301,24 @@ export async function renderPageToCanvas(
     ctx.save();
     ctx.translate(m.x, m.y);
     ctx.rotate((m.rotation * Math.PI) / 180);
-    ctx.font = `${m.size}px sans-serif`;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText(m.type, 0, 0);
+    ctx.globalAlpha = m.opacity ?? 1;
+    const glyph = COMIC_MARK_PRESETS.find((p) => p.type === m.markType || p.mark === m.type)?.mark ?? m.type;
+    const vec = markPath(m.markType ?? COMIC_MARK_PRESETS.find((p) => p.mark === m.type)?.type);
+    if (vec) {
+      const sc = m.size / 100;
+      ctx.scale(sc, sc);
+      ctx.translate(-50, -50);
+      for (const part of vec) {
+        const p2 = new Path2D(part.d);
+        if (part.fill && part.fill !== "none") { ctx.fillStyle = part.fill; ctx.fill(p2); }
+        if (part.stroke) { ctx.strokeStyle = part.stroke; ctx.lineWidth = part.width ?? 4; ctx.lineCap = "round"; ctx.lineJoin = "round"; ctx.stroke(p2); }
+      }
+    } else {
+      ctx.font = `${m.size}px sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(glyph, 0, 0);
+    }
     ctx.restore();
   }
 
@@ -254,7 +331,8 @@ export async function renderPageToCanvas(
     const skewRad = ((sfx.skewX || 0) * Math.PI) / 180;
     ctx.transform(1, 0, Math.tan(skewRad), 1, 0, 0);
 
-    ctx.font = `900 ${sfx.fontSize}px Impact, "Arial Black", sans-serif`;
+    ctx.globalAlpha = sfx.opacity ?? 1;
+    ctx.font = `900 ${sfx.fontSize}px ${fontStack(sfx.fontFamily, "sfx")}`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
 
@@ -263,7 +341,7 @@ export async function renderPageToCanvas(
     ctx.strokeStyle = sfx.strokeColor;
     ctx.lineJoin = "miter";
     ctx.miterLimit = 2;
-    ctx.strokeText(sfx.text, 0, 0);
+    if (sfx.strokeWidth > 0) ctx.strokeText(sfx.text, 0, 0);
 
     // Fill
     ctx.fillStyle = sfx.fillColor;
