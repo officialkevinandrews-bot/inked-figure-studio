@@ -175,7 +175,19 @@ export function PageCanvas({
     return (
       <React.Fragment key={`grp-${p.id}`}>
         <svg
-          style={{ position: "absolute", top: 0, left: 0, width, height, pointerEvents: tool === "select" ? "auto" : "none", opacity: p.opacity ?? 1, overflow: "visible" }}
+          style={{ position: "absolute", top: 0, left: 0, width, height, pointerEvents: "none", opacity: p.opacity ?? 1, overflow: "visible" }}
+        >
+          <defs>
+            <ToneDefs p={p} uid={uid} box={b} />
+          </defs>
+          <path
+            d={panelPath}
+            fill={p.backgroundColor || "#ffffff"}
+            stroke={isSelected ? "#e11d2e" : "none"}
+            strokeWidth={isSelected ? 2 : 0}
+            className="cursor-pointer"
+            data-panel-id={p.id}
+            style={{ pointerEvents: tool === "select" ? "auto" : "none" }}
           onPointerDown={() => {
             pointerDownPanelRef.current = p.id;
           }}
@@ -189,17 +201,6 @@ export function PageCanvas({
             onSelectPanel(p.id);
             onSelectItem(null);
           }}
-        >
-          <defs>
-            <ToneDefs p={p} uid={uid} box={b} />
-          </defs>
-          <path
-            d={panelPath}
-            fill={p.backgroundColor || "#ffffff"}
-            stroke={isSelected ? "#e11d2e" : "none"}
-            strokeWidth={isSelected ? 2 : 0}
-            className="cursor-pointer"
-            data-panel-id={p.id}
           />
           {p.tone && (
             <path d={panelPath} fill={`url(#tone-${uid})`} mask={p.tone.fade !== "none" ? `url(#tmask-${uid})` : undefined} pointerEvents="none" />
