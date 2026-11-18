@@ -32,6 +32,7 @@ import {
   angledSplit,
   moveSharedVertex,
   mirrorPanels,
+  mergeRectPanels,
   pointInPolygon,
   insetPanelPoints,
 } from "@/lib/manga-grid";
@@ -138,6 +139,7 @@ export function PanelStudio({
   const [splitAngle, setSplitAngle] = useState(0);
   const [splitRatio, setSplitRatio] = useState(50);
   const [tplCat, setTplCat] = useState<TemplateCategory | "all">("all");
+  const [tplCount, setTplCount] = useState<number | "all">("all");
   const [showOrder, setShowOrder] = useState<"rtl" | "ltr" | null>(null);
   const [showGuides, setShowGuides] = useState(false);
 
@@ -353,6 +355,30 @@ export function PanelStudio({
     else if (!panels.some((p) => p.id === selectedPanelId)) setSelectedPanelId(panels[0]?.id ?? null);
   };
 
+  // Blank page / delete / merge
+  const handleBlankPage = () => {
+    if (!confirm("Start from a blank page? Panels and everything placed in them will be removed.")) return;
+    const blank: PanelPolygon = { id: `p${Date.now()}`, points: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }], borderWidth: 3, borderColor: "#000000", borderStyle: "solid", backgroundColor: "#ffffff" };
+    onUpdateLayout({ ...layout, panels: [blank], elements: [], balloons: [], sfxStamps: [], comicMarks: [], speedLines: [] });
+    setSelectedPanelId(blank.id);
+  };
+  const handleMergePanel = () => {
+    if (!selectedPanel) return;
+    for (const other of layout.panels) {
+      if (other.id === selectedPanel.id || other.floating) continue;
+      const pts = mergeRectPanels(selectedPanel, other);
+      if (!pts) continue;
+      const move = <T extends { panelId?: string }>(xs?: T[]) => (xs ?? []).map((x) => (x.panelId === other.id ? { ...x, panelId: selectedPanel.id } : x));
+      onUpdateLayout({
+        ...layout,
+        panels: layout.panels.filter((p) => p.id !== other.id).map((p) => (p.id === selectedPanel.id ? { ...p, points: pts } : p)),
+        elements: move(layout.elements), balloons: move(layout.balloons), sfxStamps: move(layout.sfxStamps), comicMarks: move(layout.comicMarks), speedLines: move(layout.speedLines),
+      });
+      return;
+    }
+    alert("No neighbouring panel lines up to merge into one rectangle.");
+  };
+
   // Template change
   const handleApplyTemplate = (templateName: string) => {
     const newPanels = buildTemplate(templateName) ?? getPresetPanels(templateName);
@@ -445,7 +471,7 @@ export function PanelStudio({
       id: `balloon-${Date.now()}`,
       panelId: selectedPanel.id,
       shape,
-      text: shape === "burst" || shape === "double_burst" ? "N-NANI?!" : shape === "cloud" ? "..." : "Speech...",
+      text: shape === "burst" || shape === "double_burst" ? "N-NANI?!" : shape === "cloud" ? "..." : shape === "narration" ? "Forty-two plates stacked. Three minutes until the shuttle." : "Speech...",
       x: bounds.minX + bounds.width * 0.25,
       y: bounds.minY + bounds.height * 0.2,
       width: Math.min(bounds.width * 0.55, 200),
@@ -456,7 +482,7 @@ export function PanelStudio({
       },
       tailX: -Math.min(bounds.width * 0.55, 200) * 0.2,
       tailY: Math.min(bounds.height * 0.4, 120) * 0.85,
-      hasTail: shape !== "box",
+      hasTail: shape !== "box" && shape !== "narration",
       fontSize: 16,
       fontWeight: shape === "burst" || shape === "double_burst" ? "bold" : "normal",
       writingMode: "horizontal-tb",
@@ -1048,7 +1074,10 @@ export function PanelStudio({
                 <div className="grid grid-cols-2 gap-1">
                   <button onClick={handleAddInset} className="rounded-sm border border-border py-1.5 text-[11px] font-semibold hover:border-foreground hover:bg-accent disabled:opacity-40">＋ Inset panel</button>
                   <button onClick={() => commitPanels(mirrorPanels(layout.panels))} className="rounded-sm border border-border py-1.5 text-[11px] font-semibold hover:border-foreground hover:bg-accent disabled:opacity-40" title="Flip the grid left↔right">⇋ Mirror page</button>
+                  <button disabled={!selectedPanel} onClick={handleMergePanel} className="rounded-sm border border-border py-1.5 text-[11px] font-semibold hover:border-foreground hover:bg-accent disabled:opacity-40" title="Join the selected panel with the neighbour it lines up with">⊞ Merge panel</button>
+                  <button disabled={!selectedPanel || layout.panels.length <= 1} onClick={handleDeletePanel} className="rounded-sm border border-border py-1.5 text-[11px] font-semibold hover:border-destructive hover:text-destructive disabled:opacity-40">🗑 Delete panel</button>
                 </div>
+                <button onClick={handleBlankPage} className="w-full rounded-sm border border-dashed border-border py-1.5 text-[11px] font-semibold hover:border-foreground hover:bg-accent">□ Start from blank page</button>
               </div>
 
               {/* Layout Template Gallery */}
@@ -1068,8 +1097,17 @@ export function PanelStudio({
                     </button>
                   ))}
                 </div>
+                <div className="flex flex-wrap items-center gap-1 mb-2" role="group" aria-label="Panel count">
+                  <span className="text-[10px] text-muted-foreground mr-0.5">Panels:</span>
+                  {(["all", 1, 2, 3, 4, 5, 6, 7] as const).map((n) => (
+                    <button key={n} onClick={() => setTplCount(n)} aria-pressed={tplCount === n}
+                      className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${tplCount === n ? "bg-foreground text-background border-foreground" : "border-border hover:border-foreground"}`}>
+                      {n === "all" ? "Any" : n === 7 ? "7+" : n}
+                    </button>
+                  ))}
+                </div>
                 <div className="grid grid-cols-3 gap-1.5" data-testid="template-grid">
-                  {GRID_TEMPLATES.filter((t) => tplCat === "all" || t.category === tplCat).map((tmpl) => (
+                  {GRID_TEMPLATES.filter((t) => (tplCat === "all" || t.category === tplCat) && (tplCount === "all" || (tplCount === 7 ? t.build().length >= 7 : t.build().length === tplCount))).map((tmpl) => (
                     <button
                       key={tmpl.id}
                       onClick={() => handleApplyTemplate(tmpl.id)}
@@ -1254,6 +1292,7 @@ export function PanelStudio({
                       { id: "wavy", label: "〰 Nervous / Weak" },
                       { id: "flash", label: "✴ Uni-Flash" },
                       { id: "icy", label: "🧊 Icy / Menace" },
+                      { id: "narration", label: "▤ Narration Caption" },
                     ] as const
                   ).map((b) => (
                     <button
@@ -2066,7 +2105,7 @@ export function PanelStudio({
                       <label className="block">
                         <span className="block mb-1 font-semibold">Shape</span>
                         <select value={selectedBalloon.shape} onChange={(e) => setB({ shape: e.target.value as BalloonShape })} className="w-full rounded border border-border bg-background px-1.5 py-1">
-                          {["oval", "rounded", "burst", "double_burst", "scream", "cloud", "whisper", "wavy", "flash", "box", "electric", "heart", "icy"].map((sh) => (
+                          {["oval", "rounded", "burst", "double_burst", "scream", "cloud", "whisper", "wavy", "flash", "box", "electric", "heart", "icy", "narration"].map((sh) => (
                             <option key={sh} value={sh}>{sh.replace("_", " ")}</option>
                           ))}
                         </select>

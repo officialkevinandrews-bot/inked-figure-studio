@@ -11,7 +11,8 @@ export type BalloonShape =
   | "scream" // Ragged irregular scream
   | "wavy" // Nervous / weak / sick wobble
   | "flash" // Uni-flash inner-monologue burst
-  | "icy"; // Cold / menacing icicle edge
+  | "icy" // Cold / menacing icicle edge
+  | "narration"; // Caption box with inner keyline
 
 export interface BalloonTail {
   x: number; // tip X relative to balloon top-left
@@ -239,7 +240,9 @@ export function generateBalloonPath(
 
   let bodyPath = "";
 
-  if (shape === "box") {
+  if (shape === "narration") {
+    bodyPath = `M 3 3 L ${w - 3} 3 L ${w - 3} ${h - 3} L 3 ${h - 3} Z M 8 8 L ${w - 8} 8 L ${w - 8} ${h - 8} L 8 ${h - 8} Z`;
+  } else if (shape === "box") {
     bodyPath = `M 4 4 L ${w - 4} 4 L ${w - 4} ${h - 4} L 4 ${h - 4} Z`;
   } else if (shape === "burst") {
     // Spiky shout burst
@@ -348,7 +351,7 @@ export function generateBalloonPath(
   }
 
   // Determine tail parameters
-  if (shape === "box" || shape === "icy") return bodyPath;
+  if (shape === "box" || shape === "icy" || shape === "narration") return bodyPath;
 
   const tailParts: string[] = [];
   let hasPrimary = false;

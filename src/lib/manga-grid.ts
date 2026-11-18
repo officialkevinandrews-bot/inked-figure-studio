@@ -381,3 +381,135 @@ export function buildTemplate(id: string): PanelPolygon[] | null {
   const t = GRID_TEMPLATES.find((g) => g.id === id);
   return t ? t.build() : null;
 }
+
+// ─────────── Extended classic library (staggered 5–6 panel pages) ───────────
+
+type R4 = [number, number, number, number];
+const geoKey = (rs: R4[]) => rs.map((r) => r.map((v) => v.toFixed(3)).join(",")).sort().join("|");
+const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+/** Two columns between y0..y1, each column cut at its own heights so gutters never form a "+". */
+function columnPair(y0: number, y1: number, split: number, left: number[], right: number[]): R4[] {
+  const out: R4[] = [];
+  const col = (x0: number, x1: number, cuts: number[]) => {
+    const ys = [y0, ...cuts.map((c) => y0 + (y1 - y0) * c), y1];
+    for (let i = 0; i < ys.length - 1; i++) out.push([x0, ys[i], x1, ys[i + 1]]);
+  };
+  col(0, split, left);
+  col(split, 1, right);
+  return out;
+}
+
+function staggeredTemplates(): GridTemplate[] {
+  const bands: { name: string; top: number; bot: number }[] = [
+    { name: "Top", top: 0.34, bot: 0 },
+    { name: "Tall Top", top: 0.42, bot: 0 },
+    { name: "Base", top: 0, bot: 0.32 },
+    { name: "Frame", top: 0.27, bot: 0.25 },
+    { name: "Open", top: 0, bot: 0 },
+  ];
+  const cuts: number[][] = [[], [0.42], [0.58], [0.5], [0.34, 0.68], [0.28, 0.6], [0.4, 0.72]];
+  const splits = [0.5, 0.44, 0.58];
+  const seen = new Set<string>();
+  const out: GridTemplate[] = [];
+  const count: Record<string, number> = {};
+  for (const b of bands) for (const s of splits) for (const L of cuts) for (const Rc of cuts) {
+    // Stagger rule: no shared cut heights between the columns.
+    if (L.some((c) => Rc.some((d) => Math.abs(c - d) < 0.05))) continue;
+    const rs: R4[] = [];
+    if (b.top) rs.push([0, 0, 1, b.top]);
+    rs.push(...columnPair(b.top, 1 - b.bot, s, L, Rc));
+    if (b.bot) rs.push([0, 1 - b.bot, 1, 1]);
+    if (rs.length < 5 || rs.length > 6) continue;
+    const k = geoKey(rs);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    const n = rs.length;
+    const tag = `${b.name} ${n}`;
+    count[tag] = (count[tag] ?? 0) + 1;
+    out.push({
+      id: `st-${out.length + 1}`,
+      label: `Stagger ${tag}${LETTERS[count[tag] - 1] ? " " + LETTERS[count[tag] - 1] : ""}`,
+      category: "classic",
+      description: `${n} panels, offset gutters${b.top ? ", wide opener" : ""}${b.bot ? ", wide closer" : ""}`,
+      build: () => rs.map((r, i) => mk(rect(...r), {}, i)),
+    });
+  }
+  // Keep variety but cap the count.
+  return out.filter((_, i) => i % 2 === 0).slice(0, 48);
+}
+
+function tierTemplates(): GridTemplate[] {
+  const rows: number[][] = [[1], [1, 1], [2, 1], [1, 2], [3, 2], [2, 3], [1, 1, 1]];
+  const heights: number[][] = [[1, 1, 1], [1.3, 1, 1], [1, 1.3, 1], [1, 1, 1.4], [0.8, 1.4, 1]];
+  const out: GridTemplate[] = [];
+  const action: GridTemplate[] = [];
+  const sameRatio = (a: number[], b: number[]) => a.length === b.length && a.every((v, i) => v === b[i]);
+  let idx = 0;
+  for (const a of rows) for (const b of rows) for (const c of rows) {
+    const n = a.length + b.length + c.length;
+    if (n < 5 || n > 6) continue;
+    // Gutters must not line up vertically between neighbouring tiers (except full-width rows).
+    if ((a.length > 1 && sameRatio(a, b)) || (b.length > 1 && sameRatio(b, c))) continue;
+    idx++;
+    const h = heights[idx % heights.length];
+    const spec: Tier[] = [{ h: h[0], cols: a }, { h: h[1], cols: b }, { h: h[2], cols: c }];
+    if (idx % 3 === 0) {
+      out.push({ id: `tr-${idx}`, label: `Rhythm ${n} · ${a.length}-${b.length}-${c.length}`, category: "classic", description: `${n} panels in three tiers`, build: fromTiers(spec) });
+    }
+    if (idx % 4 === 1) {
+      const sk = (idx % 2 ? 0.05 : -0.05);
+      action.push({
+        id: `ta-${idx}`,
+        label: `Clash ${n} · ${a.length}-${b.length}-${c.length}`,
+        category: "action",
+        description: `${n} panels with blade-cut dividers`,
+        build: fromTiers([
+          { ...spec[0], skew: sk, slant: 0.05 },
+          { ...spec[1], skew: -sk, slant: -0.05 },
+          { ...spec[2], skew: sk },
+        ]),
+      });
+    }
+  }
+  return [...out, ...action];
+}
+
+function wrapTemplates(): GridTemplate[] {
+  const out: GridTemplate[] = [];
+  const mkT = (id: string, label: string, cat: TemplateCategory, desc: string, rs: R4[]) =>
+    out.push({ id, label, category: cat, description: desc, build: () => rs.map((r, i) => mk(rect(...r), {}, i)) });
+  for (const [side, w] of [["R", 0.58], ["L", 0.58], ["R", 0.5]] as const) {
+    const x0 = side === "R" ? 1 - w : 0, x1 = side === "R" ? 1 : w;
+    const ox0 = side === "R" ? 0 : w, ox1 = side === "R" ? 1 - w : 1;
+    mkT(`wr-hero5-${side}${w}`, `Hero Wrap 5 ${side}${w === 0.5 ? " Even" : ""}`, "classic", "Tall hero panel with four beats", [
+      [x0, 0, x1, 0.72], [ox0, 0, ox1, 0.24], [ox0, 0.24, ox1, 0.48], [ox0, 0.48, ox1, 0.72], [0, 0.72, 1, 1],
+    ]);
+    mkT(`wr-hero6-${side}${w}`, `Hero Wrap 6 ${side}${w === 0.5 ? " Even" : ""}`, "shojo", "Tall portrait with five reactions", [
+      [x0, 0.25, x1, 1], [0, 0, 0.5, 0.25], [0.5, 0, 1, 0.25], [ox0, 0.25, ox1, 0.5], [ox0, 0.5, ox1, 0.75], [ox0, 0.75, ox1, 1],
+    ]);
+  }
+  mkT("wr-kitchen", "Reference Stagger", "classic", "Wide opener, offset two-column story (like your kitchen page)", [
+    [0, 0, 1, 0.35], [0, 0.35, 0.47, 0.72], [0.47, 0.35, 1, 0.6], [0, 0.72, 0.47, 1], [0.47, 0.6, 1, 1],
+  ]);
+  mkT("wr-center", "Centre Stage 5", "cinematic", "Big middle shot framed by four beats", [
+    [0, 0, 0.55, 0.22], [0.55, 0, 1, 0.22], [0, 0.22, 1, 0.74], [0, 0.74, 0.45, 1], [0.45, 0.74, 1, 1],
+  ]);
+  mkT("wr-steps", "Staircase 6", "cinematic", "Panels step down across the page", [
+    [0, 0, 0.66, 0.2], [0.66, 0, 1, 0.38], [0, 0.2, 0.66, 0.5], [0.66, 0.38, 1, 0.7], [0, 0.5, 0.66, 1], [0.66, 0.7, 1, 1],
+  ]);
+  return out;
+}
+
+GRID_TEMPLATES.push(...staggeredTemplates(), ...tierTemplates(), ...wrapTemplates());
+
+/** Merge two rectangular panels whose union is itself a rectangle. Returns null when they don't fit together. */
+export function mergeRectPanels(a: PanelPolygon, b: PanelPolygon): Point[] | null {
+  const pts = [...a.points, ...b.points];
+  const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const box = (x1 - x0) * (y1 - y0);
+  const sum = Math.abs(polygonArea(a.points)) + Math.abs(polygonArea(b.points));
+  if (Math.abs(box - sum) > 0.002) return null;
+  return [{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }];
+}
