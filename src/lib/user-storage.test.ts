@@ -7,7 +7,7 @@ import {
 } from "./allowlist";
 import { loadCharacters, saveCharacters, newCharacter } from "./characters";
 import { loadBaseModels, saveBaseModels } from "./base-models";
-import { stripUndefined } from "./cloud-sync";
+import { compressBlob, decompressBytes, stripUndefined } from "./cloud-sync";
 import { isFirebaseConfigured } from "./firebase-config";
 import {
   hasUnmigratedLegacyData,
@@ -148,5 +148,18 @@ describe("per-user account storage & sync helpers", () => {
     expect(denied.allowed).toBe(false);
     const allowed = await verifyUserAllowlistAccess("craigrees@hotmail.com");
     expect(allowed.allowed).toBe(true);
+  });
+
+  it("compresses and decompresses >64KB blobs without stream backpressure deadlock", async () => {
+    const size = 256 * 1024;
+    const sample = new Uint8Array(size);
+    for (let i = 0; i < size; i++) {
+      sample[i] = i % 64;
+    }
+    const { bytes, compressed } = await compressBlob(new Blob([sample]));
+    const restored = await decompressBytes(bytes, compressed);
+    expect(restored.byteLength).toBe(size);
+    expect(restored[0]).toBe(0);
+    expect(restored[size - 1]).toBe((size - 1) % 64);
   });
 });

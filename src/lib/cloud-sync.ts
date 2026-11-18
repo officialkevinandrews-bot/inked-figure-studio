@@ -271,18 +271,45 @@ function decodeBase64ToBytes(b64: string): Uint8Array {
   return out;
 }
 
-async function compressBlob(blob: Blob): Promise<{ bytes: Uint8Array; compressed: boolean }> {
-  const rawBuf = await blob.arrayBuffer();
-  const rawBytes = new Uint8Array(rawBuf);
-  if (typeof CompressionStream === "undefined" || rawBytes.byteLength < 1024) {
+async function readBlobBytes(blob: Blob): Promise<Uint8Array> {
+  if (typeof blob.arrayBuffer === "function") {
+    return new Uint8Array(await blob.arrayBuffer());
+  }
+  const buf = await new Promise<ArrayBuffer>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as ArrayBuffer);
+    reader.onerror = () => reject(reader.error ?? new Error("Could not read blob"));
+    reader.readAsArrayBuffer(blob);
+  });
+  return new Uint8Array(buf);
+}
+
+function bytesToReadableStream(bytes: Uint8Array): ReadableStream<Uint8Array> {
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(bytes);
+      controller.close();
+    },
+  });
+}
+
+export async function compressBlob(
+  blob: Blob,
+): Promise<{ bytes: Uint8Array; compressed: boolean }> {
+  const rawBytes = await readBlobBytes(blob);
+  if (
+    typeof CompressionStream === "undefined" ||
+    typeof ReadableStream === "undefined" ||
+    rawBytes.byteLength < 1024
+  ) {
     return { bytes: rawBytes, compressed: false };
   }
   try {
-    const cs = new CompressionStream("gzip");
-    const writer = cs.writable.getWriter();
-    await writer.write(rawBytes);
-    await writer.close();
-    const compressedBuf = await new Response(cs.readable).arrayBuffer();
+    // Pipe concurrently through CompressionStream so >64KB blobs never hit backpressure deadlock
+    const compressedStream = bytesToReadableStream(rawBytes).pipeThrough(
+      new CompressionStream("gzip") as unknown as TransformStream<Uint8Array, Uint8Array>,
+    );
+    const compressedBuf = await new Response(compressedStream).arrayBuffer();
     const compressedBytes = new Uint8Array(compressedBuf);
     if (compressedBytes.byteLength < rawBytes.byteLength) {
       return { bytes: compressedBytes, compressed: true };
@@ -293,15 +320,19 @@ async function compressBlob(blob: Blob): Promise<{ bytes: Uint8Array; compressed
   return { bytes: rawBytes, compressed: false };
 }
 
-async function decompressBytes(bytes: Uint8Array, compressed: boolean): Promise<Uint8Array> {
-  if (!compressed || typeof DecompressionStream === "undefined") {
+export async function decompressBytes(
+  bytes: Uint8Array,
+  compressed: boolean,
+): Promise<Uint8Array> {
+  if (!compressed || typeof DecompressionStream === "undefined" || typeof ReadableStream === "undefined") {
     return bytes;
   }
-  const ds = new DecompressionStream("gzip");
-  const writer = ds.writable.getWriter();
-  await writer.write(new Uint8Array(bytes));
-  await writer.close();
-  const outBuf = await new Response(ds.readable).arrayBuffer();
+  const exactCopy = new Uint8Array(bytes.byteLength);
+  exactCopy.set(bytes);
+  const decompressedStream = bytesToReadableStream(exactCopy).pipeThrough(
+    new DecompressionStream("gzip") as unknown as TransformStream<Uint8Array, Uint8Array>,
+  );
+  const outBuf = await new Response(decompressedStream).arrayBuffer();
   return new Uint8Array(outBuf);
 }
 
@@ -799,7 +830,7 @@ export async function flushCloudSync(uid: string = activeSyncUid ?? ""): Promise
         const file = fileMap.get(fid);
         if (file) {
           try {
-            await uploadBlobToCloud(uid, file);
+            await withTimeout(uploadBlobToCloud(uid, file), 25_000, `Upload ${file.name}`);
           } catch {
             failedFileIds.push(fid);
           }
@@ -812,11 +843,17 @@ export async function flushCloudSync(uid: string = activeSyncUid ?? ""): Promise
       for (const p of lib.projects) {
         if (projectIdsToPush.has(p.id) || q.dirtyWorkspace) {
           const projRef = doc(db, "users", uid, "projects", p.id);
-          const existingSnap = await getDoc(projRef).catch(() => null);
+          const existingSnap = await withTimeout(getDoc(projRef), 8000, "Read project meta").catch(
+            () => null,
+          );
           const existingCreatedAt = existingSnap?.exists()
             ? (existingSnap.data()?.createdAt as number | undefined)
             : undefined;
-          await setDoc(projRef, serializeProjectDoc(p, existingCreatedAt));
+          await withTimeout(
+            setDoc(projRef, serializeProjectDoc(p, existingCreatedAt)),
+            12_000,
+            `Save project ${p.title}`,
+          );
         }
       }
       q.dirtyProjectIds = [];
@@ -825,29 +862,41 @@ export async function flushCloudSync(uid: string = activeSyncUid ?? ""): Promise
       const activeIds = new Set(lib.projects.map((p) => p.id));
       for (const delId of q.deletedProjectIds) {
         if (!activeIds.has(delId)) {
-          await deleteDoc(doc(db, "users", uid, "projects", delId)).catch(() => {});
+          await withTimeout(
+            deleteDoc(doc(db, "users", uid, "projects", delId)),
+            8000,
+            "Delete project",
+          ).catch(() => {});
         }
       }
       q.deletedProjectIds = [];
 
       // 4. Upload workspace document
       const workspaceDoc = collectWorkspaceDoc(uid, lib);
-      await setDoc(doc(db, "users", uid, "studio", "workspace"), workspaceDoc);
+      await withTimeout(
+        setDoc(doc(db, "users", uid, "studio", "workspace"), workspaceDoc),
+        12_000,
+        "Save workspace",
+      );
       q.dirtyWorkspace = false;
       q.lastSyncedCloudWorkspaceAt = workspaceDoc.updatedAt;
 
-      // 5. Update syncMeta + user lastSyncAt
+      // 5. Update syncMeta
       const now = Date.now();
-      await setDoc(
-        doc(db, "users", uid, "studio", "syncMeta"),
-        stripUndefined({
-          updatedAt: now,
-          lastSyncedAt: now,
-          lastSyncAt: now,
-          deviceId: getOrCreateDeviceId(),
-          projectCount: lib.projects.length,
-          blobCount: allFiles.length,
-        }),
+      await withTimeout(
+        setDoc(
+          doc(db, "users", uid, "studio", "syncMeta"),
+          stripUndefined({
+            updatedAt: now,
+            lastSyncedAt: now,
+            lastSyncAt: now,
+            deviceId: getOrCreateDeviceId(),
+            projectCount: lib.projects.length,
+            blobCount: allFiles.length,
+          }),
+        ),
+        8000,
+        "Save syncMeta",
       );
 
       saveSyncQueue(uid, q);
