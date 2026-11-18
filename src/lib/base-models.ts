@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import shonen from "@/assets/models/shonen_base.fbx.asset.json";
 import type { FaceCalibration } from "./face-library";
+import { userLsGet, userLsSet } from "./user-storage";
 
 /** Bodies that ship with the studio. Uploaded bodies use "file:<id>" keys stored in the browser file store. */
 export interface BuiltinModel {
@@ -43,7 +44,7 @@ const BASE_MODELS_KEY = "koma-base-models";
 
 export function loadBaseModels(): CustomBaseModel[] {
   try {
-    const raw = localStorage.getItem(BASE_MODELS_KEY);
+    const raw = userLsGet(BASE_MODELS_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw) as CustomBaseModel[];
     return Array.isArray(parsed) ? parsed.filter((m) => m && m.key?.startsWith("file:")) : [];
@@ -53,12 +54,7 @@ export function loadBaseModels(): CustomBaseModel[] {
 }
 
 export function saveBaseModels(list: CustomBaseModel[]): boolean {
-  try {
-    localStorage.setItem(BASE_MODELS_KEY, JSON.stringify(list));
-    return true;
-  } catch {
-    return false;
-  }
+  return userLsSet(BASE_MODELS_KEY, JSON.stringify(list), "workspace");
 }
 
 export function upsertBaseModel(list: CustomBaseModel[], entry: CustomBaseModel): CustomBaseModel[] {

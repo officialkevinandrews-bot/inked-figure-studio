@@ -1,0 +1,1067 @@
+import {
+  collection,
+  deleteDoc,
+  doc,
+  getDoc,
+  getDocs,
+  setDoc,
+  type DocumentData,
+} from "firebase/firestore";
+import { getBytes, ref as storageRef, uploadBytes } from "firebase/storage";
+import type { User } from "firebase/auth";
+import { referencedFileIds } from "./backup";
+import { loadBaseModels, type CustomBaseModel } from "./base-models";
+import { resetChapterAssetCache } from "./chapter-storage";
+import { loadSavedRoster, type RosterCharacter } from "./character-roster";
+import { loadCharacters, type Character } from "./characters";
+import { loadCustomPropsMeta, type CustomPropMeta } from "./custom-props";
+import { loadCustomTemplates, type SavedCustomTemplate } from "./custom-templates";
+import { loadPacks, type FacePack } from "./face-parts";
+import {
+  getActiveFilesDbName,
+  getLocalFile,
+  listAllFiles,
+  listAllKv,
+  putFile,
+  putKv,
+  readLegacyIndexedDbSnapshot,
+  registerCloudFileFetcher,
+  type Stored,
+} from "./file-store";
+import { getFirebaseDb, getFirebaseStorage } from "./firebase";
+import { isFirebaseConfigured } from "./firebase-config";
+import { loadPanelOverlapPreference, type PanelOverlapPreference } from "./manga-layout";
+import {
+  createDefaultLibrary,
+  externalizeLibraryAssets,
+  loadMangaLibrary,
+  type MangaLibraryState,
+  type MangaProject,
+} from "./manga-projects";
+import { loadCustomPoses, type CustomPose } from "./pose-storage";
+import {
+  getActiveStorageUser,
+  getLegacyPromptChoice,
+  getOrCreateDeviceId,
+  listUserKeysWithPrefix,
+  readLegacyLocalStorageEntries,
+  scopeStorageKey,
+  setApplyingRemoteSync,
+  setLegacyPromptChoice,
+  subscribeUserStorageChanges,
+  userLsGet,
+  userLsSet,
+  type StorageChangeEvent,
+} from "./user-storage";
+
+const SYNC_QUEUE_KEY = "__sync_queue_v1";
+const CHUNK_CHAR_LIMIT = 680_000; // Well under firestore.rules 960_000 limit
+const MAX_CHUNK_COUNT = 200;
+
+export type SyncPhase = "idle" | "syncing" | "saved" | "offline" | "conflict" | "error";
+
+export interface SyncConflictInfo {
+  remoteUpdatedAt: number;
+  remoteDeviceId: string | null;
+  remoteProjectCount: number;
+  localPendingCount: number;
+}
+
+export interface CloudSyncStatus {
+  phase: SyncPhase;
+  pendingCount: number;
+  lastSyncedAt: number | null;
+  legacyImportedCount: number;
+  errorMessage: string | null;
+  conflict: SyncConflictInfo | null;
+}
+
+interface SyncQueueState {
+  dirtyWorkspace: boolean;
+  dirtyProjectIds: string[];
+  deletedProjectIds: string[];
+  dirtyFileIds: string[];
+  lastSyncedCloudWorkspaceAt: number;
+}
+
+interface WorkspaceCloudDoc {
+  version: number;
+  schemaVersion: number;
+  updatedAt: number;
+  deviceId: string | null;
+  activeProjectId: string | null;
+  characters: Character[];
+  baseModels: CustomBaseModel[];
+  facePacks: FacePack[];
+  customPoses: CustomPose[];
+  customProps: CustomPropMeta[];
+  customTemplates: SavedCustomTemplate[];
+  roster: RosterCharacter[];
+  faceConfigs: Record<string, unknown>;
+  faceCalibrations: Record<string, unknown>;
+  wardrobeOutfits: Record<string, unknown>;
+  preferences: { panelOverlapPref: PanelOverlapPreference };
+}
+
+interface BlobMetaCloudDoc {
+  id: string;
+  name: string;
+  type: string;
+  slot: string | null;
+  size: number;
+  byteLength: number;
+  chunkCount: number;
+  storagePath: string | null;
+  compressed: boolean;
+  encoding: string;
+  createdAt?: number;
+  updatedAt: number;
+}
+
+let currentStatus: CloudSyncStatus = {
+  phase: "idle",
+  pendingCount: 0,
+  lastSyncedAt: null,
+  legacyImportedCount: 0,
+  errorMessage: null,
+  conflict: null,
+};
+
+let activeSyncUid: string | null = null;
+let syncDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+let flushInFlight: Promise<boolean> | null = null;
+let unsubscribeStorageListener: (() => void) | null = null;
+let listenersBound = false;
+let cloudPullCallback: (() => void) | null = null;
+let pendingRemoteSnapshot: {
+  workspace: WorkspaceCloudDoc | null;
+  projects: MangaProject[];
+} | null = null;
+
+const statusSubscribers = new Set<(status: CloudSyncStatus) => void>();
+
+function notifyStatus(patch: Partial<CloudSyncStatus>): void {
+  currentStatus = { ...currentStatus, ...patch };
+  for (const fn of statusSubscribers) {
+    try {
+      fn(currentStatus);
+    } catch {
+      /* ignore subscriber error */
+    }
+  }
+}
+
+export function getCloudSyncStatus(): CloudSyncStatus {
+  return currentStatus;
+}
+
+export function subscribeCloudSyncStatus(listener: (status: CloudSyncStatus) => void): () => void {
+  statusSubscribers.add(listener);
+  listener(currentStatus);
+  return () => {
+    statusSubscribers.delete(listener);
+  };
+}
+
+export function registerOnCloudPullApplied(cb: (() => void) | null): void {
+  cloudPullCallback = cb;
+}
+
+function emptyQueue(): SyncQueueState {
+  return {
+    dirtyWorkspace: false,
+    dirtyProjectIds: [],
+    deletedProjectIds: [],
+    dirtyFileIds: [],
+    lastSyncedCloudWorkspaceAt: 0,
+  };
+}
+
+function loadSyncQueue(uid: string): SyncQueueState {
+  if (typeof window === "undefined") return emptyQueue();
+  try {
+    const raw = window.localStorage.getItem(scopeStorageKey(SYNC_QUEUE_KEY, uid));
+    if (!raw) return emptyQueue();
+    const p = JSON.parse(raw) as Partial<SyncQueueState>;
+    return {
+      dirtyWorkspace: Boolean(p.dirtyWorkspace),
+      dirtyProjectIds: Array.isArray(p.dirtyProjectIds) ? p.dirtyProjectIds : [],
+      deletedProjectIds: Array.isArray(p.deletedProjectIds) ? p.deletedProjectIds : [],
+      dirtyFileIds: Array.isArray(p.dirtyFileIds) ? p.dirtyFileIds : [],
+      lastSyncedCloudWorkspaceAt:
+        typeof p.lastSyncedCloudWorkspaceAt === "number" ? p.lastSyncedCloudWorkspaceAt : 0,
+    };
+  } catch {
+    return emptyQueue();
+  }
+}
+
+function saveSyncQueue(uid: string, q: SyncQueueState): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(scopeStorageKey(SYNC_QUEUE_KEY, uid), JSON.stringify(q));
+  } catch {
+    /* ignore quota errors */
+  }
+  const pendingCount =
+    (q.dirtyWorkspace ? 1 : 0) +
+    q.dirtyProjectIds.length +
+    q.deletedProjectIds.length +
+    q.dirtyFileIds.length;
+  notifyStatus({ pendingCount });
+}
+
+function countPending(q: SyncQueueState): number {
+  return (
+    (q.dirtyWorkspace ? 1 : 0) +
+    q.dirtyProjectIds.length +
+    q.deletedProjectIds.length +
+    q.dirtyFileIds.length
+  );
+}
+
+/** Recursively removes `undefined` fields so Firestore `setDoc` never rejects optional undefined properties. */
+export function stripUndefined<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((item) => stripUndefined(item)) as unknown as T;
+  }
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value)) {
+      if (v !== undefined) {
+        out[k] = stripUndefined(v);
+      }
+    }
+    return out as T;
+  }
+  return value;
+}
+
+function safeJsonMapFromPrefix(prefix: string, uid: string): Record<string, unknown> {
+  const entries = listUserKeysWithPrefix(prefix, uid);
+  const out: Record<string, unknown> = {};
+  for (const entry of entries.slice(0, 200)) {
+    const subKey = entry.logicalKey.slice(prefix.length);
+    if (!subKey) continue;
+    try {
+      out[subKey] = JSON.parse(entry.value);
+    } catch {
+      /* ignore malformed entry */
+    }
+  }
+  return out;
+}
+
+function encodeBytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
+function decodeBase64ToBytes(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) {
+    out[i] = bin.charCodeAt(i);
+  }
+  return out;
+}
+
+async function compressBlob(blob: Blob): Promise<{ bytes: Uint8Array; compressed: boolean }> {
+  const rawBuf = await blob.arrayBuffer();
+  const rawBytes = new Uint8Array(rawBuf);
+  if (typeof CompressionStream === "undefined" || rawBytes.byteLength < 1024) {
+    return { bytes: rawBytes, compressed: false };
+  }
+  try {
+    const cs = new CompressionStream("gzip");
+    const writer = cs.writable.getWriter();
+    await writer.write(rawBytes);
+    await writer.close();
+    const compressedBuf = await new Response(cs.readable).arrayBuffer();
+    const compressedBytes = new Uint8Array(compressedBuf);
+    if (compressedBytes.byteLength < rawBytes.byteLength) {
+      return { bytes: compressedBytes, compressed: true };
+    }
+  } catch {
+    /* fallback uncompressed */
+  }
+  return { bytes: rawBytes, compressed: false };
+}
+
+async function decompressBytes(bytes: Uint8Array, compressed: boolean): Promise<Uint8Array> {
+  if (!compressed || typeof DecompressionStream === "undefined") {
+    return bytes;
+  }
+  const ds = new DecompressionStream("gzip");
+  const writer = ds.writable.getWriter();
+  await writer.write(new Uint8Array(bytes));
+  await writer.close();
+  const outBuf = await new Response(ds.readable).arrayBuffer();
+  return new Uint8Array(outBuf);
+}
+
+function isNetworkOrOfflineError(err: unknown): boolean {
+  const code = String((err as { code?: string })?.code ?? "").toLowerCase();
+  const msg = String((err as { message?: string })?.message ?? "").toLowerCase();
+  if (typeof navigator !== "undefined" && !navigator.onLine) return true;
+  return (
+    code.includes("unavailable") ||
+    code.includes("network") ||
+    msg.includes("offline") ||
+    msg.includes("network") ||
+    msg.includes("failed to get document because the client is offline")
+  );
+}
+
+async function ensureUserProfile(user: User): Promise<void> {
+  const db = getFirebaseDb();
+  const userDocRef = doc(db, "users", user.uid);
+  const snap = await getDoc(userDocRef);
+  const now = Date.now();
+  if (!snap.exists()) {
+    await setDoc(
+      userDocRef,
+      stripUndefined({
+        uid: user.uid,
+        email: user.email ?? null,
+        displayName: user.displayName ?? null,
+        photoURL: user.photoURL ?? null,
+        providerId: user.providerData?.[0]?.providerId ?? "google.com",
+        createdAt: now,
+        updatedAt: now,
+        lastLoginAt: now,
+      }),
+    );
+  } else {
+    const existing = snap.data() ?? {};
+    await setDoc(
+      userDocRef,
+      stripUndefined({
+        uid: user.uid,
+        email: user.email ?? null,
+        displayName: user.displayName ?? null,
+        photoURL: user.photoURL ?? null,
+        providerId: user.providerData?.[0]?.providerId ?? "google.com",
+        createdAt: existing.createdAt ?? now,
+        updatedAt: now,
+        lastLoginAt: now,
+        lastSyncAt: existing.lastSyncAt,
+      }),
+    );
+  }
+}
+
+async function uploadBlobToCloud(uid: string, file: Stored): Promise<void> {
+  const db = getFirebaseDb();
+  const metaRef = doc(db, "users", uid, "blobs", file.id);
+  const existingMetaSnap = await getDoc(metaRef).catch(() => null);
+  const now = Date.now();
+  const rawSize = file.blob.size;
+  if (existingMetaSnap?.exists()) {
+    const prev = existingMetaSnap.data() as Partial<BlobMetaCloudDoc>;
+    if (prev.name === file.name && prev.byteLength === rawSize) {
+      return; // Content-identical file already persisted
+    }
+  }
+
+  const createdAt =
+    existingMetaSnap?.exists() && typeof existingMetaSnap.data()?.createdAt === "number"
+      ? (existingMetaSnap.data()?.createdAt as number)
+      : now;
+
+  // 1. Prefer Firebase Storage if configured and permitted
+  const storage = getFirebaseStorage();
+  if (storage) {
+    const storagePath = `users/${uid}/files/${encodeURIComponent(file.id)}`;
+    try {
+      await uploadBytes(storageRef(storage, storagePath), file.blob, {
+        contentType: file.blob.type || "application/octet-stream",
+      });
+      const meta: BlobMetaCloudDoc = {
+        id: file.id,
+        name: file.name.slice(0, 255) || "asset",
+        type: (file.blob.type || "application/octet-stream").slice(0, 128),
+        slot: file.slot ? file.slot.slice(0, 64) : null,
+        size: rawSize,
+        byteLength: rawSize,
+        chunkCount: 0,
+        storagePath,
+        compressed: false,
+        encoding: "storage",
+        createdAt,
+        updatedAt: now,
+      };
+      await setDoc(metaRef, stripUndefined(meta));
+      return;
+    } catch {
+      /* Fall back seamlessly to compressed Firestore chunks (works even on free Spark plan!) */
+    }
+  }
+
+  // 2. Fallback: gzip + base64 chunks in Firestore subcollection
+  const { bytes, compressed } = await compressBlob(file.blob);
+  const b64 = encodeBytesToBase64(bytes);
+  const chunks: string[] = [];
+  for (let i = 0; i < b64.length; i += CHUNK_CHAR_LIMIT) {
+    chunks.push(b64.slice(i, i + CHUNK_CHAR_LIMIT));
+  }
+  if (chunks.length > MAX_CHUNK_COUNT) {
+    throw new Error(`File "${file.name}" exceeds maximum cloud sync size.`);
+  }
+
+  for (let index = 0; index < chunks.length; index++) {
+    const chunkData = chunks[index];
+    await setDoc(
+      doc(db, "users", uid, "blobs", file.id, "chunks", `c-${index}`),
+      stripUndefined({
+        index,
+        data: chunkData,
+        fileId: file.id,
+        size: chunkData.length,
+        updatedAt: now,
+      }),
+    );
+  }
+
+  const meta: BlobMetaCloudDoc = {
+    id: file.id,
+    name: file.name.slice(0, 255) || "asset",
+    type: (file.blob.type || "application/octet-stream").slice(0, 128),
+    slot: file.slot ? file.slot.slice(0, 64) : null,
+    size: bytes.byteLength,
+    byteLength: rawSize,
+    chunkCount: chunks.length,
+    storagePath: null,
+    compressed,
+    encoding: "base64",
+    createdAt,
+    updatedAt: now,
+  };
+  await setDoc(metaRef, stripUndefined(meta));
+}
+
+export async function fetchCloudFileForUser(uid: string, fileId: string): Promise<Stored | null> {
+  if (!isFirebaseConfigured()) return null;
+  const db = getFirebaseDb();
+  const metaSnap = await getDoc(doc(db, "users", uid, "blobs", fileId));
+  if (!metaSnap.exists()) return null;
+  const meta = metaSnap.data() as BlobMetaCloudDoc;
+  const mime = meta.type || "application/octet-stream";
+
+  if (meta.storagePath) {
+    const storage = getFirebaseStorage();
+    if (storage) {
+      try {
+        const buf = await getBytes(storageRef(storage, meta.storagePath));
+        return {
+          id: meta.id,
+          name: meta.name,
+          slot: meta.slot ?? undefined,
+          blob: new Blob([buf], { type: mime }),
+        };
+      } catch {
+        /* Try chunk fallback below if present */
+      }
+    }
+  }
+
+  if (meta.chunkCount > 0) {
+    const chunkSnap = await getDocs(collection(db, "users", uid, "blobs", fileId, "chunks"));
+    const rows: Array<{ index: number; data: string }> = [];
+    chunkSnap.forEach((d) => {
+      const val = d.data() as { index: number; data: string };
+      if (typeof val.index === "number" && typeof val.data === "string") {
+        rows.push(val);
+      }
+    });
+    rows.sort((a, b) => a.index - b.index);
+    const b64 = rows.map((r) => r.data).join("");
+    const compressedBytes = decodeBase64ToBytes(b64);
+    const rawBytes = await decompressBytes(compressedBytes, Boolean(meta.compressed));
+    const exactBuf = new ArrayBuffer(rawBytes.byteLength);
+    new Uint8Array(exactBuf).set(rawBytes);
+    return {
+      id: meta.id,
+      name: meta.name,
+      slot: meta.slot ?? undefined,
+      blob: new Blob([exactBuf], { type: mime }),
+    };
+  }
+
+  return null;
+}
+
+function collectWorkspaceDoc(uid: string, library: MangaLibraryState | null): WorkspaceCloudDoc {
+  return stripUndefined({
+    version: 1,
+    schemaVersion: 1,
+    updatedAt: Date.now(),
+    deviceId: getOrCreateDeviceId(),
+    activeProjectId: library?.activeProjectId ?? null,
+    characters: loadCharacters().slice(0, 500),
+    baseModels: loadBaseModels().slice(0, 500),
+    facePacks: loadPacks().slice(0, 500),
+    customPoses: loadCustomPoses().slice(0, 500),
+    customProps: loadCustomPropsMeta().slice(0, 500),
+    customTemplates: loadCustomTemplates().slice(0, 500),
+    roster: loadSavedRoster().slice(0, 500),
+    faceConfigs: safeJsonMapFromPrefix("koma-face:", uid),
+    faceCalibrations: safeJsonMapFromPrefix("koma-face-calib:", uid),
+    wardrobeOutfits: safeJsonMapFromPrefix("koma-outfit:", uid),
+    preferences: {
+      panelOverlapPref: loadPanelOverlapPreference(),
+    },
+  });
+}
+
+function serializeProjectDoc(
+  proj: MangaProject,
+  existingCreatedAt?: number,
+): Record<string, unknown> {
+  return stripUndefined({
+    id: proj.id,
+    title: (proj.title || "Untitled Series").slice(0, 200),
+    activeChapterId: proj.activeChapterId,
+    chapters: proj.chapters.slice(0, 200),
+    createdAt: typeof existingCreatedAt === "number" ? existingCreatedAt : proj.createdAt || Date.now(),
+    updatedAt: typeof proj.updatedAt === "number" ? proj.updatedAt : Date.now(),
+    schemaVersion: 1,
+    version: 1,
+  });
+}
+
+async function applyRemoteStateToLocal(
+  uid: string,
+  remoteWorkspace: WorkspaceCloudDoc | null,
+  remoteProjects: MangaProject[],
+): Promise<void> {
+  setApplyingRemoteSync(true);
+  resetChapterAssetCache();
+  try {
+    if (remoteWorkspace) {
+      userLsSet("koma-characters", JSON.stringify(remoteWorkspace.characters ?? []), "workspace");
+      userLsSet("koma-base-models", JSON.stringify(remoteWorkspace.baseModels ?? []), "workspace");
+      userLsSet("koma-face-packs", JSON.stringify(remoteWorkspace.facePacks ?? []), "workspace");
+      userLsSet(
+        "inked_figure_studio_custom_poses_v1",
+        JSON.stringify(remoteWorkspace.customPoses ?? []),
+        "workspace",
+      );
+      userLsSet("koma-custom-props-v1", JSON.stringify(remoteWorkspace.customProps ?? []), "workspace");
+      userLsSet(
+        "koma-custom-templates",
+        JSON.stringify(remoteWorkspace.customTemplates ?? []),
+        "workspace",
+      );
+      userLsSet("inked_manga_roster_v1", JSON.stringify(remoteWorkspace.roster ?? []), "workspace");
+      if (remoteWorkspace.preferences?.panelOverlapPref) {
+        userLsSet(
+          "koma-panel-overlap-pref",
+          remoteWorkspace.preferences.panelOverlapPref,
+          "workspace",
+        );
+      }
+
+      for (const [k, v] of Object.entries(remoteWorkspace.faceConfigs ?? {})) {
+        userLsSet(`koma-face:${k}`, JSON.stringify(v), "workspace");
+      }
+      for (const [k, v] of Object.entries(remoteWorkspace.faceCalibrations ?? {})) {
+        userLsSet(`koma-face-calib:${k}`, JSON.stringify(v), "workspace");
+      }
+      for (const [k, v] of Object.entries(remoteWorkspace.wardrobeOutfits ?? {})) {
+        userLsSet(`koma-outfit:${k}`, JSON.stringify(v), "workspace");
+      }
+    }
+
+    if (remoteProjects.length > 0) {
+      const sorted = [...remoteProjects].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+      const activeProjectId =
+        remoteWorkspace?.activeProjectId &&
+        sorted.some((p) => p.id === remoteWorkspace.activeProjectId)
+          ? remoteWorkspace.activeProjectId
+          : sorted[0].id;
+      const lib: MangaLibraryState = {
+        version: 1,
+        activeProjectId,
+        projects: sorted,
+      };
+      const dbName = getActiveFilesDbName(uid);
+      await putKv("manga-library-v1", lib, { dbName, silent: true }).catch(() => {});
+      userLsSet("koma-library-v1", JSON.stringify(lib), "library");
+    }
+  } finally {
+    setApplyingRemoteSync(false);
+  }
+}
+
+export interface LegacyBrowserSummary {
+  characterCount: number;
+  projectCount: number;
+  fileCount: number;
+  poseCount: number;
+  totalItems: number;
+}
+
+export async function inspectLegacyBrowserData(
+  uid: string,
+): Promise<LegacyBrowserSummary | null> {
+  if (typeof window === "undefined") return null;
+  if (getLegacyPromptChoice(uid) !== null) return null;
+
+  const lsEntries = readLegacyLocalStorageEntries();
+  const legacyIdb = await readLegacyIndexedDbSnapshot();
+  const totalItems = lsEntries.length + legacyIdb.files.length + legacyIdb.kv.length;
+  if (totalItems === 0) return null;
+
+  const safeLen = (key: string): number => {
+    const raw = lsEntries.find((e) => e.key === key)?.value;
+    if (!raw) return 0;
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed.length : 0;
+    } catch {
+      return 0;
+    }
+  };
+
+  let projectCount = 0;
+  const libKv = legacyIdb.kv.find((k) => k.id === "manga-library-v1")?.value as
+    | Partial<MangaLibraryState>
+    | undefined;
+  if (libKv && Array.isArray(libKv.projects)) {
+    projectCount = libKv.projects.length;
+  } else {
+    const rawLib = lsEntries.find((e) => e.key === "koma-library-v1")?.value;
+    if (rawLib) {
+      try {
+        const parsed = JSON.parse(rawLib) as Partial<MangaLibraryState>;
+        projectCount = Array.isArray(parsed.projects) ? parsed.projects.length : 0;
+      } catch {
+        projectCount = 0;
+      }
+    }
+  }
+
+  return {
+    characterCount: safeLen("koma-characters"),
+    poseCount: safeLen("inked_figure_studio_custom_poses_v1"),
+    projectCount,
+    fileCount: legacyIdb.files.length,
+    totalItems,
+  };
+}
+
+/** Imports existing unscoped browser work into the signed-in user's scoped cache and uploads it to Cloud. */
+export async function importLegacyBrowserData(uid: string): Promise<number> {
+  const lsEntries = readLegacyLocalStorageEntries();
+  const legacyIdb = await readLegacyIndexedDbSnapshot();
+
+  let importedItems = 0;
+  setApplyingRemoteSync(true);
+  try {
+    for (const entry of lsEntries) {
+      const scoped = scopeStorageKey(entry.key, uid);
+      if (window.localStorage.getItem(scoped) === null) {
+        window.localStorage.setItem(scoped, entry.value);
+        importedItems++;
+      }
+    }
+
+    const targetDb = getActiveFilesDbName(uid);
+    for (const file of legacyIdb.files) {
+      const existing = await getLocalFile(file.id, targetDb).catch(() => null);
+      if (!existing) {
+        await putFile(file.id, file.blob, file.name, file.slot, { dbName: targetDb, silent: true });
+        importedItems++;
+      }
+    }
+    for (const row of legacyIdb.kv) {
+      await putKv(row.id, row.value, { dbName: targetDb, silent: true });
+      importedItems++;
+    }
+  } finally {
+    setApplyingRemoteSync(false);
+  }
+
+  setLegacyPromptChoice(uid, "imported");
+  const q = loadSyncQueue(uid);
+  q.dirtyWorkspace = true;
+  const files = await listAllFiles(getActiveFilesDbName(uid)).catch(() => []);
+  for (const f of files) {
+    if (!q.dirtyFileIds.includes(f.id)) q.dirtyFileIds.push(f.id);
+  }
+  const lib = await loadMangaLibrary().catch(() => null);
+  if (lib) {
+    q.dirtyProjectIds = [...new Set([...q.dirtyProjectIds, ...lib.projects.map((p) => p.id)])];
+  }
+  saveSyncQueue(uid, q);
+  notifyStatus({ legacyImportedCount: importedItems });
+  await flushCloudSync(uid);
+  cloudPullCallback?.();
+  return importedItems;
+}
+
+export function declineLegacyBrowserData(uid: string): void {
+  setLegacyPromptChoice(uid, "declined");
+}
+
+export async function flushCloudSync(uid: string = activeSyncUid ?? ""): Promise<boolean> {
+  if (!uid || !isFirebaseConfigured()) return false;
+  if (flushInFlight) return flushInFlight;
+
+  flushInFlight = (async () => {
+    const q = loadSyncQueue(uid);
+    if (countPending(q) === 0) {
+      notifyStatus({ phase: "saved", pendingCount: 0, errorMessage: null });
+      return true;
+    }
+
+    notifyStatus({ phase: "syncing", errorMessage: null });
+    try {
+      const db = getFirebaseDb();
+      const rawLib = await loadMangaLibrary().catch(() => createDefaultLibrary(null));
+      const lib = await externalizeLibraryAssets(rawLib);
+
+      // 1. Upload referenced or dirty binary files first so project/character docs never point to missing cloud assets
+      const allFiles = await listAllFiles(getActiveFilesDbName(uid)).catch(() => []);
+      const fileMap = new Map(allFiles.map((f) => [f.id, f]));
+      const neededIds = new Set<string>([
+        ...q.dirtyFileIds,
+        ...referencedFileIds(
+          loadCharacters(),
+          [],
+          loadCustomPropsMeta().map((p) => p.fileId),
+          loadBaseModels(),
+          lib,
+        ),
+      ]);
+
+      for (const fid of neededIds) {
+        if (!fid || fid.startsWith("builtin:")) continue;
+        const file = fileMap.get(fid);
+        if (file) {
+          await uploadBlobToCloud(uid, file);
+        }
+      }
+      q.dirtyFileIds = [];
+
+      // 2. Upload dirty/active MangaProjects
+      const projectIdsToPush = new Set(q.dirtyProjectIds);
+      for (const p of lib.projects) {
+        if (projectIdsToPush.has(p.id) || q.dirtyWorkspace) {
+          const projRef = doc(db, "users", uid, "projects", p.id);
+          const existingSnap = await getDoc(projRef).catch(() => null);
+          const existingCreatedAt = existingSnap?.exists()
+            ? (existingSnap.data()?.createdAt as number | undefined)
+            : undefined;
+          await setDoc(projRef, serializeProjectDoc(p, existingCreatedAt));
+        }
+      }
+      q.dirtyProjectIds = [];
+
+      // 3. Delete explicitly deleted projects
+      const activeIds = new Set(lib.projects.map((p) => p.id));
+      for (const delId of q.deletedProjectIds) {
+        if (!activeIds.has(delId)) {
+          await deleteDoc(doc(db, "users", uid, "projects", delId)).catch(() => {});
+        }
+      }
+      q.deletedProjectIds = [];
+
+      // 4. Upload workspace document
+      const workspaceDoc = collectWorkspaceDoc(uid, lib);
+      await setDoc(doc(db, "users", uid, "studio", "workspace"), workspaceDoc);
+      q.dirtyWorkspace = false;
+      q.lastSyncedCloudWorkspaceAt = workspaceDoc.updatedAt;
+
+      // 5. Update syncMeta + user lastSyncAt
+      const now = Date.now();
+      await setDoc(
+        doc(db, "users", uid, "studio", "syncMeta"),
+        stripUndefined({
+          updatedAt: now,
+          lastSyncedAt: now,
+          lastSyncAt: now,
+          deviceId: getOrCreateDeviceId(),
+          projectCount: lib.projects.length,
+          blobCount: allFiles.length,
+        }),
+      );
+
+      saveSyncQueue(uid, q);
+      notifyStatus({
+        phase: "saved",
+        pendingCount: 0,
+        lastSyncedAt: now,
+        errorMessage: null,
+        conflict: null,
+      });
+      return true;
+    } catch (err) {
+      if (isNetworkOrOfflineError(err)) {
+        notifyStatus({
+          phase: "offline",
+          errorMessage: "Offline — all changes are saved safely on this device and will sync automatically.",
+        });
+      } else {
+        notifyStatus({
+          phase: "error",
+          errorMessage: err instanceof Error ? err.message : "Could not sync to cloud yet.",
+        });
+      }
+      return false;
+    } finally {
+      flushInFlight = null;
+    }
+  })();
+
+  return flushInFlight;
+}
+
+function scheduleBackgroundSync(uid: string, delayMs = 1100): void {
+  if (syncDebounceTimer) clearTimeout(syncDebounceTimer);
+  syncDebounceTimer = setTimeout(() => {
+    syncDebounceTimer = null;
+    if (getActiveStorageUser() === uid && !currentStatus.conflict) {
+      void flushCloudSync(uid);
+    }
+  }, delayMs);
+}
+
+function handleLocalStorageMutation(event: StorageChangeEvent): void {
+  const uid = event.uid;
+  if (!uid || uid !== activeSyncUid) return;
+  const q = loadSyncQueue(uid);
+  if (event.domain === "workspace") {
+    q.dirtyWorkspace = true;
+  } else if (event.domain === "library") {
+    q.dirtyWorkspace = true;
+    const rawLibTxt = userLsGet("koma-library-v1");
+    if (rawLibTxt) {
+      try {
+        const lib = JSON.parse(rawLibTxt) as MangaLibraryState;
+        const nextIds = new Set(lib.projects.map((p) => p.id));
+        q.dirtyProjectIds = [...new Set([...q.dirtyProjectIds, ...nextIds])];
+      } catch {
+        /* ignore */
+      }
+    }
+    void loadMangaLibrary()
+      .then((lib) => {
+        const cur = loadSyncQueue(uid);
+        const ids = new Set(cur.dirtyProjectIds);
+        for (const p of lib.projects) ids.add(p.id);
+        cur.dirtyProjectIds = [...ids];
+        saveSyncQueue(uid, cur);
+      })
+      .catch(() => {});
+  } else if (event.domain === "file" && event.fileId) {
+    if (!q.dirtyFileIds.includes(event.fileId)) {
+      q.dirtyFileIds.push(event.fileId);
+    }
+  }
+  saveSyncQueue(uid, q);
+  if (!currentStatus.conflict) {
+    scheduleBackgroundSync(uid);
+  }
+}
+
+export function markProjectDeletedForCloudSync(projectId: string): void {
+  const uid = activeSyncUid ?? getActiveStorageUser();
+  if (!uid || !projectId) return;
+  const q = loadSyncQueue(uid);
+  if (!q.deletedProjectIds.includes(projectId)) {
+    q.deletedProjectIds.push(projectId);
+  }
+  q.dirtyProjectIds = q.dirtyProjectIds.filter((id) => id !== projectId);
+  saveSyncQueue(uid, q);
+  scheduleBackgroundSync(uid, 500);
+}
+
+function bindGlobalLifecycleListeners(): void {
+  if (listenersBound || typeof window === "undefined") return;
+  listenersBound = true;
+  window.addEventListener("online", () => {
+    if (activeSyncUid && !currentStatus.conflict) {
+      void flushCloudSync(activeSyncUid);
+    }
+  });
+  window.addEventListener("offline", () => {
+    notifyStatus({
+      phase: "offline",
+      errorMessage: "Offline — changes saved locally and queued.",
+    });
+  });
+  window.addEventListener("pagehide", () => {
+    if (activeSyncUid && !currentStatus.conflict) {
+      void flushCloudSync(activeSyncUid);
+    }
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden" && activeSyncUid && !currentStatus.conflict) {
+      void flushCloudSync(activeSyncUid);
+    }
+  });
+}
+
+export async function resolveCloudConflict(choice: "cloud" | "local"): Promise<void> {
+  const uid = activeSyncUid;
+  if (!uid) return;
+  const snapshot = pendingRemoteSnapshot;
+  pendingRemoteSnapshot = null;
+
+  if (choice === "cloud" && snapshot) {
+    await applyRemoteStateToLocal(uid, snapshot.workspace, snapshot.projects);
+    const q = emptyQueue();
+    q.lastSyncedCloudWorkspaceAt = snapshot.workspace?.updatedAt ?? Date.now();
+    saveSyncQueue(uid, q);
+    notifyStatus({ phase: "saved", conflict: null, lastSyncedAt: Date.now(), errorMessage: null });
+    cloudPullCallback?.();
+  } else {
+    const q = loadSyncQueue(uid);
+    const lib = await loadMangaLibrary().catch(() => createDefaultLibrary(null));
+    q.dirtyWorkspace = true;
+    q.dirtyProjectIds = lib.projects.map((p) => p.id);
+    saveSyncQueue(uid, q);
+    notifyStatus({ conflict: null });
+    await flushCloudSync(uid);
+  }
+}
+
+export async function initializeUserCloudSession(user: User): Promise<{
+  legacyPrompt: LegacyBrowserSummary | null;
+}> {
+  activeSyncUid = user.uid;
+  pendingRemoteSnapshot = null;
+  resetChapterAssetCache();
+  bindGlobalLifecycleListeners();
+
+  registerCloudFileFetcher((fileId) => fetchCloudFileForUser(user.uid, fileId));
+
+  if (unsubscribeStorageListener) {
+    unsubscribeStorageListener();
+  }
+  unsubscribeStorageListener = subscribeUserStorageChanges(handleLocalStorageMutation);
+
+  notifyStatus({ phase: "syncing", errorMessage: null, conflict: null });
+
+  const q = loadSyncQueue(user.uid);
+  const legacyPrompt = await inspectLegacyBrowserData(user.uid);
+
+  if (!isFirebaseConfigured()) {
+    notifyStatus({
+      phase: "error",
+      errorMessage: "Firebase project is not connected yet.",
+    });
+    return { legacyPrompt };
+  }
+
+  try {
+    await ensureUserProfile(user);
+    const db = getFirebaseDb();
+    const [wsSnap, projSnap] = await Promise.all([
+      getDoc(doc(db, "users", user.uid, "studio", "workspace")),
+      getDocs(collection(db, "users", user.uid, "projects")),
+    ]);
+
+    const remoteWorkspace = wsSnap.exists() ? (wsSnap.data() as WorkspaceCloudDoc) : null;
+    const remoteProjects: MangaProject[] = [];
+    projSnap.forEach((d: DocumentData) => {
+      const data = d.data() as MangaProject;
+      if (data && typeof data.id === "string" && Array.isArray(data.chapters)) {
+        remoteProjects.push(data);
+      }
+    });
+
+    const pendingTotal = countPending(q);
+    const localHasProjects = await listAllKv(getActiveFilesDbName(user.uid))
+      .then((rows) => rows.some((r) => r.id === "manga-library-v1"))
+      .catch(() => false);
+    const localHasData = loadCharacters().length > 0 || localHasProjects;
+    const remoteHasData = Boolean(remoteWorkspace || remoteProjects.length > 0);
+    const localDeviceId = getOrCreateDeviceId();
+
+    if (!remoteHasData) {
+      if (localHasData) {
+        q.dirtyWorkspace = true;
+        const lib = await loadMangaLibrary().catch(() => createDefaultLibrary(null));
+        q.dirtyProjectIds = lib.projects.map((p) => p.id);
+        saveSyncQueue(user.uid, q);
+        await flushCloudSync(user.uid);
+      } else {
+        notifyStatus({
+          phase: "saved",
+          pendingCount: 0,
+          lastSyncedAt: Date.now(),
+        });
+      }
+    } else if (pendingTotal === 0) {
+      await applyRemoteStateToLocal(user.uid, remoteWorkspace, remoteProjects);
+      q.lastSyncedCloudWorkspaceAt = remoteWorkspace?.updatedAt ?? Date.now();
+      saveSyncQueue(user.uid, q);
+      notifyStatus({
+        phase: "saved",
+        pendingCount: 0,
+        lastSyncedAt: Date.now(),
+      });
+    } else if (
+      remoteWorkspace &&
+      remoteWorkspace.deviceId &&
+      remoteWorkspace.deviceId !== localDeviceId &&
+      remoteWorkspace.updatedAt > q.lastSyncedCloudWorkspaceAt
+    ) {
+      pendingRemoteSnapshot = { workspace: remoteWorkspace, projects: remoteProjects };
+      notifyStatus({
+        phase: "conflict",
+        conflict: {
+          remoteUpdatedAt: remoteWorkspace.updatedAt,
+          remoteDeviceId: remoteWorkspace.deviceId,
+          remoteProjectCount: remoteProjects.length,
+          localPendingCount: pendingTotal,
+        },
+      });
+    } else {
+      await flushCloudSync(user.uid);
+    }
+  } catch (err) {
+    if (isNetworkOrOfflineError(err)) {
+      notifyStatus({
+        phase: "offline",
+        errorMessage: "Offline — loaded your local account backup and queued changes.",
+      });
+    } else {
+      notifyStatus({
+        phase: "error",
+        errorMessage: err instanceof Error ? err.message : "Cloud sync failed.",
+      });
+    }
+  }
+
+  return { legacyPrompt };
+}
+
+export function teardownUserCloudSession(): void {
+  if (syncDebounceTimer) {
+    clearTimeout(syncDebounceTimer);
+    syncDebounceTimer = null;
+  }
+  if (unsubscribeStorageListener) {
+    unsubscribeStorageListener();
+    unsubscribeStorageListener = null;
+  }
+  registerCloudFileFetcher(null);
+  activeSyncUid = null;
+  pendingRemoteSnapshot = null;
+  resetChapterAssetCache();
+  notifyStatus({
+    phase: "idle",
+    pendingCount: 0,
+    errorMessage: null,
+    conflict: null,
+    legacyImportedCount: 0,
+  });
+}

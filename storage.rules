@@ -1,0 +1,33 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isAllowedUser(userId) {
+      return request.auth != null
+        && request.auth.uid == userId
+        && request.auth.token.email is string
+        && request.auth.token.email_verified == true
+        && (
+          request.auth.token.email.lower() in [
+            'officialkevinandrews@gmail.com',
+            'careerdrivenkevin@gmail.com',
+            'craigrees@hotmail.com'
+          ]
+          || (
+            firestore.exists(/databases/(default)/documents/config/allowlist)
+            && request.auth.token.email.lower() in firestore.get(/databases/(default)/documents/config/allowlist).data.emails
+          )
+        );
+    }
+
+    match /users/{userId}/files/{allPaths=**} {
+      allow read: if isAllowedUser(userId);
+      allow write: if isAllowedUser(userId)
+                   && (request.resource == null || request.resource.size <= 150 * 1024 * 1024);
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

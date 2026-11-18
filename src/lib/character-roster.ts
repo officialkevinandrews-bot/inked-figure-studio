@@ -1,3 +1,5 @@
+import { userLsGet, userLsSet } from "./user-storage";
+
 export interface RosterCharacter {
   id: string;
   name: string;
@@ -93,7 +95,7 @@ const ROSTER_STORAGE_KEY = "inked_manga_roster_v1";
 
 export function loadSavedRoster(): RosterCharacter[] {
   try {
-    const raw = localStorage.getItem(ROSTER_STORAGE_KEY);
+    const raw = userLsGet(ROSTER_STORAGE_KEY);
     if (!raw) return [];
     return JSON.parse(raw);
   } catch {
@@ -104,11 +106,11 @@ export function loadSavedRoster(): RosterCharacter[] {
 export function saveRosterItem(char: RosterCharacter): void {
   const current = loadSavedRoster().filter((c) => c.id !== char.id);
   const updated = [char, ...current].slice(0, 30); // keep recent 30
-  localStorage.setItem(ROSTER_STORAGE_KEY, JSON.stringify(updated));
+  userLsSet(ROSTER_STORAGE_KEY, JSON.stringify(updated), "workspace");
 }
 
 export function deleteRosterItem(id: string): void {
   const updated = loadSavedRoster().filter((c) => c.id !== id);
-  localStorage.setItem(ROSTER_STORAGE_KEY, JSON.stringify(updated));
+  userLsSet(ROSTER_STORAGE_KEY, JSON.stringify(updated), "workspace");
 }
 

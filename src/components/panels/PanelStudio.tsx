@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { AccountMenu } from "@/components/auth/AccountMenu";
 import {
   PAGE_LAYER_ID,
   applyManualElementPatch,
@@ -1673,6 +1674,7 @@ export function PanelStudio({
             <span className="hidden sm:inline">Export Chapter</span>
             <span className="sm:hidden">Export</span>
           </button>
+          <AccountMenu compact />
         </div>
       </header>
 

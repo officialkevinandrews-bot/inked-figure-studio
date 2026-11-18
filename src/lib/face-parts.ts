@@ -4,6 +4,7 @@
  * Pure data + canvas helpers; no React / three.js.
  */
 import type { BrowState, EyeState, MouthState } from "./face-library";
+import { userLsGet, userLsSet } from "./user-storage";
 
 export type PartId = "eyeR" | "eyeL" | "browR" | "browL" | "nose" | "mouth";
 export interface Box { x: number; y: number; w: number; h: number }
@@ -100,10 +101,10 @@ export function mouthWarpOffset(m: MouthMorph, x: number) {
 
 const LIB_KEY = "koma-face-packs";
 export function loadPacks(): FacePack[] {
-  try { const raw = localStorage.getItem(LIB_KEY); return raw ? (JSON.parse(raw) as FacePack[]) : []; } catch { return []; }
+  try { const raw = userLsGet(LIB_KEY); return raw ? (JSON.parse(raw) as FacePack[]) : []; } catch { return []; }
 }
 export function savePacks(packs: FacePack[]): boolean {
-  try { localStorage.setItem(LIB_KEY, JSON.stringify(packs)); return true; } catch { return false; }
+  return userLsSet(LIB_KEY, JSON.stringify(packs), "workspace");
 }
 export function upsertPack(packs: FacePack[], p: FacePack) { return [...packs.filter((x) => x.id !== p.id), p]; }
 export function removePack(packs: FacePack[], id: string) { return packs.filter((x) => x.id !== id); }

@@ -1,0 +1,23 @@
+{
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
+  "storage": {
+    "rules": "storage.rules"
+  },
+  "auth": {
+    "providers": {
+      "emailPassword": true,
+      "googleSignIn": {
+        "oAuthBrandDisplayName": "Inked Figure Studio",
+        "supportEmail": "officialkevinandrews@gmail.com",
+        "authorizedRedirectUris": [
+          "https://inked-figure-studio-app.firebaseapp.com/__/auth/handler",
+          "https://inked-figure-studio.lovable.app/__/auth/handler",
+          "http://localhost:3000"
+        ]
+      }
+    }
+  }
+}

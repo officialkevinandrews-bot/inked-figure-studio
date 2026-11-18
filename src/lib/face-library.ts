@@ -1,4 +1,5 @@
 /** Manga face decal system: part styles × expression states. Pure data, no three.js / React. */
+import { userLsGet, userLsRemove, userLsSet } from "./user-storage";
 
 export const EYE_STYLES = { sharp: "Sharp Anime", round: "Round / Moe", almond: "Almond / Cool", shonen: "Shonen Intense" } as const;
 export const BROW_STYLES = { thin: "Thin", soft: "Soft / Gentle", bold: "Bold / Fierce", arched: "Arched" } as const;
@@ -121,7 +122,7 @@ export function variantCount() {
 const KEY = "koma-face:";
 export function loadFace(model: string): FaceConfig {
   try {
-    const raw = localStorage.getItem(KEY + model);
+    const raw = userLsGet(KEY + model);
     if (raw) {
       const p = JSON.parse(raw) as Partial<FaceConfig>;
       return { ...DEFAULT_FACE, ...p, calib: { ...DEFAULT_CALIBRATION, ...(p.calib ?? {}) }, overrides: p.overrides ?? {}, fx: p.fx ?? [], colors: { ...DEFAULT_FACE_COLORS, ...(p.colors ?? {}) } };
@@ -130,13 +131,13 @@ export function loadFace(model: string): FaceConfig {
   return { ...DEFAULT_FACE, calib: { ...DEFAULT_CALIBRATION }, colors: { ...DEFAULT_FACE_COLORS } };
 }
 export function saveFace(model: string, c: FaceConfig) {
-  try { localStorage.setItem(KEY + model, JSON.stringify(c)); } catch { /* ignore */ }
+  userLsSet(KEY + model, JSON.stringify(c), "workspace");
 }
 
 const CALIB_KEY = "koma-face-calib:";
 export function loadModelCalibration(modelKey: string): FaceCalibration | null {
   try {
-    const raw = localStorage.getItem(CALIB_KEY + modelKey);
+    const raw = userLsGet(CALIB_KEY + modelKey);
     if (!raw) return null;
     const p = JSON.parse(raw) as Partial<FaceCalibration>;
     return { ...DEFAULT_CALIBRATION, ...p };
@@ -146,13 +147,9 @@ export function loadModelCalibration(modelKey: string): FaceCalibration | null {
 }
 
 export function saveModelCalibration(modelKey: string, calib: FaceCalibration) {
-  try {
-    localStorage.setItem(CALIB_KEY + modelKey, JSON.stringify(calib));
-  } catch { /* ignore */ }
+  userLsSet(CALIB_KEY + modelKey, JSON.stringify(calib), "workspace");
 }
 
 export function clearModelCalibration(modelKey: string) {
-  try {
-    localStorage.removeItem(CALIB_KEY + modelKey);
-  } catch { /* ignore */ }
+  userLsRemove(CALIB_KEY + modelKey, "workspace");
 }

@@ -9,6 +9,7 @@ import {
 } from "./chapter-storage";
 import { deleteFile, getFile, getKv, putFile, putKv } from "./file-store";
 import type { PageLayout } from "./manga-layout";
+import { userLsGet, userLsSet } from "./user-storage";
 
 const LIBRARY_KV_KEY = "manga-library-v1";
 const LIBRARY_LS_KEY = "koma-library-v1";
@@ -411,11 +412,7 @@ export async function saveMangaLibrary(lib: MangaLibraryState): Promise<MangaLib
       /* fall through to localStorage */
     }
   }
-  try {
-    localStorage.setItem(LIBRARY_LS_KEY, JSON.stringify(stripped));
-  } catch {
-    /* storage full */
-  }
+  userLsSet(LIBRARY_LS_KEY, JSON.stringify(stripped), "library");
   return stripped;
 }
 
@@ -442,7 +439,7 @@ export async function loadMangaLibrary(): Promise<MangaLibraryState> {
   }
   if (!raw) {
     try {
-      const txt = localStorage.getItem(LIBRARY_LS_KEY);
+      const txt = userLsGet(LIBRARY_LS_KEY);
       if (txt) raw = JSON.parse(txt);
     } catch {
       raw = null;

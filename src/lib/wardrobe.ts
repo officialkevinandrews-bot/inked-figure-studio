@@ -5,6 +5,7 @@
  * sleeves and trouser legs follow every pose; `shape` pieces ride rigidly on one bone.
  * The 3D builder lives in src/components/studio/WardrobeRig.tsx.
  */
+import { userLsGet, userLsSet } from "./user-storage";
 
 export type SlotId = "hair" | "headwear" | "eyewear" | "top" | "bottom" | "shoes" | "neck" | "back" | "waist" | "hands";
 export type Channel = "p" | "s";
@@ -369,7 +370,7 @@ export function serializeOutfit(o: Outfit): Outfit {
 }
 export function loadOutfit(model: string): Outfit {
   try {
-    const raw = localStorage.getItem(KEY + model);
+    const raw = userLsGet(KEY + model);
     if (raw) {
       const p = JSON.parse(raw) as Outfit;
       const out: Outfit = {};
@@ -380,7 +381,7 @@ export function loadOutfit(model: string): Outfit {
   return {};
 }
 export function saveOutfit(model: string, o: Outfit) {
-  try { localStorage.setItem(KEY + model, JSON.stringify(serializeOutfit(o))); } catch { /* ignore */ }
+  userLsSet(KEY + model, JSON.stringify(serializeOutfit(o)), "workspace");
 }
 
 export const HEX_RE = /^#[0-9a-f]{6}$/i;

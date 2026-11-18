@@ -2,6 +2,7 @@ import { insetPanelPoints } from "./manga-grid";
 import type { SpeechBalloon, ComicMark, SpeedLinesEffect, SFXStamp } from "./manga-effects";
 import type { SerializedActorPose } from "./scene-cast";
 import type { DrawnLine, LineCapStyle, LineStyleVariant } from "./drawn-lines";
+import { userLsGet, userLsSet } from "./user-storage";
 
 export type { DrawnLine, LineCapStyle, LineStyleVariant };
 
@@ -106,7 +107,7 @@ const PANEL_OVERLAP_PREF_KEY = "koma-panel-overlap-pref";
 
 export function loadPanelOverlapPreference(): PanelOverlapPreference {
   try {
-    const raw = localStorage.getItem(PANEL_OVERLAP_PREF_KEY);
+    const raw = userLsGet(PANEL_OVERLAP_PREF_KEY);
     return raw === "keep" ? "keep" : "float";
   } catch {
     return "float";
@@ -114,11 +115,7 @@ export function loadPanelOverlapPreference(): PanelOverlapPreference {
 }
 
 export function savePanelOverlapPreference(pref: PanelOverlapPreference): void {
-  try {
-    localStorage.setItem(PANEL_OVERLAP_PREF_KEY, pref);
-  } catch {
-    /* ignore quota errors */
-  }
+  userLsSet(PANEL_OVERLAP_PREF_KEY, pref, "workspace");
 }
 
 export interface PresetLayoutOption {

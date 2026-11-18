@@ -1,6 +1,7 @@
 import { DEFAULT_FACE, DEFAULT_CALIBRATION, DEFAULT_FACE_COLORS, type FaceConfig } from "./face-library";
 import type { Outfit } from "./wardrobe";
 import type { ActiveProp } from "./props";
+import { userLsGet, userLsSet } from "./user-storage";
 
 /** Built-in demo body; anything else is an uploaded model file kept in the browser's file store. */
 export const DUMMY_MODEL = "builtin:xbot";
@@ -78,7 +79,7 @@ export function customItemIds(c: Character): string[] {
 const KEY = "koma-characters";
 export function loadCharacters(): Character[] {
   try {
-    const raw = localStorage.getItem(KEY);
+    const raw = userLsGet(KEY);
     if (!raw) return [];
     const list = JSON.parse(raw) as Character[];
     return list.filter((c) => c && c.id && Array.isArray(c.outfits) && c.outfits.length).map((c) => ({
@@ -88,7 +89,7 @@ export function loadCharacters(): Character[] {
   } catch { return []; }
 }
 export function saveCharacters(list: Character[]): boolean {
-  try { localStorage.setItem(KEY, JSON.stringify(list)); return true; } catch { return false; }
+  return userLsSet(KEY, JSON.stringify(list), "workspace");
 }
 export function upsertCharacter(list: Character[], c: Character): Character[] {
   const n = { ...c, updatedAt: Date.now() };

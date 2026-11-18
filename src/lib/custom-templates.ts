@@ -1,5 +1,6 @@
 import type { PanelPolygon } from "./manga-layout";
 import type { GridTemplate } from "./manga-grid";
+import { userLsGet, userLsSet } from "./user-storage";
 
 export interface SavedCustomTemplate {
   id: string;
@@ -13,7 +14,7 @@ const KEY = "koma-custom-templates";
 
 export function loadCustomTemplates(): SavedCustomTemplate[] {
   try {
-    const raw = localStorage.getItem(KEY);
+    const raw = userLsGet(KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw) as SavedCustomTemplate[];
     return Array.isArray(parsed) ? parsed.filter((t) => t && t.id && Array.isArray(t.panels) && t.panels.length > 0) : [];
@@ -23,12 +24,7 @@ export function loadCustomTemplates(): SavedCustomTemplate[] {
 }
 
 export function saveCustomTemplates(list: SavedCustomTemplate[]): boolean {
-  try {
-    localStorage.setItem(KEY, JSON.stringify(list));
-    return true;
-  } catch {
-    return false;
-  }
+  return userLsSet(KEY, JSON.stringify(list), "workspace");
 }
 
 export function addCustomTemplate(

@@ -1,5 +1,22 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { AuthGate } from "@/components/auth/AuthGate";
+import { AuthProvider, useAuth } from "@/components/auth/AuthProvider";
 import { Studio } from "@/components/studio/Studio";
+
+function AuthenticatedStudio() {
+  const { user, hydrationVersion } = useAuth();
+  return <Studio key={`${user?.uid ?? "signed-out"}:${hydrationVersion}`} />;
+}
+
+function StudioEntry() {
+  return (
+    <AuthProvider>
+      <AuthGate>
+        <AuthenticatedStudio />
+      </AuthGate>
+    </AuthProvider>
+  );
+}
 
 export const Route = createFileRoute("/")({
   ssr: false,
@@ -13,5 +30,5 @@ export const Route = createFileRoute("/")({
       { name: "twitter:card", content: "summary_large_image" },
     ],
   }),
-  component: Studio,
+  component: StudioEntry,
 });

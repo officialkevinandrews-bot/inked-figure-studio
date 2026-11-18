@@ -1,0 +1,542 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // This security rules file assumes the following data structures
+    // under verified-email allowlisting (`/config/allowlist` + seed owners)
+    // and strict per-user ownership (`/users/{userId}`):
+    //
+    // 0. Document: /config/allowlist
+    //    Document ID: 'allowlist'
+    //    Fields:
+    //      - emails: list (required, 3..50 items, must contain all seedEmails)
+    //      - updatedAt: number (required, >= 0)
+    //      - updatedBy: string | null (optional, <= 320 chars)
+    //
+    // 1. Collection: /users/{userId}
+    //    Document ID: {userId} (Firebase Auth UID)
+    //    Fields:
+    //      - uid: string (required, must equal userId, immutable)
+    //      - email: string | null (optional, valid email <= 320 chars)
+    //      - displayName: string | null (optional, <= 120 chars)
+    //      - photoURL: string | null (optional, valid http/https URL <= 2048 chars)
+    //      - providerId: string | null (optional, <= 64 chars)
+    //      - createdAt: number | timestamp (optional, >= 0 if number, immutable once set)
+    //      - updatedAt: number | timestamp (optional, >= 0 if number)
+    //      - lastSyncAt: number | timestamp (optional, >= 0 if number)
+    //      - lastLoginAt: number | timestamp (optional, >= 0 if number)
+    //
+    // 2. Collection: /users/{userId}/studio/{docId}
+    //    Document ID: 'workspace' | 'syncMeta'
+    //    Fields ('workspace'):
+    //      - updatedAt: number (required, >= 0)
+    //      - version: int (optional, 1..1000)
+    //      - schemaVersion: int (optional, 1..1000)
+    //      - deviceId: string | null (optional, <= 128 chars)
+    //      - activeProjectId: string | null (optional, <= 128 chars)
+    //      - activeCharacterId: string | null (optional, <= 128 chars)
+    //      - activePageIndex: int | null (optional, 0..1000)
+    //      - characters: list (optional, <= 500 items)
+    //      - baseModels: list (optional, <= 500 items)
+    //      - facePacks: list (optional, <= 500 items)
+    //      - customPoses: list (optional, <= 500 items)
+    //      - customProps: list (optional, <= 500 items)
+    //      - customTemplates: list (optional, <= 500 items)
+    //      - roster: list (optional, <= 500 items)
+    //      - sceneCast: list (optional, <= 500 items)
+    //      - handPoses: list (optional, <= 500 items)
+    //      - pages: list (optional, <= 500 items)
+    //      - faceConfigs: map (optional, <= 200 keys)
+    //      - faceCalibrations: map (optional, <= 200 keys)
+    //      - wardrobeOutfits: map (optional, <= 200 keys)
+    //      - preferences: map (optional, <= 200 keys)
+    //      - lighting: map (optional, <= 200 keys)
+    //      - camera: map (optional, <= 200 keys)
+    //    Fields ('syncMeta'):
+    //      - updatedAt: number (required, >= 0)
+    //      - lastSyncedAt: number (optional, >= 0)
+    //      - lastSyncAt: number (optional, >= 0)
+    //      - deviceId: string | null (optional, <= 128 chars)
+    //      - clientVersion: string | null (optional, <= 64 chars)
+    //      - schemaVersion: int (optional, 1..1000)
+    //      - projectCount: int (optional, 0..100000)
+    //      - blobCount: int (optional, 0..100000)
+    //      - workspaceHash: string | null (optional, <= 128 chars)
+    //      - checksum: string | null (optional, <= 128 chars)
+    //
+    // 3. Collection: /users/{userId}/projects/{projectId}
+    //    Document ID: {projectId} (<= 128 chars)
+    //    Fields (MangaProject):
+    //      - id: string (required, must equal projectId, immutable)
+    //      - title: string (required, <= 200 chars)
+    //      - chapters: list (required, <= 200 items)
+    //      - updatedAt: number (required, >= 0)
+    //      - activeChapterId: string (optional, <= 128 chars)
+    //      - createdAt: number (optional, >= 0, immutable once set)
+    //      - schemaVersion: int (optional, 1..1000)
+    //      - version: int (optional, 1..1000)
+    //
+    // 4. Collection: /users/{userId}/blobs/{fileId}
+    //    Document ID: {fileId} (<= 128 chars)
+    //    Fields:
+    //      - id: string (required, must equal fileId, immutable)
+    //      - name: string (required, <= 255 chars)
+    //      - chunkCount: int (required, 0..200)
+    //      - type: string (optional, <= 128 chars)
+    //      - mimeType: string (optional, <= 128 chars)
+    //      - slot: string | null (optional, <= 64 chars)
+    //      - size: int (optional, 0..200000000)
+    //      - byteLength: int (optional, 0..200000000)
+    //      - storagePath: string | null (optional, scoped to users/{uid}/..., <= 512 chars)
+    //      - compressed: bool (optional)
+    //      - encoding: string (optional, <= 32 chars)
+    //      - createdAt: number (optional, >= 0, immutable once set)
+    //      - updatedAt: number (optional, >= 0)
+    //
+    // 5. Collection: /users/{userId}/blobs/{fileId}/chunks/{chunkId}
+    //    Document ID: {chunkId} (<= 128 chars)
+    //    Fields:
+    //      - index: int (required, 0..200)
+    //      - data: string (required, <= 960000 chars)
+    //      - fileId: string (optional, must equal parent fileId)
+    //      - size: int (optional, 0..960000)
+    //      - updatedAt: number (optional, >= 0)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    // Check if the caller is authenticated with a valid non-empty UID.
+    function isSignedIn() {
+      return request.auth != null &&
+             request.auth.uid is string &&
+             request.auth.uid.size() > 0 &&
+             request.auth.uid.size() <= 128;
+    }
+
+    // Alias for consistency with Firebase Rules conventions.
+    function isAuthenticated() {
+      return isSignedIn();
+    }
+
+    // Check if the authenticated caller owns the target userId namespace.
+    function isOwner(userId) {
+      return isSignedIn() &&
+             userId is string &&
+             userId.size() > 0 &&
+             userId.size() <= 128 &&
+             request.auth.uid == userId;
+    }
+
+    // Core owner emails that always retain access and cannot be removed from /config/allowlist.
+    function seedEmails() {
+      return [
+        'officialkevinandrews@gmail.com',
+        'careerdrivenkevin@gmail.com',
+        'craigrees@hotmail.com'
+      ];
+    }
+
+    // Check if the caller is signed in with a verified email string in the auth token.
+    function hasVerifiedEmail() {
+      return isSignedIn() &&
+             'email' in request.auth.token &&
+             request.auth.token.email is string &&
+             'email_verified' in request.auth.token &&
+             request.auth.token.email_verified == true;
+    }
+
+    // Normalize caller email for allowlist comparisons.
+    function callerEmail() {
+      return request.auth.token.email.lower();
+    }
+
+    // Check if the caller's verified email is one of the hardcoded seed emails.
+    function isSeedAllowlisted() {
+      return hasVerifiedEmail() && callerEmail() in seedEmails();
+    }
+
+    // Check if the caller's verified email is listed in /config/allowlist.
+    function isDynamicAllowlisted() {
+      return hasVerifiedEmail() &&
+             exists(/databases/$(database)/documents/config/allowlist) &&
+             'emails' in get(/databases/$(database)/documents/config/allowlist).data &&
+             get(/databases/$(database)/documents/config/allowlist).data.emails is list &&
+             callerEmail() in get(/databases/$(database)/documents/config/allowlist).data.emails;
+    }
+
+    // Check if the caller is allowlisted via either seed emails or /config/allowlist.
+    function isAllowlisted() {
+      return isSeedAllowlisted() || isDynamicAllowlisted();
+    }
+
+    // Require both UID ownership and verified-email allowlisting for /users/{userId} access.
+    function isAllowedOwner(userId) {
+      return isOwner(userId) && isAllowlisted();
+    }
+
+    // Verify required fields exist on the incoming document.
+    function hasRequiredFields(data, fields) {
+      return data.keys().hasAll(fields);
+    }
+
+    // Verify the incoming document contains only allowlisted fields.
+    function hasOnlyAllowedFields(data, fields) {
+      return data.keys().hasOnly(fields);
+    }
+
+    // Verify immutable fields were not modified on update.
+    function areImmutableFieldsUnchanged(fields) {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(fields);
+    }
+
+    // Validate email format.
+    function isValidEmail(email) {
+      return email is string &&
+             email.size() <= 320 &&
+             email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    // Validate HTTP/HTTPS URL format.
+    function isValidUrl(url) {
+      return url is string &&
+             url.size() <= 2048 &&
+             (url.matches("^https://.*") || url.matches("^http://.*"));
+    }
+
+    // Validate that a storage path is strictly scoped to the caller's UID without traversal.
+    function isScopedPath(path) {
+      return path is string &&
+             path.size() <= 512 &&
+             path.matches("^users/" + request.auth.uid + "/.*") &&
+             !path.matches(".*\\.\\..*");
+    }
+
+    // Validate optional nullable string with length bounds.
+    function isValidOptionalNullableString(data, field, minLen, maxLen) {
+      return !(field in data) ||
+             data[field] == null ||
+             (data[field] is string &&
+              data[field].size() >= minLen &&
+              data[field].size() <= maxLen);
+    }
+
+    // Validate optional string with length bounds.
+    function isValidOptionalString(data, field, minLen, maxLen) {
+      return !(field in data) ||
+             (data[field] is string &&
+              data[field].size() >= minLen &&
+              data[field].size() <= maxLen);
+    }
+
+    // Validate optional bounded integer.
+    function isValidOptionalInt(data, field, minVal, maxVal) {
+      return !(field in data) ||
+             (data[field] is int &&
+              data[field] >= minVal &&
+              data[field] <= maxVal);
+    }
+
+    // Validate optional nullable bounded integer.
+    function isValidOptionalNullableInt(data, field, minVal, maxVal) {
+      return !(field in data) ||
+             data[field] == null ||
+             (data[field] is int &&
+              data[field] >= minVal &&
+              data[field] <= maxVal);
+    }
+
+    // Validate optional non-negative number (e.g., epoch milliseconds).
+    function isValidOptionalNonNegNumber(data, field) {
+      return !(field in data) ||
+             (data[field] is number && data[field] >= 0);
+    }
+
+    // Validate optional time field (epoch milliseconds or Firestore timestamp).
+    function isValidOptionalTimeValue(data, field) {
+      return !(field in data) ||
+             (data[field] is number && data[field] >= 0) ||
+             data[field] is timestamp;
+    }
+
+    // Validate optional list with an upper element count bound.
+    function isValidOptionalList(data, field, maxSize) {
+      return !(field in data) ||
+             (data[field] is list && data[field].size() <= maxSize);
+    }
+
+    // Validate optional map with an upper key count bound.
+    function isValidOptionalMap(data, field, maxKeys) {
+      return !(field in data) ||
+             (data[field] is map && data[field].size() <= maxKeys);
+    }
+
+    // ===============================================================
+    // Domain Validators (Used in BOTH create and update)
+    // ===============================================================
+
+    function isValidUserProfile(userId, data) {
+      let allowed = [
+        'uid', 'email', 'displayName', 'photoURL', 'providerId',
+        'createdAt', 'updatedAt', 'lastSyncAt', 'lastLoginAt'
+      ];
+      return hasOnlyAllowedFields(data, allowed) &&
+             hasRequiredFields(data, ['uid']) &&
+             data.uid is string &&
+             data.uid == userId &&
+             (!('email' in data) || data.email == null || isValidEmail(data.email)) &&
+             isValidOptionalNullableString(data, 'displayName', 0, 120) &&
+             (!('photoURL' in data) || data.photoURL == null || isValidUrl(data.photoURL)) &&
+             isValidOptionalNullableString(data, 'providerId', 0, 64) &&
+             isValidOptionalTimeValue(data, 'createdAt') &&
+             isValidOptionalTimeValue(data, 'updatedAt') &&
+             isValidOptionalTimeValue(data, 'lastSyncAt') &&
+             isValidOptionalTimeValue(data, 'lastLoginAt');
+    }
+
+    function isValidWorkspaceDoc(data) {
+      let allowed = [
+        'updatedAt', 'version', 'schemaVersion', 'deviceId',
+        'activeProjectId', 'activeCharacterId', 'activePageIndex',
+        'characters', 'baseModels', 'facePacks', 'customPoses',
+        'customProps', 'customTemplates', 'roster', 'sceneCast',
+        'handPoses', 'pages', 'faceConfigs', 'faceCalibrations',
+        'wardrobeOutfits', 'preferences', 'lighting', 'camera'
+      ];
+      return hasOnlyAllowedFields(data, allowed) &&
+             hasRequiredFields(data, ['updatedAt']) &&
+             data.updatedAt is number &&
+             data.updatedAt >= 0 &&
+             isValidOptionalInt(data, 'version', 1, 1000) &&
+             isValidOptionalInt(data, 'schemaVersion', 1, 1000) &&
+             isValidOptionalNullableString(data, 'deviceId', 0, 128) &&
+             isValidOptionalNullableString(data, 'activeProjectId', 0, 128) &&
+             isValidOptionalNullableString(data, 'activeCharacterId', 0, 128) &&
+             isValidOptionalNullableInt(data, 'activePageIndex', 0, 1000) &&
+             isValidOptionalList(data, 'characters', 500) &&
+             isValidOptionalList(data, 'baseModels', 500) &&
+             isValidOptionalList(data, 'facePacks', 500) &&
+             isValidOptionalList(data, 'customPoses', 500) &&
+             isValidOptionalList(data, 'customProps', 500) &&
+             isValidOptionalList(data, 'customTemplates', 500) &&
+             isValidOptionalList(data, 'roster', 500) &&
+             isValidOptionalList(data, 'sceneCast', 500) &&
+             isValidOptionalList(data, 'handPoses', 500) &&
+             isValidOptionalList(data, 'pages', 500) &&
+             isValidOptionalMap(data, 'faceConfigs', 200) &&
+             isValidOptionalMap(data, 'faceCalibrations', 200) &&
+             isValidOptionalMap(data, 'wardrobeOutfits', 200) &&
+             isValidOptionalMap(data, 'preferences', 200) &&
+             isValidOptionalMap(data, 'lighting', 200) &&
+             isValidOptionalMap(data, 'camera', 200);
+    }
+
+    function isValidSyncMetaDoc(data) {
+      let allowed = [
+        'updatedAt', 'lastSyncedAt', 'lastSyncAt', 'deviceId',
+        'clientVersion', 'schemaVersion', 'projectCount', 'blobCount',
+        'workspaceHash', 'checksum'
+      ];
+      return hasOnlyAllowedFields(data, allowed) &&
+             hasRequiredFields(data, ['updatedAt']) &&
+             data.updatedAt is number &&
+             data.updatedAt >= 0 &&
+             isValidOptionalNonNegNumber(data, 'lastSyncedAt') &&
+             isValidOptionalNonNegNumber(data, 'lastSyncAt') &&
+             isValidOptionalNullableString(data, 'deviceId', 0, 128) &&
+             isValidOptionalNullableString(data, 'clientVersion', 0, 64) &&
+             isValidOptionalInt(data, 'schemaVersion', 1, 1000) &&
+             isValidOptionalInt(data, 'projectCount', 0, 100000) &&
+             isValidOptionalInt(data, 'blobCount', 0, 100000) &&
+             isValidOptionalNullableString(data, 'workspaceHash', 0, 128) &&
+             isValidOptionalNullableString(data, 'checksum', 0, 128);
+    }
+
+    function isValidStudioDoc(docId, data) {
+      return (docId == 'workspace' && isValidWorkspaceDoc(data)) ||
+             (docId == 'syncMeta' && isValidSyncMetaDoc(data));
+    }
+
+    function isValidProject(projectId, data) {
+      let allowed = [
+        'id', 'title', 'activeChapterId', 'chapters',
+        'createdAt', 'updatedAt', 'schemaVersion', 'version'
+      ];
+      return projectId is string &&
+             projectId.size() > 0 &&
+             projectId.size() <= 128 &&
+             hasOnlyAllowedFields(data, allowed) &&
+             hasRequiredFields(data, ['id', 'title', 'chapters', 'updatedAt']) &&
+             data.id is string &&
+             data.id == projectId &&
+             data.title is string &&
+             data.title.size() <= 200 &&
+             data.chapters is list &&
+             data.chapters.size() <= 200 &&
+             data.updatedAt is number &&
+             data.updatedAt >= 0 &&
+             isValidOptionalString(data, 'activeChapterId', 0, 128) &&
+             isValidOptionalNonNegNumber(data, 'createdAt') &&
+             isValidOptionalInt(data, 'schemaVersion', 1, 1000) &&
+             isValidOptionalInt(data, 'version', 1, 1000);
+    }
+
+    function isValidBlobMeta(fileId, data) {
+      let allowed = [
+        'id', 'name', 'type', 'mimeType', 'slot',
+        'size', 'byteLength', 'chunkCount', 'storagePath',
+        'compressed', 'encoding', 'createdAt', 'updatedAt'
+      ];
+      return fileId is string &&
+             fileId.size() > 0 &&
+             fileId.size() <= 128 &&
+             hasOnlyAllowedFields(data, allowed) &&
+             hasRequiredFields(data, ['id', 'name', 'chunkCount']) &&
+             data.id is string &&
+             data.id == fileId &&
+             data.name is string &&
+             data.name.size() <= 255 &&
+             data.chunkCount is int &&
+             data.chunkCount >= 0 &&
+             data.chunkCount <= 200 &&
+             isValidOptionalString(data, 'type', 0, 128) &&
+             isValidOptionalString(data, 'mimeType', 0, 128) &&
+             isValidOptionalNullableString(data, 'slot', 0, 64) &&
+             isValidOptionalInt(data, 'size', 0, 200000000) &&
+             isValidOptionalInt(data, 'byteLength', 0, 200000000) &&
+             (!('storagePath' in data) || data.storagePath == null || isScopedPath(data.storagePath)) &&
+             (!('compressed' in data) || data.compressed is bool) &&
+             isValidOptionalString(data, 'encoding', 0, 32) &&
+             isValidOptionalNonNegNumber(data, 'createdAt') &&
+             isValidOptionalNonNegNumber(data, 'updatedAt');
+    }
+
+    function isValidBlobChunk(fileId, chunkId, data) {
+      let allowed = ['index', 'data', 'fileId', 'size', 'updatedAt'];
+      return fileId is string &&
+             fileId.size() > 0 &&
+             fileId.size() <= 128 &&
+             chunkId is string &&
+             chunkId.size() > 0 &&
+             chunkId.size() <= 128 &&
+             hasOnlyAllowedFields(data, allowed) &&
+             hasRequiredFields(data, ['index', 'data']) &&
+             data.index is int &&
+             data.index >= 0 &&
+             data.index <= 200 &&
+             data.data is string &&
+             data.data.size() <= 960000 &&
+             (!('fileId' in data) || (data.fileId is string && data.fileId == fileId)) &&
+             isValidOptionalInt(data, 'size', 0, 960000) &&
+             isValidOptionalNonNegNumber(data, 'updatedAt');
+    }
+
+    function isValidAllowlistDoc(data) {
+      let allowed = ['emails', 'updatedAt', 'updatedBy'];
+      return hasOnlyAllowedFields(data, allowed) &&
+             hasRequiredFields(data, ['emails', 'updatedAt']) &&
+             data.emails is list &&
+             data.emails.size() >= 3 &&
+             data.emails.size() <= 50 &&
+             data.emails.hasAll(seedEmails()) &&
+             data.updatedAt is number &&
+             data.updatedAt >= 0 &&
+             isValidOptionalNullableString(data, 'updatedBy', 0, 320);
+    }
+
+    // ===============================================================
+    // Default Deny Root Rule
+    // ===============================================================
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ===============================================================
+    // Shared Allowlist Configuration
+    // ===============================================================
+
+    match /config/allowlist {
+      // Only callers whose verified email is already allowlisted may read /config/allowlist.
+      allow get: if hasVerifiedEmail() &&
+                    (callerEmail() in seedEmails() ||
+                     (resource != null &&
+                      'emails' in resource.data &&
+                      resource.data.emails is list &&
+                      callerEmail() in resource.data.emails));
+      allow list: if false;
+      allow create, update: if isAllowlisted() &&
+                               isValidAllowlistDoc(request.resource.data);
+      allow delete: if false;
+    }
+
+    // ===============================================================
+    // User Namespace & Subcollections
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isAllowedOwner(userId);
+      allow create: if isAllowedOwner(userId) &&
+                       isValidUserProfile(userId, request.resource.data);
+      allow update: if isAllowedOwner(userId) &&
+                       isValidUserProfile(userId, request.resource.data) &&
+                       request.resource.data.uid == resource.data.uid &&
+                       (!('createdAt' in resource.data) ||
+                        request.resource.data.createdAt == resource.data.createdAt);
+      allow delete: if false;
+
+      // Studio workspace & sync metadata documents
+      match /studio/{docId} {
+        allow read: if isAllowedOwner(userId) && docId in ['workspace', 'syncMeta'];
+        allow create: if isAllowedOwner(userId) &&
+                         isValidStudioDoc(docId, request.resource.data);
+        allow update: if isAllowedOwner(userId) &&
+                         isValidStudioDoc(docId, request.resource.data);
+        allow delete: if isAllowedOwner(userId) && docId in ['workspace', 'syncMeta'];
+      }
+
+      // Per-project MangaProject documents
+      match /projects/{projectId} {
+        allow read: if isAllowedOwner(userId);
+        allow create: if isAllowedOwner(userId) &&
+                         isValidProject(projectId, request.resource.data);
+        allow update: if isAllowedOwner(userId) &&
+                         isValidProject(projectId, request.resource.data) &&
+                         areImmutableFieldsUnchanged(['id']) &&
+                         (!('createdAt' in resource.data) ||
+                          request.resource.data.createdAt == resource.data.createdAt);
+        allow delete: if isAllowedOwner(userId);
+      }
+
+      // Binary asset metadata documents
+      match /blobs/{fileId} {
+        allow read: if isAllowedOwner(userId);
+        allow create: if isAllowedOwner(userId) &&
+                         isValidBlobMeta(fileId, request.resource.data);
+        allow update: if isAllowedOwner(userId) &&
+                         isValidBlobMeta(fileId, request.resource.data) &&
+                         areImmutableFieldsUnchanged(['id']) &&
+                         (!('createdAt' in resource.data) ||
+                          request.resource.data.createdAt == resource.data.createdAt);
+        allow delete: if isAllowedOwner(userId);
+
+        // Base64-encoded binary chunks (<= 960,000 chars / ~950KB)
+        match /chunks/{chunkId} {
+          allow read: if isAllowedOwner(userId);
+          allow create: if isAllowedOwner(userId) &&
+                           isValidBlobChunk(fileId, chunkId, request.resource.data);
+          allow update: if isAllowedOwner(userId) &&
+                           isValidBlobChunk(fileId, chunkId, request.resource.data);
+          allow delete: if isAllowedOwner(userId);
+        }
+      }
+    }
+  }
+}

@@ -1,5 +1,6 @@
 import { getFile, getKv, putFile, putKv } from "./file-store";
 import { PAGE_FORMATS, getPresetPanels, type PageLayout } from "./manga-layout";
+import { getActiveStorageUser, userLsGet, userLsSet } from "./user-storage";
 
 const CHAPTER_KV_KEY = "chapter-state";
 const CHAPTER_LS_KEY = "koma-chapter-v1";
@@ -66,6 +67,14 @@ async function urlToBlob(url: string): Promise<Blob | null> {
 
 const persistedFileIds = new Set<string>();
 
+function fileCacheKey(fileId: string): string {
+  return `${getActiveStorageUser() ?? "anon"}:${fileId}`;
+}
+
+export function resetChapterAssetCache(): void {
+  persistedFileIds.clear();
+}
+
 /**
  * Extracts binary `data:` / `blob:` element images into IndexedDB and returns lightweight
  * serializable `PageLayout[]` with `imageFileId` references intact.
@@ -81,11 +90,12 @@ export async function externalizePageAssets(pages: PageLayout[]): Promise<PageLa
           if (!isEphemeral) return el;
 
           const fileId = el.imageFileId || `panelimg:${el.id}`;
-          if (!persistedFileIds.has(fileId)) {
+          const cacheKey = fileCacheKey(fileId);
+          if (!persistedFileIds.has(cacheKey)) {
             const blob = await urlToBlob(el.imageUrl);
             if (!blob) return el;
             await putFile(fileId, blob, `${el.id}.png`, "panel-image");
-            persistedFileIds.add(fileId);
+            persistedFileIds.add(cacheKey);
           }
           return { ...el, imageFileId: fileId, imageUrl: "" };
         }),
@@ -111,7 +121,7 @@ export async function hydratePageAssets(pages: PageLayout[]): Promise<PageLayout
             const rec = await getFile(el.imageFileId).catch(() => null);
             if (rec) {
               restored = await blobToDataUrl(rec.blob);
-              persistedFileIds.add(el.imageFileId);
+              persistedFileIds.add(fileCacheKey(el.imageFileId));
               cache.set(el.imageFileId, restored);
             }
           }
@@ -135,11 +145,7 @@ export async function saveChapterState(pages: PageLayout[], activePageIndex: num
       /* fall through to localStorage */
     }
   }
-  try {
-    localStorage.setItem(CHAPTER_LS_KEY, JSON.stringify(payload));
-  } catch {
-    /* storage full */
-  }
+  userLsSet(CHAPTER_LS_KEY, JSON.stringify(payload), "library");
 }
 
 export async function loadChapterState(): Promise<StoredChapterState | null> {
@@ -149,7 +155,7 @@ export async function loadChapterState(): Promise<StoredChapterState | null> {
   }
   if (!raw) {
     try {
-      const txt = localStorage.getItem(CHAPTER_LS_KEY);
+      const txt = userLsGet(CHAPTER_LS_KEY);
       if (txt) raw = JSON.parse(txt) as StoredChapterState;
     } catch {
       raw = null;

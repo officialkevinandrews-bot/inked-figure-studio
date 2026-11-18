@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
+import { userLsGet, userLsSet } from "./user-storage";
 
 const CUSTOM_PROPS_KEY = "koma-custom-props-v1";
 
@@ -15,7 +16,7 @@ export interface CustomPropMeta {
 
 export function loadCustomPropsMeta(): CustomPropMeta[] {
   try {
-    const raw = localStorage.getItem(CUSTOM_PROPS_KEY);
+    const raw = userLsGet(CUSTOM_PROPS_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed : [];
@@ -25,12 +26,7 @@ export function loadCustomPropsMeta(): CustomPropMeta[] {
 }
 
 export function saveCustomPropsMeta(list: CustomPropMeta[]): boolean {
-  try {
-    localStorage.setItem(CUSTOM_PROPS_KEY, JSON.stringify(list));
-    return true;
-  } catch {
-    return false;
-  }
+  return userLsSet(CUSTOM_PROPS_KEY, JSON.stringify(list), "workspace");
 }
 
 export function upsertCustomPropMeta(list: CustomPropMeta[], item: CustomPropMeta): CustomPropMeta[] {

@@ -1,4 +1,6 @@
 import { FacePanel } from "./FacePanel";
+import { AccountMenu } from "@/components/auth/AccountMenu";
+import { markProjectDeletedForCloudSync } from "@/lib/cloud-sync";
 import { loadPacks, savePacks, type FacePack } from "@/lib/face-parts";
 import { ExtractOutfitModal } from "./ExtractOutfitModal";
 import { WardrobePanel } from "./WardrobePanel";
@@ -523,6 +525,7 @@ export function Studio() {
       const deletingActive = flushed.activeProjectId === projectId;
       const nextLib = deleteProjectFromLibrary(flushed, projectId);
       const saved = await applyAndSaveLibrary(nextLib, deletingActive);
+      markProjectDeletedForCloudSync(projectId);
       await garbageCollectRemovedFiles(beforeIds, saved);
     },
     [flushActiveChapterToLibrary, applyAndSaveLibrary],
@@ -1752,6 +1755,7 @@ export function Studio() {
             hidden
             onChange={(e) => onFiles(e.target.files)}
           />
+          <AccountMenu />
         </div>
       </header>
 

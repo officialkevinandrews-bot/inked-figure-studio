@@ -1,4 +1,5 @@
 import type { Pose, PoseData } from "./rig";
+import { userLsGet, userLsSet } from "./user-storage";
 
 const STORAGE_KEY = "inked_figure_studio_custom_poses_v1";
 
@@ -10,7 +11,7 @@ export interface CustomPose extends Pose {
 export function loadCustomPoses(): CustomPose[] {
   if (typeof window === "undefined") return [];
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = userLsGet(STORAGE_KEY);
     if (!raw) return [];
     const list = JSON.parse(raw);
     return Array.isArray(list) ? list : [];
@@ -40,22 +41,14 @@ export function saveCustomPose(
   };
 
   const updated = [newPose, ...customPoses];
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-  } catch (err) {
-    console.error("Failed to persist custom pose to storage:", err);
-  }
+  userLsSet(STORAGE_KEY, JSON.stringify(updated), "workspace");
   return newPose;
 }
 
 export function deleteCustomPose(id: string): CustomPose[] {
   const customPoses = loadCustomPoses();
   const updated = customPoses.filter((p) => p.id !== id);
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-  } catch (err) {
-    console.error("Failed to delete custom pose from storage:", err);
-  }
+  userLsSet(STORAGE_KEY, JSON.stringify(updated), "workspace");
   return updated;
 }
 
