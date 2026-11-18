@@ -3,6 +3,7 @@ import { customItemIds } from "./characters";
 import type { CustomBaseModel } from "./base-models";
 import type { FacePack } from "./face-parts";
 import type { PageLayout } from "./manga-layout";
+import type { MangaLibraryState } from "./manga-projects";
 
 export interface BackupFile {
   id: string;
@@ -22,6 +23,7 @@ export interface StudioBackup {
   files: BackupFile[];
   pages?: PageLayout[];
   activePageIndex?: number;
+  mangaLibrary?: MangaLibraryState;
 }
 
 /** Stored-file ids a set of characters, custom base models, and chapter pages need: uploaded bodies, custom clothing, and panel assets. */
@@ -30,6 +32,7 @@ export function referencedFileIds(
   pages: PageLayout[] = [],
   extraFileIds: string[] = [],
   baseModels: CustomBaseModel[] = [],
+  mangaLibrary?: MangaLibraryState,
 ): string[] {
   const s = new Set<string>();
   for (const c of chars) {
@@ -42,6 +45,17 @@ export function referencedFileIds(
   for (const page of pages) {
     for (const el of page.elements) {
       if (el.imageFileId) s.add(el.imageFileId);
+    }
+  }
+  if (mangaLibrary) {
+    for (const proj of mangaLibrary.projects) {
+      for (const ch of proj.chapters) {
+        for (const page of ch.pages) {
+          for (const el of page.elements) {
+            if (el.imageFileId) s.add(el.imageFileId);
+          }
+        }
+      }
     }
   }
   for (const fid of extraFileIds) s.add(fid);
@@ -60,6 +74,10 @@ export function parseBackup(text: string): StudioBackup {
     files: b.files ?? [],
     pages: Array.isArray(b.pages) ? b.pages : undefined,
     activePageIndex: typeof b.activePageIndex === "number" ? b.activePageIndex : undefined,
+    mangaLibrary:
+      b.mangaLibrary && Array.isArray(b.mangaLibrary.projects) && b.mangaLibrary.projects.length > 0
+        ? b.mangaLibrary
+        : undefined,
   };
 }
 

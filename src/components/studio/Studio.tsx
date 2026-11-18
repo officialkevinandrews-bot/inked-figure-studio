@@ -25,11 +25,33 @@ import {
 import { b64ToBlob, blobToB64, mergeById, parseBackup, referencedFileIds, type StudioBackup } from "@/lib/backup";
 import {
   createDefaultPages,
-  externalizePageAssets,
   hydratePageAssets,
-  loadChapterState,
   saveChapterState,
 } from "@/lib/chapter-storage";
+import {
+  addChapterToProject,
+  collectLibraryFileIds,
+  createDefaultLibrary,
+  createProjectInLibrary,
+  deleteChapterFromProject,
+  deleteProjectFromLibrary,
+  duplicateChapterInProject,
+  duplicateProjectInLibrary,
+  exportMangaProjectPackage,
+  externalizeLibraryAssets,
+  garbageCollectRemovedFiles,
+  getActiveChapter,
+  getActiveProject,
+  hydrateChapter,
+  importMangaProjectPackage,
+  loadMangaLibrary,
+  renameChapterInProject,
+  renameProjectInLibrary,
+  saveMangaLibrary,
+  selectChapterInLibrary,
+  updateProjectChapterPages,
+  type MangaLibraryState,
+} from "@/lib/manga-projects";
 import {
   createHistory,
   pushHistory,
@@ -314,6 +336,11 @@ export function Studio() {
     createHistory({ pages: createDefaultPages(), activePageIndex: 0 }),
   );
   const [chapterHydrated, setChapterHydrated] = useState(false);
+  const [libraryState, setLibraryState] = useState<MangaLibraryState>(() => createDefaultLibrary(null));
+  const libraryRef = useRef<MangaLibraryState>(libraryState);
+  libraryRef.current = libraryState;
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [saveStatus, setSaveStatus] = useState<"saved" | "saving">("saved");
   const pages = chapterHist.present.pages;
   const activePageIndex = chapterHist.present.activePageIndex;
   const canUndoChapter = chapterHist.past.length > 0;
@@ -335,13 +362,19 @@ export function Studio() {
   const undoChapter = useCallback(() => setChapterHist((h) => undoHistory(h)), []);
   const redoChapter = useCallback(() => setChapterHist((h) => redoHistory(h)), []);
 
-  // Load persisted manga chapter pages from IndexedDB on mount
+  // Load multi-series Manga Library (automatically migrating legacy single-chapter storage if present)
   useEffect(() => {
     let mounted = true;
-    loadChapterState()
-      .then((saved) => {
+    loadMangaLibrary()
+      .then(async (lib) => {
         if (!mounted) return;
-        if (saved) setChapterHist(resetHistory(saved));
+        const proj = getActiveProject(lib);
+        const ch = await hydrateChapter(getActiveChapter(proj));
+        if (!mounted) return;
+        libraryRef.current = lib;
+        setLibraryState(lib);
+        setChapterHist(resetHistory({ pages: ch.pages, activePageIndex: ch.activePageIndex }));
+        setSaveStatus("saved");
       })
       .finally(() => {
         if (mounted) setChapterHydrated(true);
@@ -351,14 +384,191 @@ export function Studio() {
     };
   }, []);
 
-  // Persist chapter changes continuously after initial hydration
+  // Sync live pages into the active project/chapter and auto-save cleanly
   useEffect(() => {
     if (!chapterHydrated) return;
-    const t = setTimeout(() => {
-      void saveChapterState(pages, activePageIndex);
-    }, 150);
-    return () => clearTimeout(t);
+    const curLib = libraryRef.current;
+    const activeProj = getActiveProject(curLib);
+    const activeCh = getActiveChapter(activeProj);
+    const synced = updateProjectChapterPages(
+      curLib,
+      activeProj.id,
+      activeCh.id,
+      pages,
+      activePageIndex,
+    );
+    libraryRef.current = synced;
+    setLibraryState(synced);
+    setSaveStatus("saving");
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => {
+      void saveMangaLibrary(libraryRef.current).then(() => setSaveStatus("saved"));
+    }, 180);
+    return () => {
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    };
   }, [pages, activePageIndex, chapterHydrated]);
+
+  const flushActiveChapterToLibrary = useCallback((): MangaLibraryState => {
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+    const curLib = libraryRef.current;
+    const proj = getActiveProject(curLib);
+    const ch = getActiveChapter(proj);
+    const synced = updateProjectChapterPages(curLib, proj.id, ch.id, pages, activePageIndex);
+    libraryRef.current = synced;
+    return synced;
+  }, [pages, activePageIndex]);
+
+  const applyAndSaveLibrary = useCallback(
+    async (nextLib: MangaLibraryState, reloadActiveChapter: boolean) => {
+      setSaveStatus("saving");
+      const saved = await saveMangaLibrary(nextLib);
+      libraryRef.current = saved;
+      setLibraryState(saved);
+      if (reloadActiveChapter) {
+        const proj = getActiveProject(saved);
+        const ch = await hydrateChapter(getActiveChapter(proj));
+        setChapterHist(resetHistory({ pages: ch.pages, activePageIndex: ch.activePageIndex }));
+      }
+      setSaveStatus("saved");
+      return saved;
+    },
+    [],
+  );
+
+  const handleSaveProjectNow = useCallback(async () => {
+    const flushed = flushActiveChapterToLibrary();
+    await applyAndSaveLibrary(flushed, false);
+  }, [flushActiveChapterToLibrary, applyAndSaveLibrary]);
+
+  const handleSelectLibraryChapter = useCallback(
+    async (projectId: string, chapterId: string) => {
+      const flushed = flushActiveChapterToLibrary();
+      const nextLib = selectChapterInLibrary(flushed, projectId, chapterId);
+      await applyAndSaveLibrary(nextLib, true);
+    },
+    [flushActiveChapterToLibrary, applyAndSaveLibrary],
+  );
+
+  const handleCreateProject = useCallback(
+    async (title: string) => {
+      const flushed = flushActiveChapterToLibrary();
+      const { library: nextLib } = createProjectInLibrary(flushed, title);
+      await applyAndSaveLibrary(nextLib, true);
+    },
+    [flushActiveChapterToLibrary, applyAndSaveLibrary],
+  );
+
+  const handleAddChapterToProject = useCallback(
+    async (projectId: string, chapterTitle?: string) => {
+      const flushed = flushActiveChapterToLibrary();
+      const res = addChapterToProject(flushed, projectId, chapterTitle);
+      if (!res) return;
+      await applyAndSaveLibrary(res.library, true);
+    },
+    [flushActiveChapterToLibrary, applyAndSaveLibrary],
+  );
+
+  const handleRenameProject = useCallback(
+    (projectId: string, title: string) => {
+      const flushed = flushActiveChapterToLibrary();
+      const nextLib = renameProjectInLibrary(flushed, projectId, title);
+      void applyAndSaveLibrary(nextLib, false);
+    },
+    [flushActiveChapterToLibrary, applyAndSaveLibrary],
+  );
+
+  const handleRenameChapter = useCallback(
+    (projectId: string, chapterId: string, title: string) => {
+      const flushed = flushActiveChapterToLibrary();
+      const nextLib = renameChapterInProject(flushed, projectId, chapterId, title);
+      void applyAndSaveLibrary(nextLib, false);
+    },
+    [flushActiveChapterToLibrary, applyAndSaveLibrary],
+  );
+
+  const handleDuplicateProject = useCallback(
+    async (projectId: string) => {
+      const flushed = flushActiveChapterToLibrary();
+      const res = duplicateProjectInLibrary(flushed, projectId);
+      if (!res) return;
+      await applyAndSaveLibrary(res.library, true);
+    },
+    [flushActiveChapterToLibrary, applyAndSaveLibrary],
+  );
+
+  const handleDuplicateChapter = useCallback(
+    async (projectId: string, chapterId: string) => {
+      const flushed = flushActiveChapterToLibrary();
+      const res = duplicateChapterInProject(flushed, projectId, chapterId);
+      if (!res) return;
+      await applyAndSaveLibrary(res.library, true);
+    },
+    [flushActiveChapterToLibrary, applyAndSaveLibrary],
+  );
+
+  const handleDeleteProject = useCallback(
+    async (projectId: string) => {
+      const flushed = flushActiveChapterToLibrary();
+      const beforeIds = collectLibraryFileIds(flushed);
+      const deletingActive = flushed.activeProjectId === projectId;
+      const nextLib = deleteProjectFromLibrary(flushed, projectId);
+      const saved = await applyAndSaveLibrary(nextLib, deletingActive);
+      await garbageCollectRemovedFiles(beforeIds, saved);
+    },
+    [flushActiveChapterToLibrary, applyAndSaveLibrary],
+  );
+
+  const handleDeleteChapter = useCallback(
+    async (projectId: string, chapterId: string) => {
+      const flushed = flushActiveChapterToLibrary();
+      const beforeIds = collectLibraryFileIds(flushed);
+      const targetProj = flushed.projects.find((p) => p.id === projectId);
+      const deletingActive =
+        flushed.activeProjectId === projectId && targetProj?.activeChapterId === chapterId;
+      const nextLib = deleteChapterFromProject(flushed, projectId, chapterId);
+      if (!nextLib) return;
+      const saved = await applyAndSaveLibrary(nextLib, deletingActive);
+      await garbageCollectRemovedFiles(beforeIds, saved);
+    },
+    [flushActiveChapterToLibrary, applyAndSaveLibrary],
+  );
+
+  const handleExportProject = useCallback(
+    async (projectId: string) => {
+      const flushed = flushActiveChapterToLibrary();
+      await applyAndSaveLibrary(flushed, false);
+      const target = libraryRef.current.projects.find((p) => p.id === projectId);
+      if (!target) return;
+      const pkg = await exportMangaProjectPackage(target);
+      const slug = target.title
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-|-$/g, "") || "manga-project";
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([JSON.stringify(pkg)], { type: "application/json" }));
+      a.download = `${slug}-${new Date().toISOString().slice(0, 10)}.manga.json`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    },
+    [flushActiveChapterToLibrary, applyAndSaveLibrary],
+  );
+
+  const handleImportProject = useCallback(
+    async (file: File) => {
+      try {
+        const flushed = flushActiveChapterToLibrary();
+        const { library: nextLib } = await importMangaProjectPackage(flushed, await file.text());
+        await applyAndSaveLibrary(nextLib, true);
+      } catch (e) {
+        alert(e instanceof Error ? e.message : "Couldn't read that manga project file.");
+      }
+    },
+    [flushActiveChapterToLibrary, applyAndSaveLibrary],
+  );
 
   // Global keyboard shortcuts for Undo / Redo across Pose Studio and Manga Panels
   useEffect(() => {
@@ -819,13 +1029,18 @@ export function Studio() {
   };
 
   const exportBackup = async () => {
-    const externalPages = await externalizePageAssets(pages);
+    const flushed = flushActiveChapterToLibrary();
+    const externalLib = await externalizeLibraryAssets(flushed);
+    const activeProj = getActiveProject(externalLib);
+    const activeCh = getActiveChapter(activeProj);
+    const externalPages = activeCh.pages;
     const files = [];
     for (const id of referencedFileIds(
       characters,
       externalPages,
       customPropsMeta.map((p) => p.fileId),
       baseModels,
+      externalLib,
     )) {
       const f = await getFile(id).catch(() => null);
       if (f) files.push({ id, name: f.name, slot: f.slot, type: f.blob.type || "application/octet-stream", data: await blobToB64(f.blob) });
@@ -839,7 +1054,8 @@ export function Studio() {
       facePacks,
       files,
       pages: externalPages,
-      activePageIndex,
+      activePageIndex: activeCh.activePageIndex,
+      mangaLibrary: externalLib,
     };
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([JSON.stringify(b)], { type: "application/json" }));
@@ -857,11 +1073,18 @@ export function Studio() {
         commitBaseModels((l) => reconcileBaseModels(l, b.characters));
       }
       updateFacePacks(mergeById(facePacks, b.facePacks));
-      if (b.pages && b.pages.length > 0) {
+      if (b.mangaLibrary && b.mangaLibrary.projects.length > 0) {
+        await saveMangaLibrary(b.mangaLibrary);
+      } else if (b.pages && b.pages.length > 0) {
         const hydrated = await hydratePageAssets(b.pages);
         await saveChapterState(hydrated, b.activePageIndex ?? 0);
       }
-      const pageCount = b.pages?.length ?? 0;
+      const pageCount = b.mangaLibrary
+        ? b.mangaLibrary.projects.reduce(
+            (sum, p) => sum + p.chapters.reduce((cs, c) => cs + c.pages.length, 0),
+            0,
+          )
+        : b.pages?.length ?? 0;
       const bodyCount = b.baseModels?.length ?? 0;
       alert(`Restored ${b.characters.length} character(s), ${bodyCount} base model(s), ${b.facePacks.length} face pack(s), ${pageCount} page(s), and ${b.files.length} file(s). The page will reload to load them.`);
       location.reload();
@@ -1404,6 +1627,20 @@ export function Studio() {
         canRedo={canRedoChapter}
         onUndo={undoChapter}
         onRedo={redoChapter}
+        library={libraryState}
+        saveStatus={saveStatus}
+        onSaveProjectNow={handleSaveProjectNow}
+        onSelectLibraryChapter={handleSelectLibraryChapter}
+        onCreateProject={handleCreateProject}
+        onAddChapterToProject={handleAddChapterToProject}
+        onRenameProject={handleRenameProject}
+        onRenameChapter={handleRenameChapter}
+        onDuplicateProject={handleDuplicateProject}
+        onDuplicateChapter={handleDuplicateChapter}
+        onDeleteProject={handleDeleteProject}
+        onDeleteChapter={handleDeleteChapter}
+        onExportProject={handleExportProject}
+        onImportProject={handleImportProject}
       />
       </Suspense>
   );

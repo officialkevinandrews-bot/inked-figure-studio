@@ -415,4 +415,102 @@ test.describe("Inked Figure Studio End-to-End Regression", () => {
     expect(consoleErrors).toEqual([]);
     expect(pageErrors).toEqual([]);
   });
+
+  test("Multi-Series & Multi-Chapter Library: Create series, add chapters, duplicate, export/import & persist across reload", async ({
+    page,
+  }) => {
+    const consoleErrors: string[] = [];
+    const pageErrors: string[] = [];
+    page.on("console", (msg) => {
+      if (msg.type() === "error") consoleErrors.push(msg.text());
+    });
+    page.on("pageerror", (err) => pageErrors.push(String(err)));
+
+    await page.goto("/");
+    await expect(page.locator("[data-scene-ready]")).toBeVisible();
+
+    // 1. Confirm NO project library button appears in 3D Pose Studio header
+    await page.getByRole("button", { name: "3D Pose Studio" }).click();
+    await expect(page.getByTestId("projects-library-btn")).toHaveCount(0);
+
+    // 2. Enter Manga Panels -> add a 2nd page to My Manga / Chapter 1
+    await page.getByRole("button", { name: /Manga Panels/ }).click();
+    await expect(page.locator("#manga-page-container")).toBeVisible();
+    await expect(page.getByTestId("projects-library-btn")).toContainText("My Manga");
+
+    await page.getByRole("button", { name: "Add Page" }).click();
+    await expect(page.getByTestId("chapter-switcher")).toContainText("Chapter 1 (2p)");
+
+    // 3. Quick-add Chapter 2 to the same series and review chapters separately
+    await page.getByTestId("quick-add-chapter-btn").click();
+    await expect(page.getByTestId("chapter-switcher").locator("option")).toHaveCount(2);
+    await expect(page.getByTestId("chapter-switcher")).toContainText("Chapter 2 (1p)");
+
+    // Switch back to Chapter 1 via chapter dropdown -> still has 2 pages
+    const ch1Opt = await page
+      .getByTestId("chapter-switcher")
+      .locator("option")
+      .first()
+      .getAttribute("value");
+    await page.getByTestId("chapter-switcher").selectOption(ch1Opt!);
+    await expect(page.getByTestId("chapter-switcher")).toContainText("Chapter 1 (2p)");
+
+    // 4. Open Manga Projects modal -> create a new separate Manga Series "Tokyo Blades"
+    await page.getByTestId("projects-library-btn").click();
+    const modal = page.getByTestId("manga-projects-modal");
+    await expect(modal).toBeVisible();
+    await page.getByTestId("new-manga-series-btn").click();
+    await page.getByLabel("New series title").fill("Tokyo Blades");
+    await page.getByRole("button", { name: /Create & Open/i }).click();
+
+    await expect(modal).toBeHidden();
+    await expect(page.getByTestId("projects-library-btn")).toContainText("Tokyo Blades");
+    await expect(page.getByTestId("chapter-switcher")).toContainText("Chapter 1 (1p)");
+
+    // 5. Re-open modal -> Duplicate "Tokyo Blades", Export & Import single project, then switch back to My Manga Chapter 1
+    await page.getByTestId("projects-library-btn").click();
+    await expect(modal).toBeVisible();
+    await page.getByRole("button", { name: "Duplicate Tokyo Blades" }).click();
+    await expect(modal).toContainText("Tokyo Blades (Copy)");
+
+    const [projDownload] = await Promise.all([
+      page.waitForEvent("download"),
+      page.getByRole("button", { name: "Export Tokyo Blades", exact: true }).click(),
+    ]);
+    const dlPath = await projDownload.path();
+    expect(dlPath).toBeTruthy();
+    if (dlPath) {
+      const [impChooser] = await Promise.all([
+        page.waitForEvent("filechooser"),
+        page.getByTestId("import-manga-project-btn").click(),
+      ]);
+      await impChooser.setFiles(dlPath);
+      await expect(modal.locator('[data-testid^="project-card-"]')).toHaveCount(4);
+    }
+
+    // Switch back to "My Manga" -> Chapter 1 (2p) and close modal
+    await modal
+      .locator('[data-testid^="project-card-"]')
+      .filter({ hasText: "My Manga" })
+      .getByRole("button", { name: /Open & Review/ })
+      .first()
+      .click();
+    await expect(modal).toBeHidden();
+    await expect(page.getByTestId("projects-library-btn")).toContainText("My Manga");
+    await expect(page.getByTestId("chapter-switcher")).toContainText("Chapter 1 (2p)");
+
+    // 6. Wait briefly for IndexedDB save & reload browser -> verify series, chapters, and pages survive reload
+    await page.waitForTimeout(400);
+    await page.reload();
+    await expect(page.locator("[data-scene-ready]")).toBeVisible();
+    await page.getByRole("button", { name: /Manga Panels/ }).click();
+    await expect(page.getByTestId("projects-library-btn")).toContainText("My Manga");
+    await expect(page.getByTestId("chapter-switcher")).toContainText("Chapter 1 (2p)");
+    await page.getByTestId("projects-library-btn").click();
+    await expect(page.getByTestId("manga-projects-modal")).toContainText("Tokyo Blades");
+    await expect(page.getByTestId("manga-projects-modal")).toContainText("Tokyo Blades (Copy)");
+
+    expect(consoleErrors).toEqual([]);
+    expect(pageErrors).toEqual([]);
+  });
 });

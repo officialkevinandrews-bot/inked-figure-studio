@@ -58,7 +58,13 @@ import { PhotoFilterModal } from "./PhotoFilterModal";
 import { ExportModal } from "./ExportModal";
 import { WebtoonCanvas } from "./WebtoonCanvas";
 import { MobileWebtoonPreview } from "./MobileWebtoonPreview";
+import { MangaProjectsModal } from "./MangaProjectsModal";
 import { PageManager } from "@/components/pages/PageManager";
+import {
+  getActiveChapter,
+  getActiveProject,
+  type MangaLibraryState,
+} from "@/lib/manga-projects";
 import {
   Scissors,
   SplitSquareVertical,
@@ -94,6 +100,8 @@ import {
   Smartphone,
   ScrollText,
   BookOpen,
+  FolderOpen,
+  Plus,
 } from "lucide-react";
 
 export interface PanelStudioProps {
@@ -114,6 +122,20 @@ export interface PanelStudioProps {
   canRedo?: boolean;
   onUndo?: () => void;
   onRedo?: () => void;
+  library?: MangaLibraryState;
+  saveStatus?: "saved" | "saving";
+  onSaveProjectNow?: () => void | Promise<void>;
+  onSelectLibraryChapter?: (projectId: string, chapterId: string) => void | Promise<void>;
+  onCreateProject?: (title: string) => void | Promise<void>;
+  onAddChapterToProject?: (projectId: string, chapterTitle?: string) => void | Promise<void>;
+  onRenameProject?: (projectId: string, title: string) => void;
+  onRenameChapter?: (projectId: string, chapterId: string, title: string) => void;
+  onDuplicateProject?: (projectId: string) => void | Promise<void>;
+  onDuplicateChapter?: (projectId: string, chapterId: string) => void | Promise<void>;
+  onDeleteProject?: (projectId: string) => void | Promise<void>;
+  onDeleteChapter?: (projectId: string, chapterId: string) => void | Promise<void>;
+  onExportProject?: (projectId: string) => void | Promise<void>;
+  onImportProject?: (file: File) => void | Promise<void>;
 }
 
 type LeftTrayTab = "panels" | "backgrounds" | "characters" | "balloons";
@@ -136,6 +158,20 @@ export function PanelStudio({
   canRedo = false,
   onUndo,
   onRedo,
+  library,
+  saveStatus = "saved",
+  onSaveProjectNow,
+  onSelectLibraryChapter,
+  onCreateProject,
+  onAddChapterToProject,
+  onRenameProject,
+  onRenameChapter,
+  onDuplicateProject,
+  onDuplicateChapter,
+  onDeleteProject,
+  onDeleteChapter,
+  onExportProject,
+  onImportProject,
 }: PanelStudioProps) {
   const [selectedPanelId, setSelectedPanelId] = useState<string | null>(
     layout.panels[0]?.id ?? null
@@ -190,18 +226,28 @@ export function PanelStudio({
     setZoom(Math.max(0.2, Math.min(1.2, Math.round(scale * 100) / 100)));
   }, [layout.format.width, layout.format.height]);
 
-  // Keep selectedPanelId synced when switching pages or deleting an active panel; allow explicit null deselection.
-  const prevPageIdRef = useRef(layout.id);
+  // Keep selectedPanelId synced when switching chapters/pages or deleting an active panel; allow explicit null deselection.
+  const [projectsModalOpen, setProjectsModalOpen] = useState(false);
+  const activeProject = useMemo(() => (library ? getActiveProject(library) : null), [library]);
+  const activeChapter = useMemo(
+    () => (activeProject ? getActiveChapter(activeProject) : null),
+    [activeProject],
+  );
+  const activeChapterId = activeChapter?.id ?? null;
+
+  const prevPageKeyRef = useRef(`${activeChapterId ?? ""}:${layout.id}`);
   useEffect(() => {
-    if (prevPageIdRef.current !== layout.id) {
-      prevPageIdRef.current = layout.id;
+    const key = `${activeChapterId ?? ""}:${layout.id}`;
+    if (prevPageKeyRef.current !== key) {
+      prevPageKeyRef.current = key;
       setSelectedPanelId(layout.panels[0]?.id ?? null);
+      setSelectedItemId(null);
       return;
     }
     if (selectedPanelId && !layout.panels.some((p) => p.id === selectedPanelId)) {
       setSelectedPanelId(layout.panels[0]?.id ?? null);
     }
-  }, [layout.id, layout.panels, selectedPanelId]);
+  }, [activeChapterId, layout.id, layout.panels, selectedPanelId]);
 
   // Run auto-fit on initial mount and when layout dimensions change
   useEffect(() => {
@@ -1139,6 +1185,51 @@ export function PanelStudio({
         <h1 className="font-display text-lg tracking-wide hidden sm:block">
           MANGA<span className="text-primary">STUDIO</span>
         </h1>
+
+        {/* Manga Series & Chapter Library Switcher (Manga Panels only) */}
+        {library && activeProject && activeChapter && (
+          <div className="flex items-center gap-1 rounded-sm border border-border bg-muted/40 px-1.5 py-0.5 text-xs">
+            <button
+              type="button"
+              data-testid="projects-library-btn"
+              onClick={() => setProjectsModalOpen(true)}
+              title="Open Saved Manga Series & Chapters Library"
+              className="flex items-center gap-1.5 rounded-xs border border-foreground bg-card px-2 py-0.5 font-bold hover:bg-accent transition-colors max-w-[170px]"
+            >
+              <FolderOpen className="h-3.5 w-3.5 shrink-0 text-primary" />
+              <span className="truncate">{activeProject.title}</span>
+              <span
+                title={saveStatus === "saving" ? "Saving..." : "Saved to browser storage"}
+                className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                  saveStatus === "saving" ? "bg-amber-500 animate-pulse" : "bg-emerald-500"
+                }`}
+              />
+            </button>
+            <select
+              aria-label="Active chapter"
+              data-testid="chapter-switcher"
+              value={activeChapter.id}
+              onChange={(e) => void onSelectLibraryChapter?.(activeProject.id, e.target.value)}
+              className="max-w-[130px] rounded-xs border border-input bg-background px-1.5 py-0.5 text-[11px] font-semibold"
+            >
+              {activeProject.chapters.map((ch) => (
+                <option key={ch.id} value={ch.id}>
+                  {ch.title} ({ch.pages.length}p)
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              data-testid="quick-add-chapter-btn"
+              onClick={() => void onAddChapterToProject?.(activeProject.id)}
+              title={`Add new chapter to "${activeProject.title}"`}
+              className="flex items-center gap-0.5 rounded-xs border border-primary/70 bg-primary/10 px-1.5 py-0.5 text-[11px] font-bold text-primary hover:bg-primary hover:text-primary-foreground transition-colors"
+            >
+              <Plus className="h-3 w-3" />
+              <span>Ch</span>
+            </button>
+          </div>
+        )}
 
         {/* Format Selector */}
         <div className="flex items-center gap-1.5 text-xs">
@@ -3142,6 +3233,28 @@ export function PanelStudio({
           setExportModalOpen(true);
         }}
       />
+
+      {/* Saved Manga Series & Chapters Library Modal */}
+      {library && (
+        <MangaProjectsModal
+          isOpen={projectsModalOpen}
+          onClose={() => setProjectsModalOpen(false)}
+          library={library}
+          saveStatus={saveStatus}
+          onSaveNow={() => onSaveProjectNow?.()}
+          onSelectChapter={(projId, chId) => onSelectLibraryChapter?.(projId, chId)}
+          onCreateProject={(title) => onCreateProject?.(title)}
+          onAddChapter={(projId, chTitle) => onAddChapterToProject?.(projId, chTitle)}
+          onRenameProject={(projId, title) => onRenameProject?.(projId, title)}
+          onRenameChapter={(projId, chId, title) => onRenameChapter?.(projId, chId, title)}
+          onDuplicateProject={(projId) => onDuplicateProject?.(projId)}
+          onDuplicateChapter={(projId, chId) => onDuplicateChapter?.(projId, chId)}
+          onDeleteProject={(projId) => onDeleteProject?.(projId)}
+          onDeleteChapter={(projId, chId) => onDeleteChapter?.(projId, chId)}
+          onExportProject={(projId) => onExportProject?.(projId)}
+          onImportProject={(file) => onImportProject?.(file)}
+        />
+      )}
     </div>
   );
 }
