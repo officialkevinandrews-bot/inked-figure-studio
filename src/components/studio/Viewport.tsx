@@ -338,6 +338,7 @@ function PoseScene({
   onSelect,
   showJoints,
   ikMode,
+  orbitOnly = false,
   onIkDrag,
 }: {
   model: THREE.Object3D | null;
@@ -346,6 +347,7 @@ function PoseScene({
   onSelect: (b: string | null) => void;
   showJoints: boolean;
   ikMode: boolean;
+  orbitOnly?: boolean;
   onIkDrag: (eff: string, p: THREE.Vector3) => void;
 }) {
   const grab = useDirectDrag(rig, onIkDrag, onSelect);
@@ -365,17 +367,17 @@ function PoseScene({
         <primitive
           object={model}
           onPointerDown={(e: ThreeEvent<PointerEvent>) => {
-            if (!rig) return;
+            if (!rig || orbitOnly) return;
             const n = nearestBone(e.point);
             if (!n) return;
             if (ikMode) grab(n, e);
             else { e.stopPropagation(); onSelect(n); }
           }}
-          onPointerOver={() => rig && (document.body.style.cursor = "grab")}
+          onPointerOver={() => rig && !orbitOnly && (document.body.style.cursor = "grab")}
           onPointerOut={() => (document.body.style.cursor = "")}
         />
       )}
-      {rig && showJoints && (
+      {rig && showJoints && !orbitOnly && (
         <Joints rig={rig} selected={selected} onSelect={onSelect} onGrab={ikMode ? grab : undefined} />
       )}
     </>
@@ -516,6 +518,7 @@ export const Viewport = forwardRef<
     onSelectProp?: (id: string | null) => void;
     customPropObjects?: Record<string, THREE.Object3D>;
     ikMode?: boolean;
+    orbitOnly?: boolean;
     onIkDrag?: (effector: string, world: THREE.Vector3) => void;
     cameraLocked?: boolean;
     face?: FaceConfig | null;
@@ -543,6 +546,7 @@ export const Viewport = forwardRef<
     onSelectProp = () => {},
     customPropObjects,
     ikMode = false,
+    orbitOnly = false,
     onIkDrag = () => {},
     cameraLocked = false,
     face = null,
@@ -575,6 +579,7 @@ export const Viewport = forwardRef<
       shadows={{ type: THREE.PCFShadowMap }}
       camera={{ position: [0, 1.3, 3.6], fov }}
       gl={{ antialias: true, preserveDrawingBuffer: true }}
+      style={{ touchAction: "none" }}
       onPointerMissed={() => {
         onSelect(null);
         onSelectProp(null);
@@ -603,6 +608,7 @@ export const Viewport = forwardRef<
           onSelect={onSelect}
           showJoints={settings.showJoints}
           ikMode={ikMode}
+          orbitOnly={orbitOnly}
           onIkDrag={onIkDrag}
         />
 
@@ -697,13 +703,13 @@ export const Viewport = forwardRef<
         userData={{ noOutline: true }}
         name="GridHelper"
       />
-      {bone && (!ikMode || !IK_EFFECTORS.includes(selected!)) && (
+      {!orbitOnly && bone && (!ikMode || !IK_EFFECTORS.includes(selected!)) && (
         <TransformControls object={bone} mode="rotate" space="local" size={0.6} onObjectChange={onBoneDrag} />
       )}
-      {bone && ikMode && IK_EFFECTORS.includes(selected!) && (
+      {!orbitOnly && bone && ikMode && IK_EFFECTORS.includes(selected!) && (
         <IkHandle key={selected!} bone={bone} onDrag={(p) => onIkDrag(selected!, p)} />
       )}
-      <CameraController cameraPose={cameraPose} fov={fov} locked={cameraLocked} />
+      <CameraController cameraPose={cameraPose} fov={fov} locked={!orbitOnly && cameraLocked} />
     </Canvas>
   );
 });

@@ -40,7 +40,7 @@ export function MobileWebtoonPreview({
   return (
     <div
       data-testid="mobile-preview-drawer"
-      className="fixed inset-y-0 right-0 z-50 flex w-[410px] max-w-full flex-col border-l-2 border-foreground bg-card shadow-2xl"
+      className="fixed inset-y-0 right-0 z-50 flex w-full sm:w-[410px] max-w-full flex-col border-l-2 border-foreground bg-card shadow-2xl"
     >
       {/* Header */}
       <div className="flex items-center justify-between border-b-2 border-foreground bg-muted px-4 py-2.5">

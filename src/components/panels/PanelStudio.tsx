@@ -68,6 +68,8 @@ import { WebtoonCanvas } from "./WebtoonCanvas";
 import { MobileWebtoonPreview } from "./MobileWebtoonPreview";
 import { MangaProjectsModal } from "./MangaProjectsModal";
 import { PageManager } from "@/components/pages/PageManager";
+import { ResponsiveDrawer } from "@/components/ui/ResponsiveDrawer";
+import { useDeviceLayout } from "@/lib/use-device-layout";
 import {
   getActiveChapter,
   getActiveProject,
@@ -112,6 +114,11 @@ import {
   Move,
   PenTool,
   Plus,
+  MoreHorizontal,
+  PanelLeft,
+  SlidersHorizontal,
+  FileText,
+  X,
 } from "lucide-react";
 
 export interface PanelStudioProps {
@@ -222,6 +229,12 @@ export function PanelStudio({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const bgFileInputRef = useRef<HTMLInputElement>(null);
   const canvasContainerRef = useRef<HTMLDivElement>(null);
+  const device = useDeviceLayout();
+  const [panelsLeftOpen, setPanelsLeftOpen] = useState(() => device.pinLeftByDefault);
+  const [panelsRightOpen, setPanelsRightOpen] = useState(() => device.pinRightByDefault);
+  const [mobilePagesOpen, setMobilePagesOpen] = useState(false);
+  const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
+  const pinchRef = useRef<{ dist: number; startZoom: number; midX: number; midY: number } | null>(null);
 
   const selectedPanel = layout.panels.find((p) => p.id === selectedPanelId);
 
@@ -244,14 +257,49 @@ export function PanelStudio({
   const fitToScreen = useCallback(() => {
     if (!canvasContainerRef.current) return;
     const { clientWidth, clientHeight } = canvasContainerRef.current;
-    const paddingX = 48;
-    const paddingY = 48;
+    const paddingX = device.isCompact ? 16 : 48;
+    const paddingY = device.isCompact ? 16 : 48;
     const availW = Math.max(150, clientWidth - paddingX);
     const availH = Math.max(150, clientHeight - paddingY);
     const scale = Math.min(availW / layout.format.width, availH / layout.format.height);
     // Round to 2 decimal places, clamped comfortably
     setZoom(Math.max(0.2, Math.min(1.2, Math.round(scale * 100) / 100)));
-  }, [layout.format.width, layout.format.height]);
+  }, [layout.format.width, layout.format.height, device.isCompact]);
+
+  // Sync drawer defaults when orientation or device tier changes, then refit canvas cleanly
+  useEffect(() => {
+    setPanelsLeftOpen(device.pinLeftByDefault);
+    setPanelsRightOpen(device.pinRightByDefault);
+    setMobilePagesOpen(false);
+    setMobileMoreOpen(false);
+    const id = requestAnimationFrame(() => fitToScreen());
+    return () => cancelAnimationFrame(id);
+  }, [device.tier, device.pinLeftByDefault, device.pinRightByDefault, fitToScreen]);
+
+  const togglePanelsLeft = () => {
+    setPanelsLeftOpen((open) => {
+      const next = !open;
+      if (next && !device.pinRightByDefault) setPanelsRightOpen(false);
+      if (next) setMobilePagesOpen(false);
+      return next;
+    });
+  };
+  const togglePanelsRight = () => {
+    setPanelsRightOpen((open) => {
+      const next = !open;
+      if (next && !device.pinLeftByDefault) setPanelsLeftOpen(false);
+      if (next) setMobilePagesOpen(false);
+      return next;
+    });
+  };
+  const toggleMobilePages = () => {
+    setMobilePagesOpen((open) => {
+      const next = !open;
+      if (next && !device.pinLeftByDefault) setPanelsLeftOpen(false);
+      if (next && !device.pinRightByDefault) setPanelsRightOpen(false);
+      return next;
+    });
+  };
 
   // Keep selectedPanelId synced when switching chapters/pages or deleting an active panel; allow explicit null deselection.
   const [projectsModalOpen, setProjectsModalOpen] = useState(false);
@@ -1305,30 +1353,32 @@ export function PanelStudio({
   };
 
   return (
-    <div className="flex h-screen flex-col bg-background text-foreground select-none overflow-hidden">
+    <div className="flex h-dvh flex-col bg-background text-foreground select-none overflow-hidden">
       {/* Top Bar */}
-      <header className="flex items-center gap-3 border-b-2 border-foreground px-4 py-2 bg-card shrink-0">
+      <header className="relative flex flex-wrap items-center gap-1.5 sm:gap-2.5 border-b-2 border-foreground px-2 sm:px-4 py-1.5 sm:py-2 bg-card safe-pt shrink-0">
         <button
           onClick={onOpen3dStudio}
-          className="flex items-center gap-1.5 rounded-sm border-2 border-foreground bg-primary px-3 py-1 font-semibold text-primary-foreground shadow-ink text-xs transition-transform hover:-translate-y-0.5"
+          aria-label="Back to 3D Pose Studio"
+          className="flex items-center gap-1 rounded-sm border-2 border-foreground bg-primary px-2 sm:px-3 py-1 font-semibold text-primary-foreground shadow-ink text-xs transition-transform hover:-translate-y-0.5 shrink-0"
         >
-          <ArrowLeft className="h-4 w-4" />
-          Back to 3D Pose Studio
+          <ArrowLeft className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+          <span className="hidden md:inline">Back to 3D Pose Studio</span>
+          <span className="md:hidden">3D</span>
         </button>
 
-        <h1 className="font-display text-lg tracking-wide hidden sm:block">
+        <h1 className="font-display text-lg tracking-wide hidden xl:block shrink-0">
           MANGA<span className="text-primary">STUDIO</span>
         </h1>
 
         {/* Manga Series & Chapter Library Switcher (Manga Panels only) */}
         {library && activeProject && activeChapter && (
-          <div className="flex items-center gap-1 rounded-sm border border-border bg-muted/40 px-1.5 py-0.5 text-xs">
+          <div className="flex items-center gap-1 rounded-sm border border-border bg-muted/40 px-1 py-0.5 text-xs max-w-full">
             <button
               type="button"
               data-testid="projects-library-btn"
               onClick={() => setProjectsModalOpen(true)}
               title="Open Saved Manga Series & Chapters Library"
-              className="flex items-center gap-1.5 rounded-xs border border-foreground bg-card px-2 py-0.5 font-bold hover:bg-accent transition-colors max-w-[170px]"
+              className="flex items-center gap-1 rounded-xs border border-foreground bg-card px-1.5 sm:px-2 py-0.5 font-bold hover:bg-accent transition-colors max-w-[105px] sm:max-w-[165px]"
             >
               <FolderOpen className="h-3.5 w-3.5 shrink-0 text-primary" />
               <span className="truncate">{activeProject.title}</span>
@@ -1344,7 +1394,7 @@ export function PanelStudio({
               data-testid="chapter-switcher"
               value={activeChapter.id}
               onChange={(e) => void onSelectLibraryChapter?.(activeProject.id, e.target.value)}
-              className="max-w-[130px] rounded-xs border border-input bg-background px-1.5 py-0.5 text-[11px] font-semibold"
+              className="max-w-[95px] sm:max-w-[130px] rounded-xs border border-input bg-background px-1 sm:px-1.5 py-0.5 text-[11px] font-semibold"
             >
               {activeProject.chapters.map((ch) => (
                 <option key={ch.id} value={ch.id}>
@@ -1357,7 +1407,7 @@ export function PanelStudio({
               data-testid="quick-add-chapter-btn"
               onClick={() => void onAddChapterToProject?.(activeProject.id)}
               title={`Add new chapter to "${activeProject.title}"`}
-              className="flex items-center gap-0.5 rounded-xs border border-primary/70 bg-primary/10 px-1.5 py-0.5 text-[11px] font-bold text-primary hover:bg-primary hover:text-primary-foreground transition-colors"
+              className="flex items-center gap-0.5 rounded-xs border border-primary/70 bg-primary/10 px-1.5 py-0.5 text-[11px] font-bold text-primary hover:bg-primary hover:text-primary-foreground transition-colors shrink-0"
             >
               <Plus className="h-3 w-3" />
               <span>Ch</span>
@@ -1365,14 +1415,14 @@ export function PanelStudio({
           </div>
         )}
 
-        {/* Format Selector */}
-        <div className="flex items-center gap-1.5 text-xs">
+        {/* Format Selector (inline on md+, also reachable inside More menu on phones) */}
+        <div className="hidden sm:flex items-center gap-1.5 text-xs shrink-0">
           <span className="font-semibold text-muted-foreground hidden lg:inline">Paper:</span>
           <select
             aria-label="Paper format"
             value={layout.format.id}
             onChange={(e) => handleFormatChange(e.target.value)}
-            className="rounded-sm border border-input bg-background px-2 py-1 text-xs font-medium"
+            className="max-w-[140px] lg:max-w-none rounded-sm border border-input bg-background px-1.5 py-1 text-xs font-medium"
           >
             {PAGE_FORMATS.map((f) => (
               <option key={f.id} value={f.id}>
@@ -1383,30 +1433,32 @@ export function PanelStudio({
         </div>
 
         {/* Print Page vs Infinite Webtoon Scroll Switcher + 9:16 Reader */}
-        <div className="flex items-center rounded-sm border border-foreground bg-muted/60 p-0.5 text-[11px] font-semibold">
+        <div className="flex items-center rounded-sm border border-foreground bg-muted/60 p-0.5 text-[11px] font-semibold shrink-0">
           <button
             data-testid="mode-page"
+            aria-label="Print Page"
             onClick={() => setViewMode("page")}
-            className={`flex items-center gap-1 rounded-xs px-2 py-0.5 transition-colors ${
+            className={`flex items-center gap-1 rounded-xs px-1.5 sm:px-2 py-0.5 transition-colors ${
               viewMode === "page"
                 ? "bg-foreground text-background font-bold"
                 : "text-muted-foreground hover:text-foreground"
             }`}
           >
             <BookOpen className="h-3.5 w-3.5" />
-            <span className="hidden md:inline">Print Page</span>
+            <span className="hidden lg:inline">Print Page</span>
           </button>
           <button
             data-testid="mode-webtoon"
+            aria-label="Webtoon Scroll"
             onClick={() => setViewMode("webtoon")}
-            className={`flex items-center gap-1 rounded-xs px-2 py-0.5 transition-colors ${
+            className={`flex items-center gap-1 rounded-xs px-1.5 sm:px-2 py-0.5 transition-colors ${
               viewMode === "webtoon"
                 ? "bg-foreground text-background font-bold"
                 : "text-muted-foreground hover:text-foreground"
             }`}
           >
             <ScrollText className="h-3.5 w-3.5" />
-            <span className="hidden md:inline">Webtoon Scroll</span>
+            <span className="hidden lg:inline">Webtoon Scroll</span>
           </button>
         </div>
 
@@ -1414,7 +1466,7 @@ export function PanelStudio({
           data-testid="mobile-preview-toggle"
           onClick={() => setMobilePreviewOpen((o) => !o)}
           title="Live 9:16 Mobile Webtoon Reading Preview"
-          className={`flex items-center gap-1 rounded-sm border px-2 py-1 text-xs font-semibold transition-colors ${
+          className={`hidden md:flex items-center gap-1 rounded-sm border px-2 py-1 text-xs font-semibold transition-colors shrink-0 ${
             mobilePreviewOpen
               ? "border-primary bg-primary text-primary-foreground shadow-ink"
               : "border-border hover:border-foreground"
@@ -1426,7 +1478,7 @@ export function PanelStudio({
 
         {/* History Undo / Redo */}
         {(onUndo || onRedo) && (
-          <div className="flex items-center gap-1 text-xs">
+          <div className="flex items-center gap-1 text-xs shrink-0">
             <button
               onClick={onUndo}
               disabled={!canUndo}
@@ -1434,7 +1486,7 @@ export function PanelStudio({
               aria-label="Undo"
               className="rounded-sm border border-border p-1 hover:border-foreground disabled:opacity-35"
             >
-              <Undo2 className="h-4 w-4" />
+              <Undo2 className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
             </button>
             <button
               onClick={onRedo}
@@ -1443,25 +1495,26 @@ export function PanelStudio({
               aria-label="Redo"
               className="rounded-sm border border-border p-1 hover:border-foreground disabled:opacity-35"
             >
-              <Redo2 className="h-4 w-4" />
+              <Redo2 className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
             </button>
           </div>
         )}
 
-        {/* Viewport Zoom & Fit Controls */}
-        <div className="ml-auto flex items-center gap-1.5 text-xs">
+        {/* Viewport Zoom & Fit + Actions */}
+        <div className="ml-auto flex items-center gap-1 sm:gap-1.5 text-xs shrink-0">
           <button
             onClick={fitToScreen}
             title="Auto-Fit Page to Screen (no cutoffs)"
-            className="rounded-sm border-2 border-foreground bg-accent px-2 py-1 font-semibold text-xs shadow-ink hover:bg-accent/80 flex items-center gap-1"
+            aria-label="Fit Screen"
+            className="hidden sm:flex rounded-sm border-2 border-foreground bg-accent px-2 py-1 font-semibold text-xs shadow-ink hover:bg-accent/80 items-center gap-1"
           >
             <Maximize2 className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">Fit Screen</span>
+            <span className="hidden xl:inline">Fit Screen</span>
           </button>
           <button
             onClick={() => setZoom(1.0)}
             title="100% Actual Size"
-            className={`rounded-sm border px-2 py-1 text-xs font-semibold ${
+            className={`hidden md:inline-block rounded-sm border px-2 py-1 text-xs font-semibold ${
               zoom === 1.0 ? "border-foreground bg-foreground text-background" : "border-border hover:border-foreground"
             }`}
           >
@@ -1469,24 +1522,26 @@ export function PanelStudio({
           </button>
           <button
             onClick={() => setZoom((z) => Math.max(0.25, Math.round((z - 0.1) * 10) / 10))}
-            className="rounded-sm border border-border p-1 hover:border-foreground"
+            aria-label="Zoom out"
+            className="hidden sm:inline-block rounded-sm border border-border p-1 hover:border-foreground"
           >
             <ZoomOut className="h-4 w-4" />
           </button>
-          <span className="w-12 text-center tabular-nums font-mono font-semibold">
+          <span className="hidden sm:inline-block w-10 text-center tabular-nums font-mono font-semibold">
             {Math.round(zoom * 100)}%
           </span>
           <button
             onClick={() => setZoom((z) => Math.min(1.5, Math.round((z + 0.1) * 10) / 10))}
-            className="rounded-sm border border-border p-1 hover:border-foreground"
+            aria-label="Zoom in"
+            className="hidden sm:inline-block rounded-sm border border-border p-1 hover:border-foreground"
           >
             <ZoomIn className="h-4 w-4" />
           </button>
 
-          {/* Quick Photo Filter */}
+          {/* Desktop Photo Filter & + Sprite */}
           <button
             onClick={() => setFilterModalOpen(true)}
-            className="hidden md:flex items-center gap-1.5 rounded-sm border-2 border-foreground bg-accent px-3 py-1 font-semibold text-xs shadow-ink hover:-translate-y-0.5"
+            className="hidden lg:flex items-center gap-1.5 rounded-sm border-2 border-foreground bg-accent px-2.5 py-1 font-semibold text-xs shadow-ink hover:-translate-y-0.5"
           >
             <Sparkles className="h-3.5 w-3.5 text-primary" />
             Photo Filter
@@ -1494,7 +1549,7 @@ export function PanelStudio({
 
           <button
             onClick={() => fileInputRef.current?.click()}
-            className="hidden sm:inline rounded-sm border border-border px-2.5 py-1 text-xs hover:border-foreground font-medium"
+            className="hidden lg:inline rounded-sm border border-border px-2.5 py-1 text-xs hover:border-foreground font-medium"
           >
             + Sprite
           </button>
@@ -1506,24 +1561,138 @@ export function PanelStudio({
             onChange={(e) => handleImportImage(e.target.files)}
           />
 
+          {/* Compact Overflow Menu (keeps Photo Filter, + Sprite, Mobile 9:16, Paper & Fit accessible on Phone & Tablet) */}
+          <div className="relative lg:hidden">
+            <button
+              type="button"
+              data-testid="panels-more-btn"
+              aria-label="More panel tools"
+              aria-expanded={mobileMoreOpen}
+              onClick={() => setMobileMoreOpen((v) => !v)}
+              className={`rounded-sm border px-2 py-1 text-xs font-semibold flex items-center gap-1 ${
+                mobileMoreOpen ? "border-foreground bg-foreground text-background" : "border-border bg-background"
+              }`}
+            >
+              <MoreHorizontal className="h-4 w-4" />
+              <span className="hidden sm:inline">More</span>
+            </button>
+            {mobileMoreOpen && (
+              <>
+                <div className="fixed inset-0 z-30" onClick={() => setMobileMoreOpen(false)} aria-hidden="true" />
+                <div
+                  data-testid="panels-more-menu"
+                  className="absolute right-0 top-full z-40 mt-1.5 w-60 rounded border-2 border-foreground bg-card p-2 shadow-2xl space-y-1.5 text-xs"
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMobileMoreOpen(false);
+                      setFilterModalOpen(true);
+                    }}
+                    className="w-full flex items-center gap-2 rounded border border-border px-2.5 py-1.5 font-semibold hover:bg-accent text-left"
+                  >
+                    <Sparkles className="h-3.5 w-3.5 text-primary" /> Photo Filter
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMobileMoreOpen(false);
+                      fileInputRef.current?.click();
+                    }}
+                    className="w-full flex items-center gap-2 rounded border border-border px-2.5 py-1.5 font-semibold hover:bg-accent text-left"
+                  >
+                    <ImageIcon className="h-3.5 w-3.5 text-primary" /> + Upload Sprite
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMobileMoreOpen(false);
+                      setMobilePreviewOpen((o) => !o);
+                    }}
+                    className="w-full flex items-center gap-2 rounded border border-border px-2.5 py-1.5 font-semibold hover:bg-accent text-left"
+                  >
+                    <Smartphone className="h-3.5 w-3.5 text-primary" /> Mobile 9:16 Reader
+                  </button>
+                  <div className="flex items-center gap-1 pt-1 border-t border-border">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        fitToScreen();
+                        setMobileMoreOpen(false);
+                      }}
+                      className="flex-1 rounded border border-border px-2 py-1 font-semibold hover:bg-accent"
+                    >
+                      Fit Screen
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setZoom((z) => Math.max(0.25, Math.round((z - 0.1) * 10) / 10))}
+                      className="rounded border border-border px-2 py-1 font-bold"
+                    >
+                      −
+                    </button>
+                    <span className="font-mono w-10 text-center">{Math.round(zoom * 100)}%</span>
+                    <button
+                      type="button"
+                      onClick={() => setZoom((z) => Math.min(1.5, Math.round((z + 0.1) * 10) / 10))}
+                      className="rounded border border-border px-2 py-1 font-bold"
+                    >
+                      +
+                    </button>
+                  </div>
+                  <div className="sm:hidden pt-1 border-t border-border">
+                    <span className="block text-[10px] font-semibold text-muted-foreground mb-1">Paper Format</span>
+                    <select
+                      aria-label="Paper format mobile"
+                      value={layout.format.id}
+                      onChange={(e) => handleFormatChange(e.target.value)}
+                      className="w-full rounded border border-input bg-background px-2 py-1 text-xs"
+                    >
+                      {PAGE_FORMATS.map((f) => (
+                        <option key={f.id} value={f.id}>
+                          {f.name} ({f.width}×{f.height})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+
           {/* Export Button */}
           <button
             onClick={() => {
               setExportInitialTab(viewMode === "webtoon" ? "webtoon" : "image");
               setExportModalOpen(true);
             }}
-            className="flex items-center gap-1.5 rounded-sm border-2 border-foreground bg-primary px-3.5 py-1 font-bold text-primary-foreground shadow-ink hover:-translate-y-0.5 text-xs ml-1"
+            aria-label="Export Chapter"
+            className="flex items-center gap-1 rounded-sm border-2 border-foreground bg-primary px-2 sm:px-3 py-1 font-bold text-primary-foreground shadow-ink hover:-translate-y-0.5 text-xs"
           >
             <Download className="h-3.5 w-3.5" />
-            Export Chapter
+            <span className="hidden sm:inline">Export Chapter</span>
+            <span className="sm:hidden">Export</span>
           </button>
         </div>
       </header>
 
       {/* Main Workspace Body */}
       <div className="flex min-h-0 flex-1 overflow-hidden">
-        {/* Left Toolbar: 4 Creative Trays (Panels, Backgrounds, Characters, Dialogue) */}
-        <aside className="flex w-76 flex-col border-r-2 border-foreground bg-card overflow-hidden shrink-0">
+        {/* Left Toolbar: 4 Creative Trays (Pinned on Desktop / Tablet Landscape, Drawer/Sheet on Portrait & Phone) */}
+        <ResponsiveDrawer
+          mode={
+            device.pinLeftByDefault
+              ? "pinned-left"
+              : device.useBottomSheet
+              ? "sheet-bottom"
+              : "drawer-left"
+          }
+          isOpen={panelsLeftOpen}
+          onClose={() => setPanelsLeftOpen(false)}
+          title="Panel Tools, Backs, Chars & SFX"
+          pinnedClassName={device.tier === "tablet-landscape" ? "w-64" : "w-76"}
+          testId="panels-left-drawer"
+        >
           {/* Tray Tab Bar */}
           <div className="grid grid-cols-4 border-b-2 border-foreground bg-muted text-[11px] font-semibold text-center">
             <button
@@ -1585,7 +1754,12 @@ export function PanelStudio({
                     <button
                       key={t.id}
                       aria-pressed={tool === t.id}
-                      onClick={() => setTool(t.id)}
+                      onClick={() => {
+                        setTool(t.id);
+                        if (!device.pinLeftByDefault && t.id !== "select") {
+                          setPanelsLeftOpen(false);
+                        }
+                      }}
                       className={`rounded-sm border border-border py-1.5 text-[10px] font-semibold hover:border-foreground hover:bg-accent disabled:opacity-40 ${tool === t.id ? "bg-foreground text-background border-foreground" : ""}`}
                     >
                       {t.label}
@@ -2263,12 +2437,13 @@ export function PanelStudio({
               </div>
             </div>
           )}
-        </aside>
+        </ResponsiveDrawer>
 
-        {/* Center Canvas Viewport with Auto-Fit Scrolling */}
+        {/* Center Canvas Viewport with Auto-Fit Scrolling + 2-Finger Pinch Zoom */}
         <main
           ref={canvasContainerRef}
-          className={`flex-1 min-w-0 overflow-auto p-6 bg-muted/30 ${
+          style={{ touchAction: "manipulation" }}
+          className={`relative flex-1 min-w-0 overflow-auto p-2 sm:p-6 bg-muted/30 ${
             viewMode === "webtoon" ? "block" : "flex"
           }`}
           onWheel={(e) => {
@@ -2277,7 +2452,54 @@ export function PanelStudio({
               setZoom((z) => Math.max(0.2, Math.min(1.5, z - e.deltaY * 0.0015)));
             }
           }}
+          onTouchStart={(e) => {
+            if (e.touches.length === 2) {
+              const t1 = e.touches[0];
+              const t2 = e.touches[1];
+              pinchRef.current = {
+                dist: Math.max(1, Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY)),
+                startZoom: zoom,
+                midX: (t1.clientX + t2.clientX) / 2,
+                midY: (t1.clientY + t2.clientY) / 2,
+              };
+            }
+          }}
+          onTouchMove={(e) => {
+            const p = pinchRef.current;
+            if (!p || e.touches.length !== 2) return;
+            const t1 = e.touches[0];
+            const t2 = e.touches[1];
+            const dist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+            const nextZoom = Math.max(
+              0.2,
+              Math.min(1.5, Math.round(p.startZoom * (dist / p.dist) * 100) / 100),
+            );
+            setZoom(nextZoom);
+            const curMidX = (t1.clientX + t2.clientX) / 2;
+            const curMidY = (t1.clientY + t2.clientY) / 2;
+            if (canvasContainerRef.current) {
+              canvasContainerRef.current.scrollLeft -= curMidX - p.midX;
+              canvasContainerRef.current.scrollTop -= curMidY - p.midY;
+            }
+            p.midX = curMidX;
+            p.midY = curMidY;
+          }}
+          onTouchEnd={() => {
+            if (pinchRef.current) pinchRef.current = null;
+          }}
         >
+          {device.isCompact && tool !== "select" && (
+            <div className="fixed left-1/2 top-16 z-20 -translate-x-1/2 flex items-center gap-1.5 rounded-full border-2 border-foreground bg-card/95 px-3 py-1 text-[11px] font-bold shadow-ink">
+              <span className="text-primary uppercase">{tool}</span>
+              <button
+                type="button"
+                onClick={() => setTool("select")}
+                className="rounded bg-foreground px-1.5 py-0.5 text-[10px] text-background"
+              >
+                Done
+              </button>
+            </div>
+          )}
           {viewMode === "webtoon" ? (
             <WebtoonCanvas
               pages={allPages && allPages.length > 0 ? allPages : [layout]}
@@ -2470,7 +2692,21 @@ export function PanelStudio({
         </main>
 
         {/* Right Inspector: Panels, Characters, Balloons, Layers */}
-        <aside className="flex w-76 flex-col border-l-2 border-foreground bg-card p-3 space-y-4 overflow-y-auto shrink-0">
+        <ResponsiveDrawer
+          mode={
+            device.pinRightByDefault
+              ? "pinned-right"
+              : device.useBottomSheet
+              ? "sheet-bottom"
+              : "drawer-right"
+          }
+          isOpen={panelsRightOpen}
+          onClose={() => setPanelsRightOpen(false)}
+          title="Panel & Element Inspector"
+          pinnedClassName="w-76"
+          testId="panels-right-drawer"
+        >
+          <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-4">
           {/* Free Whole-Page Elements (visible even when no panel is selected or image sits behind panels) */}
           {layout.elements.some((el) => el.panelId === PAGE_LAYER_ID) && (
             <div className="border-b border-border pb-3 space-y-1.5" data-testid="page-layer-list">
@@ -3796,11 +4032,12 @@ export function PanelStudio({
                 </p>
               </div>
             )}
-        </aside>
+          </div>
+        </ResponsiveDrawer>
       </div>
 
-      {/* Chapter Page Manager Filmstrip */}
-      {allPages && allPages.length > 0 && onSelectPage && (
+      {/* Chapter Page Manager Filmstrip (Pinned on Desktop/Tablet Landscape, Toggleable Strip on Phone/Tablet Portrait) */}
+      {allPages && allPages.length > 0 && onSelectPage && device.showPagesBarPinned && (
         <PageManager
           pages={allPages}
           activePageIndex={activePageIndex}
@@ -3810,6 +4047,110 @@ export function PanelStudio({
           onDeletePage={onDeletePage || (() => {})}
           onMovePage={onMovePage || (() => {})}
         />
+      )}
+
+      {allPages && allPages.length > 0 && onSelectPage && !device.showPagesBarPinned && mobilePagesOpen && (
+        <div
+          data-testid="mobile-pages-drawer"
+          className="border-t-2 border-foreground bg-card shadow-lg shrink-0"
+        >
+          <div className="flex items-center justify-between border-b border-border px-3 py-1 text-[11px] font-bold">
+            <span>Chapter Pages ({allPages.length})</span>
+            <button
+              type="button"
+              onClick={() => setMobilePagesOpen(false)}
+              aria-label="Close pages strip"
+              className="rounded p-0.5 hover:bg-muted"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+          <PageManager
+            pages={allPages}
+            activePageIndex={activePageIndex}
+            onSelectPage={(idx) => {
+              onSelectPage(idx);
+              setMobilePagesOpen(false);
+            }}
+            onAddPage={onAddPage || (() => {})}
+            onDuplicatePage={onDuplicatePage || (() => {})}
+            onDeletePage={onDeletePage || (() => {})}
+            onMovePage={onMovePage || (() => {})}
+          />
+        </div>
+      )}
+
+      {/* Mobile / Tablet Bottom Quick Dock */}
+      {device.isCompact && (
+        <div
+          data-testid="panels-mobile-dock"
+          className="flex items-center justify-around gap-1.5 border-t-2 border-foreground bg-card px-2 py-1.5 text-xs safe-pb shrink-0"
+        >
+          {!device.pinLeftByDefault && (
+            <button
+              type="button"
+              data-testid="panels-dock-tools"
+              onClick={togglePanelsLeft}
+              className={`flex flex-1 items-center justify-center gap-1 rounded border px-2 py-1.5 font-semibold ${
+                panelsLeftOpen ? "border-foreground bg-foreground text-background" : "border-border bg-background"
+              }`}
+            >
+              <PanelLeft className="h-3.5 w-3.5" />
+              <span>Tools</span>
+            </button>
+          )}
+          <button
+            type="button"
+            data-testid="panels-dock-inspector"
+            onClick={togglePanelsRight}
+            className={`flex flex-1 items-center justify-center gap-1 rounded border px-2 py-1.5 font-semibold ${
+              panelsRightOpen
+                ? "border-foreground bg-foreground text-background"
+                : selectedItemId || selectedPanelId
+                ? "border-primary bg-primary/10 text-primary"
+                : "border-border bg-background"
+            }`}
+          >
+            <SlidersHorizontal className="h-3.5 w-3.5" />
+            <span className="truncate">
+              {selectedDrawnLine
+                ? "Edit Line"
+                : selectedBalloon
+                ? "Edit Balloon"
+                : selectedElement
+                ? "Edit Image"
+                : selectedPanel
+                ? `Panel #${layout.panels.findIndex((p) => p.id === selectedPanel.id) + 1}`
+                : "Properties"}
+            </span>
+          </button>
+          {!device.showPagesBarPinned && allPages && allPages.length > 0 && (
+            <button
+              type="button"
+              data-testid="panels-dock-pages"
+              onClick={toggleMobilePages}
+              className={`flex items-center justify-center gap-1 rounded border px-2.5 py-1.5 font-semibold ${
+                mobilePagesOpen ? "border-foreground bg-foreground text-background" : "border-border bg-background"
+              }`}
+            >
+              <FileText className="h-3.5 w-3.5" />
+              <span>Pages ({allPages.length})</span>
+            </button>
+          )}
+          {(selectedPanelId || selectedItemId) && (
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedItemId(null);
+                setSelectedPanelId(null);
+              }}
+              title="Deselect all (target whole page)"
+              className="rounded border border-border bg-background px-2 py-1.5 font-semibold"
+            >
+              Deselect
+            </button>
+          )}
+        </div>
       )}
 
       {/* Photo-to-Manga Filter Modal */}

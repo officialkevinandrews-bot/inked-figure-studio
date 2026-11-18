@@ -50,8 +50,8 @@ export function PageManager({
                 </span>
               </div>
 
-              {/* Hover Actions */}
-              <div className="mt-1 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+              {/* Page Actions (always visible on touch devices, reveal on hover on desktop) */}
+              <div className="mt-1 flex items-center gap-1 opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 transition-opacity">
                 <button
                   disabled={idx === 0}
                   onClick={(e) => {

@@ -114,6 +114,8 @@ import {
 import { SnapshotModal } from "./SnapshotModal";
 import { SavePoseModal } from "./SavePoseModal";
 import type { SnapshotResult } from "@/lib/snapshot";
+import { useDeviceLayout } from "@/lib/use-device-layout";
+import { ResponsiveDrawer } from "@/components/ui/ResponsiveDrawer";
 import {
   Camera,
   BookmarkPlus,
@@ -128,6 +130,10 @@ import {
   Package,
   Undo2,
   Redo2,
+  SlidersHorizontal,
+  PanelLeft,
+  Compass,
+  Hand,
 } from "lucide-react";
 const PanelStudio = lazy(() =>
   import("@/components/panels/PanelStudio").then((m) => ({ default: m.PanelStudio })),
@@ -1113,6 +1119,30 @@ export function Studio() {
   const [ikMode, setIkMode] = useState(true);
   const [pinFeetOn, setPinFeetOn] = useState(true);
   const [cameraLocked, setCameraLocked] = useState(false);
+  const device = useDeviceLayout();
+  const [studioLeftOpen, setStudioLeftOpen] = useState(() => device.pinLeftByDefault);
+  const [studioRightOpen, setStudioRightOpen] = useState(() => device.pinRightByDefault);
+  const [touchOrbitOnly, setTouchOrbitOnly] = useState(false);
+
+  useEffect(() => {
+    setStudioLeftOpen(device.pinLeftByDefault);
+    setStudioRightOpen(device.pinRightByDefault);
+  }, [device.tier, device.pinLeftByDefault, device.pinRightByDefault]);
+
+  const toggleStudioLeft = () => {
+    setStudioLeftOpen((open) => {
+      const next = !open;
+      if (next && !device.pinRightByDefault) setStudioRightOpen(false);
+      return next;
+    });
+  };
+  const toggleStudioRight = () => {
+    setStudioRightOpen((open) => {
+      const next = !open;
+      if (next && !device.pinLeftByDefault) setStudioLeftOpen(false);
+      return next;
+    });
+  };
   const onIkDrag = (effector: string, world: THREE.Vector3) => {
     if (!rig) return;
     if (effector === "Hips") {
@@ -1648,40 +1678,42 @@ export function Studio() {
   return (
     <>
     {panelsView}
-    <div className={`${activeTab === "panels" ? "hidden" : "flex"} h-screen flex-col bg-background text-foreground select-none`}>
+    <div className={`${activeTab === "panels" ? "hidden" : "flex"} h-dvh flex-col bg-background text-foreground select-none overflow-hidden`}>
       {/* Top Bar */}
-      <header className="flex items-center gap-4 border-b-2 border-foreground px-4 py-2 bg-card">
-        <h1 className="font-display text-xl tracking-wide">
+      <header className="flex flex-wrap items-center gap-x-2 gap-y-1.5 border-b-2 border-foreground px-2.5 sm:px-4 py-1.5 sm:py-2 bg-card safe-pt shrink-0">
+        <h1 className="font-display text-base sm:text-xl tracking-wide shrink-0">
           INKED<span className="text-primary">FIGURE</span>
         </h1>
 
-        <nav className="flex items-center gap-1 text-sm">
+        <nav className="flex items-center gap-1 text-xs sm:text-sm overflow-x-auto max-w-full">
           {([["create", "Create Character"], ["pose", "3D Pose Studio"]] as const).map(([t, label]) => (
             <button key={t} onClick={() => goTab(t)} aria-pressed={activeTab === t}
-              className={`whitespace-nowrap rounded-sm px-3 py-1 font-semibold transition-colors ${activeTab === t ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground"}`}>
+              className={`whitespace-nowrap rounded-sm px-2 sm:px-3 py-1 font-semibold transition-colors ${activeTab === t ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground"}`}>
               {label}
             </button>
           ))}
           <button
             onClick={() => goTab("panels")}
-            className="whitespace-nowrap rounded-sm px-3 py-1 font-semibold text-muted-foreground hover:text-foreground transition-colors"
+            className="whitespace-nowrap rounded-sm px-2 sm:px-3 py-1 font-semibold text-muted-foreground hover:text-foreground transition-colors"
           >
             Manga Panels {currentPageLayout.elements.length > 0 && `(${currentPageLayout.elements.length})`}
           </button>
         </nav>
 
         {activeTab === "pose" && (
-          <div className="flex items-center gap-1.5 text-xs" data-testid="pose-character-picker">
-            <label className="font-semibold">Character
-              <select aria-label="Character" value={activeCharId ?? ""} className="ml-1 rounded-sm border border-input bg-background p-1"
+          <div className="flex items-center gap-1.5 text-xs max-w-full overflow-x-auto" data-testid="pose-character-picker">
+            <label className="font-semibold flex items-center shrink-0">
+              <span className="hidden sm:inline">Character</span>
+              <select aria-label="Character" value={activeCharId ?? ""} className="sm:ml-1 max-w-[130px] rounded-sm border border-input bg-background p-1"
                 onChange={(e) => showCharacter(characters.find((c) => c.id === e.target.value) ?? null)}>
                 <option value="">Test dummy</option>
                 {characters.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
               </select>
             </label>
             {activeChar && (
-              <label className="font-semibold">Outfit
-                <select aria-label="Outfit" key={activeChar.id} defaultValue={activeChar.activeOutfit} className="ml-1 rounded-sm border border-input bg-background p-1"
+              <label className="font-semibold flex items-center shrink-0">
+                <span className="hidden sm:inline">Outfit</span>
+                <select aria-label="Outfit" key={activeChar.id} defaultValue={activeChar.activeOutfit} className="sm:ml-1 max-w-[120px] rounded-sm border border-input bg-background p-1"
                   onChange={(e) => showCharacter(activeChar, e.target.value)}>
                   {activeChar.outfits.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
                 </select>
@@ -1690,24 +1722,26 @@ export function Studio() {
           </div>
         )}
 
-        <div className="ml-auto flex items-center gap-2 text-sm">
-          <span className="text-muted-foreground text-xs hidden sm:inline">
+        <div className="ml-auto flex items-center gap-1.5 sm:gap-2 text-sm shrink-0">
+          <span className="text-muted-foreground text-xs hidden xl:inline">
             {modelName} ({modelType.toUpperCase()})
             {rig ? ` · ${rig.bones.size} bones mapped` : " · Static Object"}
           </span>
 
           <button
             onClick={() => handleCaptureSnapshot(2)}
-            className="flex items-center gap-1.5 rounded-sm border-2 border-foreground bg-accent px-3 py-1 font-semibold shadow-ink transition-transform hover:-translate-y-0.5 text-xs"
+            aria-label="Capture 2D Render"
+            className="flex items-center gap-1 rounded-sm border-2 border-foreground bg-accent px-2 sm:px-3 py-1 font-semibold shadow-ink transition-transform hover:-translate-y-0.5 text-xs whitespace-nowrap"
           >
-            <Camera className="h-4 w-4 text-primary" />
-            Capture 2D Render
+            <Camera className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-primary shrink-0" />
+            <span className="hidden sm:inline">Capture 2D Render</span>
+            <span className="sm:hidden">Capture</span>
           </button>
 
           <button
             hidden={activeTab === "create" || !!activeChar}
             onClick={() => fileRef.current?.click()}
-            className="rounded-sm border-2 border-foreground bg-primary px-3 py-1 font-semibold text-primary-foreground shadow-ink transition-transform hover:-translate-y-0.5 text-xs"
+            className="hidden sm:inline-block rounded-sm border-2 border-foreground bg-primary px-2.5 sm:px-3 py-1 font-semibold text-primary-foreground shadow-ink transition-transform hover:-translate-y-0.5 text-xs whitespace-nowrap"
           >
             Import Model (.fbx/.vrm/.glb)
           </button>
@@ -1722,9 +1756,22 @@ export function Studio() {
       </header>
 
       {/* Main Workspace */}
-      <div className="flex min-h-0 flex-1">
-        {/* Left: Pose Presets OR 3D Props Library */}
-        <aside className="flex w-76 flex-col border-r-2 border-foreground bg-card">
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        {/* Left: Character / Poses / Props / Face Drawer */}
+        <ResponsiveDrawer
+          mode={
+            device.pinLeftByDefault
+              ? "pinned-left"
+              : device.useBottomSheet
+              ? "sheet-bottom"
+              : "drawer-left"
+          }
+          isOpen={studioLeftOpen}
+          onClose={() => setStudioLeftOpen(false)}
+          title={activeTab === "create" ? "Character & Appearance" : "Poses, Props & Scene"}
+          pinnedClassName={device.tier === "tablet-landscape" ? "w-64" : "w-76"}
+          testId="studio-left-drawer"
+        >
           {/* Tabs: Poser vs 3D Props */}
           {activeTab === "create" && (
             <CharacterPanel
@@ -1915,7 +1962,7 @@ export function Studio() {
                           <button
                             onClick={(e) => handleDeleteCustomPose(p.id, e)}
                             title="Delete custom pose"
-                            className="opacity-0 group-hover:opacity-100 hover:text-destructive p-0.5 transition-opacity"
+                            className="opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 hover:text-destructive p-0.5 transition-opacity"
                           >
                             <Trash2 className="h-3 w-3" />
                           </button>
@@ -2518,7 +2565,7 @@ export function Studio() {
               )}
             </div>
           )}
-        </aside>
+        </ResponsiveDrawer>
 
         {/* Center: 3D Viewport with Quick Camera Angles */}
         <main
@@ -2551,7 +2598,7 @@ export function Studio() {
           </div>
 
           <div
-            className="relative flex-1 m-4 border-[3px] border-foreground bg-card shadow-ink overflow-hidden"
+            className="relative flex-1 m-1.5 sm:m-4 border-[2px] sm:border-[3px] border-foreground bg-card shadow-ink overflow-hidden"
             data-scene-ready={rig ? "" : undefined}
           >
             <Viewport
@@ -2562,6 +2609,7 @@ export function Studio() {
               onSelect={setSelected}
               onBoneDrag={onBoneDrag}
               ikMode={ikMode}
+              orbitOnly={device.isCompact && touchOrbitOnly}
               onIkDrag={onIkDrag}
               cameraLocked={cameraLocked}
               settings={settings}
@@ -2623,7 +2671,25 @@ export function Studio() {
             </div>
           )}
 
-          <div className="absolute bottom-6 left-8 flex items-center gap-4 text-xs text-muted-foreground pointer-events-none">
+          {/* Compact / Touch 3D Camera Orbit vs Pose Limbs Toggle Pill */}
+          {(device.isCompact || device.isTouch) && activeTab === "pose" && (
+            <button
+              type="button"
+              data-testid="touch-orbit-toggle"
+              aria-pressed={touchOrbitOnly}
+              onClick={() => setTouchOrbitOnly((v) => !v)}
+              className={`absolute bottom-3 right-3 z-20 flex items-center gap-1.5 rounded-full border-2 border-foreground px-3 py-1.5 text-xs font-bold shadow-ink transition-colors ${
+                touchOrbitOnly
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-card/95 text-foreground hover:bg-accent"
+              }`}
+            >
+              {touchOrbitOnly ? <Compass className="h-3.5 w-3.5" /> : <Hand className="h-3.5 w-3.5 text-primary" />}
+              <span>{touchOrbitOnly ? "Orbit Only (Tap to Pose)" : "Pose Limbs"}</span>
+            </button>
+          )}
+
+          <div className="hidden md:flex absolute bottom-6 left-8 items-center gap-4 text-xs text-muted-foreground pointer-events-none">
             {ikMode ? (
               <>
                 <span>✋ Drag any limb or joint to bend with IK</span>
@@ -2642,7 +2708,21 @@ export function Studio() {
         </main>
 
         {/* Right: Inspector & Controls */}
-        <aside className={`${activeTab === "create" ? "hidden" : "flex"} w-76 flex-col overflow-y-auto border-l-2 border-foreground bg-card`}>
+        <ResponsiveDrawer
+          mode={
+            device.pinRightByDefault
+              ? "pinned-right"
+              : device.useBottomSheet
+              ? "sheet-bottom"
+              : "drawer-right"
+          }
+          isOpen={activeTab !== "create" && studioRightOpen}
+          onClose={() => setStudioRightOpen(false)}
+          title="Joints, Lighting & Ink Render"
+          pinnedClassName="w-76"
+          testId="studio-right-drawer"
+        >
+          <div className="flex-1 min-h-0 overflow-y-auto">
           {/* Quick Capture Panel Card */}
           <section className="border-b border-border p-3 bg-accent/40">
             <h2 className="font-display text-base mb-1 flex items-center gap-1.5">
@@ -3056,8 +3136,53 @@ export function Studio() {
               </label>
             </div>
           </section>
-        </aside>
+          </div>
+        </ResponsiveDrawer>
       </div>
+
+      {/* Mobile / Tablet Bottom Dock (Zero hidden controls on compact viewports) */}
+      {(!device.pinLeftByDefault || (activeTab === "pose" && !device.pinRightByDefault)) && (
+        <div
+          data-testid="studio-mobile-dock"
+          className="flex items-center justify-around gap-1.5 border-t-2 border-foreground bg-card px-2 py-1.5 text-xs safe-pb shrink-0"
+        >
+          {!device.pinLeftByDefault && (
+            <button
+              type="button"
+              data-testid="studio-dock-tools"
+              onClick={toggleStudioLeft}
+              className={`flex flex-1 items-center justify-center gap-1 rounded border px-2 py-1.5 font-semibold ${
+                studioLeftOpen ? "border-foreground bg-foreground text-background" : "border-border bg-background"
+              }`}
+            >
+              <PanelLeft className="h-3.5 w-3.5" />
+              <span>{activeTab === "create" ? "Character" : "Poses & Props"}</span>
+            </button>
+          )}
+          {activeTab === "pose" && !device.pinRightByDefault && (
+            <button
+              type="button"
+              data-testid="studio-dock-inspector"
+              onClick={toggleStudioRight}
+              className={`flex flex-1 items-center justify-center gap-1 rounded border px-2 py-1.5 font-semibold ${
+                studioRightOpen ? "border-foreground bg-foreground text-background" : "border-border bg-background"
+              }`}
+            >
+              <SlidersHorizontal className="h-3.5 w-3.5" />
+              <span>Joints &amp; Ink</span>
+            </button>
+          )}
+          {device.isPhone && activeTab === "pose" && !activeChar && (
+            <button
+              type="button"
+              onClick={() => fileRef.current?.click()}
+              className="flex items-center justify-center gap-1 rounded border border-border bg-background px-2.5 py-1.5 font-semibold"
+            >
+              Import
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Snapshot Modal */}
       <SnapshotModal

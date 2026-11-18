@@ -122,6 +122,7 @@ export function PanelTransformer({
         transformOrigin: "center center",
         zIndex: mode === "handles-only" ? 90 : element.zIndex,
         pointerEvents: mode === "handles-only" ? "none" : "auto",
+        touchAction: showArt ? "none" : undefined,
       }}
       className={`group select-none ${showArt ? "cursor-move" : ""} ${showHandles ? "ring-2 ring-primary ring-offset-1" : ""}`}
       onClick={showArt ? (e) => e.stopPropagation() : undefined}
@@ -230,7 +231,9 @@ export function PanelTransformer({
                 key={handle}
                 role="button"
                 tabIndex={0}
+                data-touch-handle="true"
                 aria-label={HANDLE_LABELS[handle]}
+                style={{ touchAction: "none" }}
                 className={`pointer-events-auto absolute w-3 h-3 bg-primary border-2 border-foreground rounded-xs shadow-xs ${posClass[handle]}`}
                 onClick={(e) => e.stopPropagation()}
                 onPointerDown={(e) => handleResizePointerDown(handle, e)}
@@ -244,8 +247,10 @@ export function PanelTransformer({
           <div
             role="button"
             tabIndex={0}
+            data-touch-handle="true"
             aria-label="Rotate element"
             title="Drag to rotate (Shift snaps 15°)"
+            style={{ touchAction: "none" }}
             className="pointer-events-auto absolute -bottom-7 left-1/2 -translate-x-1/2 flex h-5 w-5 items-center justify-center rounded-full border-2 border-foreground bg-card text-foreground shadow-ink cursor-grab active:cursor-grabbing"
             onClick={(e) => e.stopPropagation()}
             onPointerDown={(e) => {

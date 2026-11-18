@@ -901,6 +901,7 @@ export function PageCanvas({
                     type="button"
                     aria-label={h.label}
                     data-testid={`panel-resize-${h.id}`}
+                    data-touch-handle="true"
                     style={{ position: "absolute", width: 12, height: 12, cursor: h.cursor, touchAction: "none", ...h.style }}
                     className="rounded-sm border-2 border-foreground bg-white shadow hover:bg-primary hover:border-white"
                     onClick={(e) => e.stopPropagation()}
@@ -1137,6 +1138,7 @@ export function PageCanvas({
             <div
               key={`v-${i}`}
               data-testid="corner-handle"
+              data-touch-handle="true"
               style={{ position: "absolute", left: margin + v.x * pw - 8, top: margin + v.y * ph - 8, width: 16, height: 16, touchAction: "none" }}
               className="cursor-move rounded-full border-2 border-black bg-primary shadow hover:scale-125"
               onClick={(e) => e.stopPropagation()}

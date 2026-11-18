@@ -152,9 +152,29 @@
     border-color: var(--color-border);
   }
 
+  html,
   body {
     background-color: var(--color-background);
     color: var(--color-foreground);
+    overscroll-behavior: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+.safe-pb {
+  padding-bottom: max(0.375rem, env(safe-area-inset-bottom));
+}
+
+.safe-pt {
+  padding-top: env(safe-area-inset-top);
+}
+
+/* Expand invisible touch hit area on canvas handles for fingers & stylus without changing desktop pixels */
+@media (pointer: coarse) {
+  [data-touch-handle="true"]::after {
+    content: "";
+    position: absolute;
+    inset: -12px;
   }
 }
 

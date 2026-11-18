@@ -77,31 +77,32 @@ export function PhotoFilterModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-      <div className="flex h-[90vh] max-h-[850px] w-full max-w-5xl flex-col rounded-lg border-2 border-foreground bg-card shadow-2xl overflow-hidden">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-2 sm:p-4">
+      <div className="flex h-[92dvh] max-h-[850px] w-full max-w-5xl flex-col rounded-lg border-2 border-foreground bg-card shadow-2xl overflow-hidden">
         {/* Header */}
-        <div className="flex items-center justify-between border-b-2 border-foreground bg-muted px-5 py-3">
-          <div className="flex items-center gap-2">
-            <Sparkles className="h-5 w-5 text-primary" />
-            <h2 className="font-display text-lg tracking-wide">
+        <div className="flex items-center justify-between border-b-2 border-foreground bg-muted px-3 sm:px-5 py-2.5 sm:py-3">
+          <div className="flex items-center gap-2 min-w-0">
+            <Sparkles className="h-5 w-5 text-primary shrink-0" />
+            <h2 className="font-display text-sm sm:text-lg tracking-wide truncate">
               PHOTO-TO-MANGA <span className="text-primary">FILTER</span>
             </h2>
-            <span className="text-xs text-muted-foreground ml-2">
+            <span className="hidden md:inline text-xs text-muted-foreground ml-2">
               Transform real photos into authentic monochrome manga backgrounds & screentones
             </span>
           </div>
           <button
             onClick={onClose}
-            className="rounded p-1 text-muted-foreground hover:bg-background hover:text-foreground"
+            aria-label="Close photo filter"
+            className="rounded p-1 text-muted-foreground hover:bg-background hover:text-foreground shrink-0"
           >
             <X className="h-5 w-5" />
           </button>
         </div>
 
         {/* Body */}
-        <div className="flex flex-1 overflow-hidden">
+        <div className="flex flex-1 flex-col md:flex-row overflow-y-auto md:overflow-hidden">
           {/* Controls Sidebar */}
-          <div className="w-80 border-r-2 border-foreground bg-card p-4 overflow-y-auto space-y-5 text-xs">
+          <div className="w-full md:w-80 shrink-0 border-b-2 md:border-b-0 md:border-r-2 border-foreground bg-card p-3 sm:p-4 md:overflow-y-auto space-y-4 sm:space-y-5 text-xs">
             <div>
               <label className="font-semibold block mb-2 text-foreground">Source Image</label>
               <button

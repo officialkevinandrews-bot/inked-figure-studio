@@ -238,7 +238,9 @@ export function SpeechBalloonRenderer({
             key={h.id}
             role="button"
             tabIndex={0}
+            data-touch-handle="true"
             aria-label={h.label}
+            style={{ touchAction: "none" }}
             className={`pointer-events-auto absolute h-2.5 w-2.5 rounded-xs border border-foreground bg-primary shadow-xs ${h.cls}`}
             onClick={(e) => e.stopPropagation()}
             onPointerDown={(e) => {
@@ -272,7 +274,9 @@ export function SpeechBalloonRenderer({
             top: `${balloon.height / 2 + (balloon.tailY ?? balloon.height * 0.8) - 6}px`,
             cursor: "crosshair",
             pointerEvents: "auto",
+            touchAction: "none",
           }}
+          data-touch-handle="true"
           className="w-3.5 h-3.5 bg-primary border-2 border-foreground rounded-full shadow-ink z-50 transition-transform hover:scale-125"
           title="Drag to aim speech tail"
           onPointerDown={handleTailPointerDown}

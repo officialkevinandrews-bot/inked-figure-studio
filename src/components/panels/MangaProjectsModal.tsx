@@ -134,7 +134,7 @@ export function MangaProjectsModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-2 sm:p-4 backdrop-blur-xs"
       onClick={onClose}
     >
       <div
@@ -142,7 +142,7 @@ export function MangaProjectsModal({
         aria-modal="true"
         aria-label="Manga Series and Chapters Library"
         data-testid="manga-projects-modal"
-        className="flex max-h-[88vh] w-full max-w-3xl flex-col rounded border-2 border-foreground bg-card shadow-2xl"
+        className="flex max-h-[92dvh] w-full max-w-3xl flex-col rounded border-2 border-foreground bg-card shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
