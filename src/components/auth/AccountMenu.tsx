@@ -4,6 +4,7 @@ import {
   CheckCircle2,
   Cloud,
   CloudOff,
+  Download,
   LogOut,
   Plus,
   RefreshCw,
@@ -11,6 +12,7 @@ import {
   Users,
 } from "lucide-react";
 import { CORE_ALLOWED_EMAILS } from "@/lib/allowlist";
+import { downloadFullAccountBackup } from "@/lib/cloud-sync";
 import { useOptionalAuth } from "./AuthProvider";
 
 interface AccountMenuProps {
@@ -24,6 +26,7 @@ export function AccountMenu({ compact = false }: AccountMenuProps) {
   const [newEmail, setNewEmail] = useState("");
   const [allowlistMsg, setAllowlistMsg] = useState<string | null>(null);
   const [allowlistBusy, setAllowlistBusy] = useState(false);
+  const [backupBusy, setBackupBusy] = useState(false);
 
   if (!auth?.user) return null;
   const {
@@ -214,33 +217,53 @@ export function AccountMenu({ compact = false }: AccountMenuProps) {
               )}
             </div>
 
-            <div className="mt-2.5 flex gap-1.5">
+            <div className="mt-2.5 space-y-1.5">
               <button
                 type="button"
-                data-testid="account-sync-now-btn"
-                onClick={() => {
-                  void syncNow();
+                data-testid="account-download-backup-btn"
+                disabled={backupBusy}
+                onClick={async () => {
+                  setBackupBusy(true);
+                  try {
+                    await downloadFullAccountBackup(user.uid, user.email);
+                  } finally {
+                    setBackupBusy(false);
+                  }
                 }}
-                disabled={syncStatus.phase === "syncing"}
-                className="flex flex-1 items-center justify-center gap-1 rounded-sm border border-border bg-background px-2 py-1.5 font-semibold hover:border-foreground disabled:opacity-50"
+                className="flex w-full items-center justify-center gap-1.5 rounded-sm border border-border bg-accent/60 px-2.5 py-1.5 font-semibold hover:border-foreground disabled:opacity-50"
               >
-                <RefreshCw
-                  className={`h-3.5 w-3.5 ${syncStatus.phase === "syncing" ? "animate-spin" : ""}`}
-                />
-                <span>Sync Now</span>
+                <Download className="h-3.5 w-3.5 text-primary" />
+                <span>{backupBusy ? "Preparing Full Backup…" : "Download Full Account Backup (.json)"}</span>
               </button>
-              <button
-                type="button"
-                data-testid="account-signout-btn"
-                onClick={() => {
-                  setOpen(false);
-                  void signOutSafely();
-                }}
-                className="flex items-center justify-center gap-1 rounded-sm border border-destructive/50 bg-destructive/10 px-2.5 py-1.5 font-semibold text-destructive hover:bg-destructive hover:text-white"
-              >
-                <LogOut className="h-3.5 w-3.5" />
-                <span>Sign Out</span>
-              </button>
+
+              <div className="flex gap-1.5">
+                <button
+                  type="button"
+                  data-testid="account-sync-now-btn"
+                  onClick={() => {
+                    void syncNow();
+                  }}
+                  disabled={syncStatus.phase === "syncing"}
+                  className="flex flex-1 items-center justify-center gap-1 rounded-sm border border-border bg-background px-2 py-1.5 font-semibold hover:border-foreground disabled:opacity-50"
+                >
+                  <RefreshCw
+                    className={`h-3.5 w-3.5 ${syncStatus.phase === "syncing" ? "animate-spin" : ""}`}
+                  />
+                  <span>Sync Now</span>
+                </button>
+                <button
+                  type="button"
+                  data-testid="account-signout-btn"
+                  onClick={() => {
+                    setOpen(false);
+                    void signOutSafely();
+                  }}
+                  className="flex items-center justify-center gap-1 rounded-sm border border-destructive/50 bg-destructive/10 px-2.5 py-1.5 font-semibold text-destructive hover:bg-destructive hover:text-white"
+                >
+                  <LogOut className="h-3.5 w-3.5" />
+                  <span>Sign Out</span>
+                </button>
+              </div>
             </div>
           </div>
         </>

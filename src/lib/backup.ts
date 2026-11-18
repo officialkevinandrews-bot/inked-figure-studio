@@ -1,9 +1,13 @@
 import type { Character } from "./characters";
 import { customItemIds } from "./characters";
 import type { CustomBaseModel } from "./base-models";
+import type { RosterCharacter } from "./character-roster";
+import type { CustomPropMeta } from "./custom-props";
+import type { SavedCustomTemplate } from "./custom-templates";
 import type { FacePack } from "./face-parts";
-import type { PageLayout } from "./manga-layout";
+import type { PageLayout, PanelOverlapPreference } from "./manga-layout";
 import type { MangaLibraryState } from "./manga-projects";
+import type { CustomPose } from "./pose-storage";
 
 export interface BackupFile {
   id: string;
@@ -17,9 +21,18 @@ export interface StudioBackup {
   app: "koma-studio";
   version: 1;
   exported: number;
+  accountEmail?: string | null;
   characters: Character[];
   baseModels?: CustomBaseModel[];
   facePacks: FacePack[];
+  customPoses?: CustomPose[];
+  customProps?: CustomPropMeta[];
+  customTemplates?: SavedCustomTemplate[];
+  roster?: RosterCharacter[];
+  faceConfigs?: Record<string, unknown>;
+  faceCalibrations?: Record<string, unknown>;
+  wardrobeOutfits?: Record<string, unknown>;
+  panelOverlapPref?: PanelOverlapPreference;
   files: BackupFile[];
   pages?: PageLayout[];
   activePageIndex?: number;

@@ -1,6 +1,8 @@
 import { FacePanel } from "./FacePanel";
 import { AccountMenu } from "@/components/auth/AccountMenu";
-import { markProjectDeletedForCloudSync } from "@/lib/cloud-sync";
+import { buildFullAccountBackup, markProjectDeletedForCloudSync } from "@/lib/cloud-sync";
+import { saveCustomTemplates, loadCustomTemplates } from "@/lib/custom-templates";
+import { getActiveStorageUser, userLsSet } from "@/lib/user-storage";
 import { loadPacks, savePacks, type FacePack } from "@/lib/face-parts";
 import { ExtractOutfitModal } from "./ExtractOutfitModal";
 import { WardrobePanel } from "./WardrobePanel";
@@ -146,6 +148,7 @@ import {
   PAGE_FORMATS,
   getPresetPanels,
   getPanelPixelBounds,
+  savePanelOverlapPreference,
 } from "@/lib/manga-layout";
 import {
   BUILTIN_PROPS,
@@ -155,7 +158,7 @@ import {
   type PropTransform,
   type PropCategory,
 } from "@/lib/props";
-import { saveRosterItem } from "@/lib/character-roster";
+import { loadSavedRoster, saveRosterItem } from "@/lib/character-roster";
 import { solveCCD, chainOffsets, pinFeet } from "@/lib/ik";
 import {
   nextStagePosition,
@@ -1040,35 +1043,12 @@ export function Studio() {
   const exportBackup = async () => {
     const flushed = flushActiveChapterToLibrary();
     const externalLib = await externalizeLibraryAssets(flushed);
-    const activeProj = getActiveProject(externalLib);
-    const activeCh = getActiveChapter(activeProj);
-    const externalPages = activeCh.pages;
-    const files = [];
-    for (const id of referencedFileIds(
-      characters,
-      externalPages,
-      customPropsMeta.map((p) => p.fileId),
-      baseModels,
-      externalLib,
-    )) {
-      const f = await getFile(id).catch(() => null);
-      if (f) files.push({ id, name: f.name, slot: f.slot, type: f.blob.type || "application/octet-stream", data: await blobToB64(f.blob) });
-    }
-    const b: StudioBackup = {
-      app: "koma-studio",
-      version: 1,
-      exported: Date.now(),
-      characters,
-      baseModels,
-      facePacks,
-      files,
-      pages: externalPages,
-      activePageIndex: activeCh.activePageIndex,
-      mangaLibrary: externalLib,
-    };
+    const uid = getActiveStorageUser() ?? "local";
+    const b = await buildFullAccountBackup(uid, null, externalLib);
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([JSON.stringify(b)], { type: "application/json" }));
-    a.download = `manga-studio-backup-${new Date().toISOString().slice(0, 10)}.json`; a.click();
+    a.download = `manga-studio-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   };
   const importBackup = async (file: File) => {
@@ -1082,6 +1062,44 @@ export function Studio() {
         commitBaseModels((l) => reconcileBaseModels(l, b.characters));
       }
       updateFacePacks(mergeById(facePacks, b.facePacks));
+      if (Array.isArray(b.customPoses) && b.customPoses.length > 0) {
+        userLsSet(
+          "inked_figure_studio_custom_poses_v1",
+          JSON.stringify(mergeById(loadCustomPoses(), b.customPoses)),
+          "workspace",
+        );
+      }
+      if (Array.isArray(b.customProps) && b.customProps.length > 0) {
+        saveCustomPropsMeta(mergeById(loadCustomPropsMeta(), b.customProps));
+      }
+      if (Array.isArray(b.customTemplates) && b.customTemplates.length > 0) {
+        saveCustomTemplates(mergeById(loadCustomTemplates(), b.customTemplates));
+      }
+      if (Array.isArray(b.roster) && b.roster.length > 0) {
+        userLsSet(
+          "inked_manga_roster_v1",
+          JSON.stringify(mergeById(loadSavedRoster(), b.roster).slice(0, 30)),
+          "workspace",
+        );
+      }
+      if (b.faceConfigs) {
+        for (const [k, v] of Object.entries(b.faceConfigs)) {
+          userLsSet(`koma-face:${k}`, JSON.stringify(v), "workspace");
+        }
+      }
+      if (b.faceCalibrations) {
+        for (const [k, v] of Object.entries(b.faceCalibrations)) {
+          userLsSet(`koma-face-calib:${k}`, JSON.stringify(v), "workspace");
+        }
+      }
+      if (b.wardrobeOutfits) {
+        for (const [k, v] of Object.entries(b.wardrobeOutfits)) {
+          userLsSet(`koma-outfit:${k}`, JSON.stringify(v), "workspace");
+        }
+      }
+      if (b.panelOverlapPref) {
+        savePanelOverlapPreference(b.panelOverlapPref);
+      }
       if (b.mangaLibrary && b.mangaLibrary.projects.length > 0) {
         await saveMangaLibrary(b.mangaLibrary);
       } else if (b.pages && b.pages.length > 0) {

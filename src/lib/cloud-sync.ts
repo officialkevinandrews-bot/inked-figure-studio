@@ -9,7 +9,7 @@ import {
 } from "firebase/firestore";
 import { getBytes, ref as storageRef, uploadBytes } from "firebase/storage";
 import type { User } from "firebase/auth";
-import { referencedFileIds } from "./backup";
+import { blobToB64, referencedFileIds, type BackupFile, type StudioBackup } from "./backup";
 import { loadBaseModels, type CustomBaseModel } from "./base-models";
 import { resetChapterAssetCache } from "./chapter-storage";
 import { loadSavedRoster, type RosterCharacter } from "./character-roster";
@@ -35,6 +35,8 @@ import { loadPanelOverlapPreference, type PanelOverlapPreference } from "./manga
 import {
   createDefaultLibrary,
   externalizeLibraryAssets,
+  getActiveChapter,
+  getActiveProject,
   loadMangaLibrary,
   type MangaLibraryState,
   type MangaProject,
@@ -1236,6 +1238,99 @@ export async function initializeUserCloudSession(user: User): Promise<{
   }
 
   return { legacyPrompt };
+}
+
+/** Builds a self-contained JSON backup of the signed-in user's entire account (3D models, characters, poses, props, face/outfit settings, and all manga series/chapters/images). */
+export async function buildFullAccountBackup(
+  uid: string,
+  accountEmail?: string | null,
+  overrideLibrary?: MangaLibraryState,
+): Promise<StudioBackup> {
+  const rawLib = overrideLibrary ?? (await loadMangaLibrary().catch(() => createDefaultLibrary(null)));
+  const externalLib = await externalizeLibraryAssets(rawLib);
+  const activeProj = getActiveProject(externalLib);
+  const activeCh = getActiveChapter(activeProj);
+  const characters = loadCharacters();
+  const baseModels = loadBaseModels();
+  const facePacks = loadPacks();
+  const customPoses = loadCustomPoses();
+  const customProps = loadCustomPropsMeta();
+  const customTemplates = loadCustomTemplates();
+  const roster = loadSavedRoster();
+  const faceConfigs = safeJsonMapFromPrefix("koma-face:", uid);
+  const faceCalibrations = safeJsonMapFromPrefix("koma-face-calib:", uid);
+  const wardrobeOutfits = safeJsonMapFromPrefix("koma-outfit:", uid);
+  const panelOverlapPref = loadPanelOverlapPreference();
+
+  const storedFiles = await listAllFiles(getActiveFilesDbName(uid)).catch(() => []);
+  const storedMap = new Map(storedFiles.map((f) => [f.id, f]));
+  const idsToInclude = new Set<string>([
+    ...referencedFileIds(
+      characters,
+      activeCh.pages,
+      customProps.map((p) => p.fileId),
+      baseModels,
+      externalLib,
+    ),
+    ...storedFiles.map((f) => f.id),
+  ]);
+
+  const files: BackupFile[] = [];
+  for (const id of idsToInclude) {
+    if (!id || id.startsWith("builtin:")) continue;
+    const f = storedMap.get(id) ?? (await getLocalFile(id, getActiveFilesDbName(uid)).catch(() => null));
+    if (!f) continue;
+    files.push({
+      id: f.id,
+      name: f.name,
+      slot: f.slot,
+      type: f.blob.type || "application/octet-stream",
+      data: await blobToB64(f.blob),
+    });
+  }
+
+  return {
+    app: "koma-studio",
+    version: 1,
+    exported: Date.now(),
+    accountEmail: accountEmail ?? null,
+    characters,
+    baseModels,
+    facePacks,
+    customPoses,
+    customProps,
+    customTemplates,
+    roster,
+    faceConfigs,
+    faceCalibrations,
+    wardrobeOutfits,
+    panelOverlapPref,
+    files,
+    pages: activeCh.pages,
+    activePageIndex: activeCh.activePageIndex,
+    mangaLibrary: externalLib,
+  };
+}
+
+export async function downloadFullAccountBackup(
+  uid: string,
+  accountEmail?: string | null,
+  overrideLibrary?: MangaLibraryState,
+): Promise<void> {
+  const backup = await buildFullAccountBackup(uid, accountEmail, overrideLibrary);
+  const slug = (accountEmail || "account")
+    .split("@")[0]
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-|-$/g, "");
+  const dateStr = new Date().toISOString().slice(0, 10);
+  const blob = new Blob([JSON.stringify(backup)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `inked-figure-studio-${slug || "account"}-backup-${dateStr}.json`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
 }
 
 export function teardownUserCloudSession(): void {

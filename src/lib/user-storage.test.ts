@@ -7,7 +7,13 @@ import {
 } from "./allowlist";
 import { loadCharacters, saveCharacters, newCharacter } from "./characters";
 import { loadBaseModels, saveBaseModels } from "./base-models";
-import { compressBlob, decompressBytes, stripUndefined } from "./cloud-sync";
+import {
+  buildFullAccountBackup,
+  compressBlob,
+  decompressBytes,
+  stripUndefined,
+} from "./cloud-sync";
+import { parseBackup } from "./backup";
 import { isFirebaseConfigured } from "./firebase-config";
 import {
   hasUnmigratedLegacyData,
@@ -161,5 +167,23 @@ describe("per-user account storage & sync helpers", () => {
     expect(restored.byteLength).toBe(size);
     expect(restored[0]).toBe(0);
     expect(restored[size - 1]).toBe((size - 1) % 64);
+  });
+
+  it("builds a full account backup JSON compatible with parseBackup", async () => {
+    setActiveStorageUser("backup-uid");
+    saveCharacters([newCharacter("Backup Hero")]);
+    userLsSet(
+      "inked_figure_studio_custom_poses_v1",
+      JSON.stringify([{ id: "pose-1", name: "Guard", category: "Custom", bones: {}, hipsDrop: 0, createdAt: 10 }]),
+      "workspace",
+    );
+
+    const backup = await buildFullAccountBackup("backup-uid", "officialkevinandrews@gmail.com");
+    const parsed = parseBackup(JSON.stringify(backup));
+    expect(parsed.accountEmail).toBe("officialkevinandrews@gmail.com");
+    expect(parsed.characters).toHaveLength(1);
+    expect(parsed.characters[0]?.name).toBe("Backup Hero");
+    expect(parsed.customPoses).toHaveLength(1);
+    expect(parsed.mangaLibrary?.projects.length).toBeGreaterThanOrEqual(1);
   });
 });
