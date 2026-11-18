@@ -54,7 +54,7 @@ export function AccountMenu({ compact = false }: AccountMenuProps) {
   const statusLabel = (() => {
     switch (syncStatus.phase) {
       case "syncing":
-        return "Saving to your cloud account…";
+        return syncStatus.detail || "Saving to your cloud account…";
       case "offline":
         return `Offline — saved locally (${syncStatus.pendingCount} queued)`;
       case "conflict":

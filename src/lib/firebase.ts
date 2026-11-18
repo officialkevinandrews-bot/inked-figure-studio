@@ -20,8 +20,6 @@ import {
 import {
   connectFirestoreEmulator,
   getFirestore,
-  initializeFirestore,
-  memoryLocalCache,
   type Firestore,
 } from "firebase/firestore";
 import { connectStorageEmulator, getStorage, type FirebaseStorage } from "firebase/storage";
@@ -55,16 +53,7 @@ function ensureServices(): {
   }
 
   if (!cachedDb) {
-    try {
-      // App already maintains account-scoped IndexedDB/localStorage offline storage;
-      // avoiding Firestore multi-tab IndexedDB locks prevents Chrome tab-lock hangs on startup.
-      cachedDb = initializeFirestore(cachedApp, {
-        localCache: memoryLocalCache(),
-        experimentalAutoDetectLongPolling: true,
-      });
-    } catch {
-      cachedDb = getFirestore(cachedApp);
-    }
+    cachedDb = getFirestore(cachedApp);
   }
 
   const storageEnabled =

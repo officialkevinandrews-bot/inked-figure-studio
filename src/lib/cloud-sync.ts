@@ -74,6 +74,7 @@ export interface CloudSyncStatus {
   lastSyncedAt: number | null;
   legacyImportedCount: number;
   errorMessage: string | null;
+  detail: string | null;
   conflict: SyncConflictInfo | null;
 }
 
@@ -125,6 +126,7 @@ let currentStatus: CloudSyncStatus = {
   lastSyncedAt: null,
   legacyImportedCount: 0,
   errorMessage: null,
+  detail: null,
   conflict: null,
 };
 
@@ -453,7 +455,7 @@ async function uploadBlobToCloud(uid: string, file: Stored): Promise<void> {
     }
   }
 
-  // 2. Fallback: gzip + base64 chunks in Firestore subcollection
+  // 2. Fallback: gzip + base64 chunks in Firestore subcollection (parallel batched chunks + short timeouts)
   const { bytes, compressed } = await compressBlob(file.blob);
   const b64 = encodeBytesToBase64(bytes);
   const chunks: string[] = [];
@@ -464,16 +466,25 @@ async function uploadBlobToCloud(uid: string, file: Stored): Promise<void> {
     throw new Error(`File "${file.name}" exceeds maximum cloud sync size.`);
   }
 
-  for (let index = 0; index < chunks.length; index++) {
-    const chunkData = chunks[index];
-    await setDoc(
-      doc(db, "users", uid, "blobs", file.id, "chunks", `c-${index}`),
-      stripUndefined({
-        index,
-        data: chunkData,
-        fileId: file.id,
-        size: chunkData.length,
-        updatedAt: now,
+  for (let i = 0; i < chunks.length; i += 4) {
+    const batchSlice = chunks.slice(i, i + 4);
+    await Promise.all(
+      batchSlice.map((chunkData, offset) => {
+        const index = i + offset;
+        return withTimeout(
+          setDoc(
+            doc(db, "users", uid, "blobs", file.id, "chunks", `c-${index}`),
+            stripUndefined({
+              index,
+              data: chunkData,
+              fileId: file.id,
+              size: chunkData.length,
+              updatedAt: now,
+            }),
+          ),
+          10_000,
+          `Upload chunk ${index} of ${file.name}`,
+        );
       }),
     );
   }
@@ -492,7 +503,7 @@ async function uploadBlobToCloud(uid: string, file: Stored): Promise<void> {
     createdAt,
     updatedAt: now,
   };
-  await setDoc(metaRef, stripUndefined(meta));
+  await withTimeout(setDoc(metaRef, stripUndefined(meta)), 10_000, `Save blob meta ${file.name}`);
 }
 
 export async function fetchCloudFileForUser(uid: string, fileId: string): Promise<Stored | null> {
@@ -800,17 +811,65 @@ export async function flushCloudSync(uid: string = activeSyncUid ?? ""): Promise
   flushInFlight = (async () => {
     const q = loadSyncQueue(uid);
     if (countPending(q) === 0) {
-      notifyStatus({ phase: "saved", pendingCount: 0, errorMessage: null });
+      notifyStatus({ phase: "saved", pendingCount: 0, errorMessage: null, detail: null });
       return true;
     }
 
-    notifyStatus({ phase: "syncing", errorMessage: null });
+    notifyStatus({
+      phase: "syncing",
+      errorMessage: null,
+      detail: "Saving manga series & 3D studio…",
+    });
     try {
       const db = getFirebaseDb();
       const rawLib = await loadMangaLibrary().catch(() => createDefaultLibrary(null));
       const lib = await externalizeLibraryAssets(rawLib);
 
-      // 1. Upload referenced or dirty binary files first; isolate per-file failures so projects/workspace still save
+      // 1. Save lightweight MangaProjects & workspace metadata FIRST so core data lands in <1s
+      const projectIdsToPush = new Set(q.dirtyProjectIds);
+      for (const p of lib.projects) {
+        if (projectIdsToPush.has(p.id) || q.dirtyWorkspace) {
+          const projRef = doc(db, "users", uid, "projects", p.id);
+          const existingSnap = await withTimeout(getDoc(projRef), 6000, "Read project meta").catch(
+            () => null,
+          );
+          const existingCreatedAt = existingSnap?.exists()
+            ? (existingSnap.data()?.createdAt as number | undefined)
+            : undefined;
+          await withTimeout(
+            setDoc(projRef, serializeProjectDoc(p, existingCreatedAt)),
+            10_000,
+            `Save project ${p.title}`,
+          );
+        }
+      }
+      q.dirtyProjectIds = [];
+
+      // 2. Delete explicitly deleted projects
+      const activeIds = new Set(lib.projects.map((p) => p.id));
+      for (const delId of q.deletedProjectIds) {
+        if (!activeIds.has(delId)) {
+          await withTimeout(
+            deleteDoc(doc(db, "users", uid, "projects", delId)),
+            6000,
+            "Delete project",
+          ).catch(() => {});
+        }
+      }
+      q.deletedProjectIds = [];
+
+      // 3. Upload workspace document (characters, base models, poses, props, face/outfit configs)
+      const workspaceDoc = collectWorkspaceDoc(uid, lib);
+      await withTimeout(
+        setDoc(doc(db, "users", uid, "studio", "workspace"), workspaceDoc),
+        10_000,
+        "Save workspace",
+      );
+      q.dirtyWorkspace = false;
+      q.lastSyncedCloudWorkspaceAt = workspaceDoc.updatedAt;
+      saveSyncQueue(uid, q);
+
+      // 4. Upload referenced or dirty binary assets (with local uploaded receipt cache)
       const allFiles = await listAllFiles(getActiveFilesDbName(uid)).catch(() => []);
       const fileMap = new Map(allFiles.map((f) => [f.id, f]));
       const neededIds = new Set<string>([
@@ -824,62 +883,52 @@ export async function flushCloudSync(uid: string = activeSyncUid ?? ""): Promise
         ),
       ]);
 
-      const failedFileIds: string[] = [];
+      const uploadedCacheKey = scopeStorageKey("__uploaded_blobs_v1", uid);
+      let uploadedMap: Record<string, number> = {};
+      try {
+        uploadedMap = JSON.parse(window.localStorage.getItem(uploadedCacheKey) || "{}") as Record<
+          string,
+          number
+        >;
+      } catch {
+        uploadedMap = {};
+      }
+
+      const toUpload: Stored[] = [];
       for (const fid of neededIds) {
         if (!fid || fid.startsWith("builtin:")) continue;
         const file = fileMap.get(fid);
-        if (file) {
-          try {
-            await withTimeout(uploadBlobToCloud(uid, file), 25_000, `Upload ${file.name}`);
-          } catch {
-            failedFileIds.push(fid);
-          }
-        }
+        if (!file) continue;
+        if (uploadedMap[fid] === file.blob.size && !q.dirtyFileIds.includes(fid)) continue;
+        toUpload.push(file);
+      }
+
+      const failedFileIds: string[] = [];
+      let lastFileError: string | null = null;
+      for (let i = 0; i < toUpload.length; i += 3) {
+        const group = toUpload.slice(i, i + 3);
+        notifyStatus({
+          detail: `Syncing assets (${Math.min(i + group.length, toUpload.length)}/${toUpload.length})…`,
+        });
+        await Promise.all(
+          group.map(async (file) => {
+            try {
+              await withTimeout(uploadBlobToCloud(uid, file), 20_000, `Upload ${file.name}`);
+              uploadedMap[file.id] = file.blob.size;
+            } catch (fileErr) {
+              failedFileIds.push(file.id);
+              lastFileError =
+                fileErr instanceof Error ? fileErr.message : `Could not upload ${file.name}`;
+            }
+          }),
+        );
+      }
+      try {
+        window.localStorage.setItem(uploadedCacheKey, JSON.stringify(uploadedMap));
+      } catch {
+        /* ignore quota */
       }
       q.dirtyFileIds = failedFileIds;
-
-      // 2. Upload dirty/active MangaProjects
-      const projectIdsToPush = new Set(q.dirtyProjectIds);
-      for (const p of lib.projects) {
-        if (projectIdsToPush.has(p.id) || q.dirtyWorkspace) {
-          const projRef = doc(db, "users", uid, "projects", p.id);
-          const existingSnap = await withTimeout(getDoc(projRef), 8000, "Read project meta").catch(
-            () => null,
-          );
-          const existingCreatedAt = existingSnap?.exists()
-            ? (existingSnap.data()?.createdAt as number | undefined)
-            : undefined;
-          await withTimeout(
-            setDoc(projRef, serializeProjectDoc(p, existingCreatedAt)),
-            12_000,
-            `Save project ${p.title}`,
-          );
-        }
-      }
-      q.dirtyProjectIds = [];
-
-      // 3. Delete explicitly deleted projects
-      const activeIds = new Set(lib.projects.map((p) => p.id));
-      for (const delId of q.deletedProjectIds) {
-        if (!activeIds.has(delId)) {
-          await withTimeout(
-            deleteDoc(doc(db, "users", uid, "projects", delId)),
-            8000,
-            "Delete project",
-          ).catch(() => {});
-        }
-      }
-      q.deletedProjectIds = [];
-
-      // 4. Upload workspace document
-      const workspaceDoc = collectWorkspaceDoc(uid, lib);
-      await withTimeout(
-        setDoc(doc(db, "users", uid, "studio", "workspace"), workspaceDoc),
-        12_000,
-        "Save workspace",
-      );
-      q.dirtyWorkspace = false;
-      q.lastSyncedCloudWorkspaceAt = workspaceDoc.updatedAt;
 
       // 5. Update syncMeta
       const now = Date.now();
@@ -895,15 +944,28 @@ export async function flushCloudSync(uid: string = activeSyncUid ?? ""): Promise
             blobCount: allFiles.length,
           }),
         ),
-        8000,
+        6000,
         "Save syncMeta",
-      );
+      ).catch(() => {});
 
       saveSyncQueue(uid, q);
+      if (failedFileIds.length > 0) {
+        notifyStatus({
+          phase: "error",
+          pendingCount: failedFileIds.length,
+          lastSyncedAt: now,
+          detail: null,
+          errorMessage: lastFileError || `${failedFileIds.length} asset(s) queued to retry.`,
+          conflict: null,
+        });
+        return false;
+      }
+
       notifyStatus({
         phase: "saved",
         pendingCount: 0,
         lastSyncedAt: now,
+        detail: null,
         errorMessage: null,
         conflict: null,
       });
@@ -912,11 +974,13 @@ export async function flushCloudSync(uid: string = activeSyncUid ?? ""): Promise
       if (isNetworkOrOfflineError(err)) {
         notifyStatus({
           phase: "offline",
+          detail: null,
           errorMessage: "Offline — all changes are saved safely on this device and will sync automatically.",
         });
       } else {
         notifyStatus({
           phase: "error",
+          detail: null,
           errorMessage: err instanceof Error ? err.message : "Could not sync to cloud yet.",
         });
       }
