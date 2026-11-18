@@ -68,6 +68,7 @@ import { ExportModal } from "./ExportModal";
 import { WebtoonCanvas } from "./WebtoonCanvas";
 import { MobileWebtoonPreview } from "./MobileWebtoonPreview";
 import { MangaProjectsModal } from "./MangaProjectsModal";
+import { GridTemplateImportModal } from "./GridTemplateImportModal";
 import { PageManager } from "@/components/pages/PageManager";
 import { ResponsiveDrawer } from "@/components/ui/ResponsiveDrawer";
 import { useDeviceLayout } from "@/lib/use-device-layout";
@@ -120,6 +121,7 @@ import {
   SlidersHorizontal,
   FileText,
   X,
+  Upload,
 } from "lucide-react";
 
 export interface PanelStudioProps {
@@ -215,6 +217,9 @@ export function PanelStudio({
   const [customTemplates, setCustomTemplates] = useState<SavedCustomTemplate[]>(() => loadCustomTemplates());
   const [savingTplOpen, setSavingTplOpen] = useState(false);
   const [customTplName, setCustomTplName] = useState("");
+  const [gridImportOpen, setGridImportOpen] = useState(false);
+  const [gridImportFile, setGridImportFile] = useState<File | null>(null);
+  const gridTemplateInputRef = useRef<HTMLInputElement>(null);
   const [showOrder, setShowOrder] = useState<"rtl" | "ltr" | null>(null);
   const [showGuides, setShowGuides] = useState(false);
   const [panelOverlapPref, setPanelOverlapPref] = useState<PanelOverlapPreference>(() =>
@@ -768,6 +773,51 @@ export function PanelStudio({
     const found = allTemplates.find((t) => t.id === templateId);
     const newPanels = found ? found.build() : buildTemplate(templateId) ?? getPresetPanels(templateId);
     commitPanels(newPanels, newPanels[0]?.id);
+  };
+
+  const handleApplyImportedGridLayout = (opts: {
+    panels: PanelPolygon[];
+    mode: "replace" | "new-page";
+    saveAsTemplate: boolean;
+    templateName: string;
+  }) => {
+    const freshPanels: PanelPolygon[] = opts.panels.map((p, idx) => ({
+      ...p,
+      id: `p${Date.now().toString(36)}-${idx}-${Math.random().toString(36).slice(2, 5)}`,
+      points: p.points.map((pt) => ({ ...pt })),
+    }));
+
+    if (opts.saveAsTemplate && freshPanels.length > 0) {
+      const next = addCustomTemplate(customTemplates, opts.templateName || "Imported Layout", freshPanels);
+      setCustomTemplates(next);
+      saveCustomTemplates(next);
+    }
+
+    if (opts.mode === "new-page" && onInsertPageAt) {
+      const insertAt = Math.min((allPages?.length ?? activePageIndex + 1), activePageIndex + 1);
+      const newPage: PageLayout = {
+        id: `page-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        pageNumber: insertAt + 1,
+        format: { ...layout.format },
+        panels: freshPanels,
+        elements: [],
+        balloons: [],
+        comicMarks: [],
+        speedLines: [],
+        sfxStamps: [],
+      };
+      onInsertPageAt(insertAt, newPage);
+      setSelectedPanelId(freshPanels[0]?.id ?? null);
+      setSelectedItemId(null);
+    } else {
+      commitPanels(freshPanels, freshPanels[0]?.id);
+    }
+
+    setGridImportOpen(false);
+    setGridImportFile(null);
+    if (!device.pinLeftByDefault) {
+      setPanelsLeftOpen(false);
+    }
   };
 
   // Format change
@@ -1997,6 +2047,28 @@ export function PanelStudio({
                   </button>
                   <span className="text-[10px] font-normal text-muted-foreground">{allTemplates.length}</span>
                 </div>
+                <button
+                  type="button"
+                  data-testid="upload-grid-template-btn"
+                  onClick={() => gridTemplateInputRef.current?.click()}
+                  className="mb-2 flex w-full items-center justify-center gap-1.5 rounded-sm border-2 border-dashed border-primary/70 bg-primary/10 px-2 py-1.5 text-[11px] font-bold text-primary hover:bg-primary hover:text-primary-foreground transition-colors"
+                >
+                  <Upload className="h-3.5 w-3.5" />
+                  <span>Upload Grid Layout Image</span>
+                </button>
+                <input
+                  ref={gridTemplateInputRef}
+                  type="file"
+                  accept="image/*"
+                  hidden
+                  onChange={(e) => {
+                    const picked = e.target.files?.[0] ?? null;
+                    e.target.value = "";
+                    if (!picked) return;
+                    setGridImportFile(picked);
+                    setGridImportOpen(true);
+                  }}
+                />
                 {savingTplOpen && (
                   <div className="mb-2 flex gap-1 rounded border border-border bg-muted/40 p-1.5">
                     <input
@@ -4209,6 +4281,18 @@ export function PanelStudio({
           onImportProject={(file) => onImportProject?.(file)}
         />
       )}
+
+      {/* Upload Grid Layout Template Extractor Modal */}
+      <GridTemplateImportModal
+        open={gridImportOpen}
+        initialFile={gridImportFile}
+        pageAspectRatio={layout.format.width / Math.max(1, layout.format.height)}
+        onClose={() => {
+          setGridImportOpen(false);
+          setGridImportFile(null);
+        }}
+        onApplyLayout={handleApplyImportedGridLayout}
+      />
     </div>
   );
 }
