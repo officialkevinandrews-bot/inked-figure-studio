@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import type { SpeechBalloon } from "@/lib/manga-effects";
 import { balloonPathFromSpec } from "@/lib/manga-effects";
+import { computeResizedBox } from "@/lib/transform-box";
 import { Trash2, Type, AlignVerticalJustifyCenter, MessageCircle } from "lucide-react";
 import { usePageZoom } from "./zoom-context";
 import { fontStack } from "@/lib/manga-fonts";
@@ -13,6 +14,15 @@ interface SpeechBalloonRendererProps {
   onDelete: () => void;
 }
 
+const BALLOON_HANDLES: { id: string; label: string; cls: string }[] = [
+  { id: "nw", label: "Resize balloon top-left", cls: "-top-1.5 -left-1.5 cursor-nwse-resize" },
+  { id: "ne", label: "Resize balloon top-right", cls: "-top-1.5 -right-1.5 cursor-nesw-resize" },
+  { id: "se", label: "Resize balloon bottom-right", cls: "-bottom-1.5 -right-1.5 cursor-nwse-resize" },
+  { id: "sw", label: "Resize balloon bottom-left", cls: "-bottom-1.5 -left-1.5 cursor-nesw-resize" },
+  { id: "e", label: "Resize balloon width", cls: "top-1/2 -translate-y-1/2 -right-1.5 cursor-ew-resize" },
+  { id: "s", label: "Resize balloon height", cls: "-bottom-1.5 left-1/2 -translate-x-1/2 cursor-ns-resize" },
+];
+
 export function SpeechBalloonRenderer({
   balloon,
   isSelected,
@@ -23,8 +33,10 @@ export function SpeechBalloonRenderer({
   const [isEditing, setIsEditing] = useState(false);
   const zoom = usePageZoom();
   const [dragging, setDragging] = useState(false);
+  const [resizing, setResizing] = useState<string | null>(null);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const [initialPos, setInitialPos] = useState({ x: 0, y: 0 });
+  const [resizeStart, setResizeStart] = useState({ x: 0, y: 0, bx: 0, by: 0, w: 0, h: 0 });
 
   const [draggingTail, setDraggingTail] = useState(false);
   const [draggingCurve, setDraggingCurve] = useState(false);
@@ -46,6 +58,22 @@ export function SpeechBalloonRenderer({
       onChange({
         x: initialPos.x + dx,
         y: initialPos.y + dy,
+      });
+    } else if (resizing) {
+      const dx = (e.clientX - resizeStart.x) / zoom;
+      const dy = (e.clientY - resizeStart.y) / zoom;
+      const next = computeResizedBox(
+        { x: resizeStart.bx, y: resizeStart.by, width: resizeStart.w, height: resizeStart.h },
+        resizing,
+        dx,
+        dy,
+        e.shiftKey,
+      );
+      onChange({
+        x: next.x,
+        y: next.y,
+        width: Math.max(56, next.width),
+        height: Math.max(36, next.height),
       });
     } else if (draggingTail) {
       onChange({
@@ -70,6 +98,7 @@ export function SpeechBalloonRenderer({
 
   const handlePointerUp = (e: React.PointerEvent) => {
     setDragging(false);
+    setResizing(null);
     setDraggingTail(false);
     setDraggingCurve(false);
     setDraggingTail2(false);
@@ -111,6 +140,11 @@ export function SpeechBalloonRenderer({
   };
 
   const svgPath = balloonPathFromSpec(balloon);
+  const showDoubleBorder = Boolean(balloon.doubleBorder || balloon.shape === "narration");
+  const showShadow = Boolean(balloon.shadow ?? balloon.shape === "narration");
+  const outerStrokeW = balloon.borderWidth ?? 2.5;
+  const align = balloon.textAlign ?? (balloon.shape === "narration" ? "left" : "center");
+  const justifyMap = { left: "flex-start", center: "center", right: "flex-end" } as const;
 
   return (
     <div
@@ -121,6 +155,7 @@ export function SpeechBalloonRenderer({
         width: `${balloon.width}px`,
         height: `${balloon.height}px`,
         zIndex: balloon.zIndex,
+        opacity: balloon.opacity ?? 1,
       }}
       className={`group select-none cursor-move ${isSelected ? "ring-2 ring-primary ring-offset-1" : ""}`}
       onClick={(e) => e.stopPropagation()}
@@ -139,26 +174,39 @@ export function SpeechBalloonRenderer({
           height: `${balloon.height}px`,
           overflow: "visible",
           pointerEvents: "none",
+          filter: showShadow ? "drop-shadow(3px 3px 0px rgba(0, 0, 0, 0.22))" : undefined,
         }}
       >
         <path
           d={svgPath}
           fill={balloon.backgroundColor || "#ffffff"}
           stroke={balloon.borderColor || balloon.strokeColor || "#000000"}
-          strokeWidth={balloon.borderWidth || 2.5}
+          strokeWidth={outerStrokeW}
           strokeDasharray={balloon.shape === "whisper" ? "5,3" : undefined}
           strokeLinejoin="round"
         />
+        {showDoubleBorder && balloon.width > 20 && balloon.height > 20 && (
+          <rect
+            x={7.5}
+            y={7.5}
+            width={Math.max(4, balloon.width - 15)}
+            height={Math.max(4, balloon.height - 15)}
+            fill="none"
+            stroke={balloon.borderColor || balloon.strokeColor || "#000000"}
+            strokeWidth={Math.max(0.8, outerStrokeW * 0.42)}
+          />
+        )}
       </svg>
 
       {/* Balloon Text Content */}
       <div
         style={{
           position: "absolute",
-          inset: "12%",
+          inset: balloon.shape === "narration" ? "11px 13px" : "12%",
           display: "flex",
           alignItems: "center",
-          justifyContent: "center",
+          justifyContent: justifyMap[align],
+          textAlign: align,
           fontSize: `${balloon.fontSize}px`,
           fontFamily: fontStack(balloon.fontFamily),
           fontWeight: balloon.fontWeight === "normal" ? 400 : 700,
@@ -166,7 +214,7 @@ export function SpeechBalloonRenderer({
           lineHeight: 1.25,
           color: balloon.fontColor || "#000000",
         }}
-        className="text-center font-bold overflow-hidden select-text"
+        className="overflow-hidden select-text"
       >
         {isEditing ? (
           <textarea
@@ -175,14 +223,44 @@ export function SpeechBalloonRenderer({
             onChange={(e) => onChange({ text: e.target.value })}
             onBlur={() => setIsEditing(false)}
             onPointerDown={(e) => e.stopPropagation()}
-            className="w-full h-full p-1 bg-transparent border-none outline-none resize-none text-center font-bold"
+            style={{ textAlign: align, fontWeight: balloon.fontWeight === "normal" ? 400 : 700 }}
+            className="w-full h-full p-0.5 bg-transparent border-none outline-none resize-none"
           />
         ) : (
-          <span className="whitespace-pre-wrap">{balloon.text || "Double click to write dialogue"}</span>
+          <span className="whitespace-pre-wrap w-full">{balloon.text || "Double click to write dialogue"}</span>
         )}
       </div>
 
-      {/* Draggable Tail Handles (Primary, Bezier Curve Midpoint, Secondary Group Tail) */}
+      {/* On-canvas resize handles for balloons & narration boxes */}
+      {isSelected && !isEditing &&
+        BALLOON_HANDLES.map((h) => (
+          <div
+            key={h.id}
+            role="button"
+            tabIndex={0}
+            aria-label={h.label}
+            className={`pointer-events-auto absolute h-2.5 w-2.5 rounded-xs border border-foreground bg-primary shadow-xs ${h.cls}`}
+            onClick={(e) => e.stopPropagation()}
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              onSelect();
+              setResizing(h.id);
+              setResizeStart({
+                x: e.clientX,
+                y: e.clientY,
+                bx: balloon.x,
+                by: balloon.y,
+                w: balloon.width,
+                h: balloon.height,
+              });
+              (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+            }}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+          />
+        ))}
+
+      {/* Draggable Tail Handles */}
       {isSelected && balloon.hasTail && (
         <div
           role="button"
@@ -283,4 +361,3 @@ export function SpeechBalloonRenderer({
     </div>
   );
 }
-

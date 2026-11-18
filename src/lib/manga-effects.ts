@@ -44,10 +44,13 @@ export interface SpeechBalloon {
   fontFamily?: string;
   fontWeight?: "normal" | "bold";
   fontColor?: string;
+  textAlign?: "left" | "center" | "right";
   writingMode?: "horizontal-tb" | "vertical-rl"; // Traditional Japanese vertical text
   isVertical?: boolean;
   borderWidth?: number;
   borderColor?: string;
+  doubleBorder?: boolean;
+  shadow?: boolean;
   strokeWidth?: number;
   strokeColor?: string;
   backgroundColor: string;
@@ -157,6 +160,9 @@ export const SFX_PRESETS = [
   { text: "CLANG!", label: "CLANG! (Metal)" },
   { text: "THUD", label: "THUD (Heavy fall)" },
   { text: "BA-DUMP", label: "BA-DUMP (Heartbeat)" },
+  { text: "SSSH-HISS", label: "SSSH-HISS (Steam / Sizzle)" },
+  { text: "K-CHAK", label: "K-CHAK (Lighter / Click)" },
+  { text: "FWOOSH-FLIP", label: "FWOOSH-FLIP (Pan Toss)" },
   { text: "SFX STYLE", label: "(edit me)" },
 ];
 
@@ -241,7 +247,7 @@ export function generateBalloonPath(
   let bodyPath = "";
 
   if (shape === "narration") {
-    bodyPath = `M 3 3 L ${w - 3} 3 L ${w - 3} ${h - 3} L 3 ${h - 3} Z M 8 8 L ${w - 8} 8 L ${w - 8} ${h - 8} L 8 ${h - 8} Z`;
+    bodyPath = `M 3 3 L ${w - 3} 3 L ${w - 3} ${h - 3} L 3 ${h - 3} Z`;
   } else if (shape === "box") {
     bodyPath = `M 4 4 L ${w - 4} 4 L ${w - 4} ${h - 4} L 4 ${h - 4} Z`;
   } else if (shape === "burst") {

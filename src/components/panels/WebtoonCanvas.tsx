@@ -1,6 +1,6 @@
 import React, { useMemo, useRef, useState } from "react";
 import { GripHorizontal, Minus, Plus, PlusCircle, Scissors } from "lucide-react";
-import type { PageLayout, PlacedElement, Point } from "@/lib/manga-layout";
+import type { PageLayout, PanelPolygon, PlacedElement, Point } from "@/lib/manga-layout";
 import type { ComicMark, SFXStamp, SpeechBalloon, SpeedLinesEffect } from "@/lib/manga-effects";
 import {
   WEBTOON_SLICE_HEIGHT,
@@ -30,6 +30,8 @@ interface WebtoonCanvasProps {
   onInsertPageAt: (index: number, page: PageLayout) => void;
   onKnife?: (pageIndex: number, a: Point, b: Point) => void;
   onMoveVertex?: (pageIndex: number, from: Point, to: Point) => void;
+  onMoveDivider?: (pageIndex: number, nextPanels: PanelPolygon[]) => void;
+  onDrawPanel?: (pageIndex: number, rect: { x0: number; y0: number; x1: number; y1: number }) => void;
   onRePoseIn3D?: (source3d: NonNullable<PlacedElement["source3d"]>) => void;
 }
 
@@ -55,6 +57,8 @@ export function WebtoonCanvas({
   onInsertPageAt,
   onKnife,
   onMoveVertex,
+  onMoveDivider,
+  onDrawPanel,
   onRePoseIn3D,
 }: WebtoonCanvasProps) {
   const dragResizeRef = useRef<{ pageIndex: number; startY: number; lastDy: number } | null>(null);
@@ -140,6 +144,8 @@ export function WebtoonCanvas({
                 }}
                 onKnife={onKnife ? (a, b) => onKnife(idx, a, b) : undefined}
                 onMoveVertex={onMoveVertex ? (from, to) => onMoveVertex(idx, from, to) : undefined}
+                onMoveDivider={onMoveDivider ? (nextPanels) => onMoveDivider(idx, nextPanels) : undefined}
+                onDrawPanel={onDrawPanel ? (rect) => onDrawPanel(idx, rect) : undefined}
                 onRePoseIn3D={onRePoseIn3D}
                 onUpdateElement={(id, u) =>
                   patchPage(idx, (cur) => ({

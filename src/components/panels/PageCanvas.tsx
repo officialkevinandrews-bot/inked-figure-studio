@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import type { PageLayout, PlacedElement, PanelPolygon, Point } from "@/lib/manga-layout";
 import { panelBounds } from "@/lib/manga-layout";
-import { readingOrder, centroid } from "@/lib/manga-grid";
+import { findSharedDividers, moveDivider, readingOrder, centroid, type SharedDivider } from "@/lib/manga-grid";
 import { buildPanelSvgPath, computeSnapPosition, type SnapGuide } from "@/lib/panel-geometry";
 import { fadeGeometry, toneTile } from "@/lib/screentone";
 import { PanelTransformer } from "./PanelTransformer";
@@ -10,7 +10,7 @@ import { SpeechBalloonRenderer } from "./SpeechBalloonRenderer";
 import { ComicMarkRenderer, SpeedLinesRenderer, SFXStampRenderer } from "./EffectsRenderers";
 import type { SpeechBalloon, ComicMark, SpeedLinesEffect, SFXStamp } from "@/lib/manga-effects";
 
-export type CanvasTool = "select" | "knife" | "corners";
+export type CanvasTool = "select" | "dividers" | "draw" | "knife" | "corners";
 
 interface PageCanvasProps {
   layout: PageLayout;
@@ -33,6 +33,8 @@ interface PageCanvasProps {
   tool?: CanvasTool;
   onKnife?: (a: Point, b: Point) => void;
   onMoveVertex?: (from: Point, to: Point) => void;
+  onMoveDivider?: (nextPanels: PanelPolygon[]) => void;
+  onDrawPanel?: (rect: { x0: number; y0: number; x1: number; y1: number }) => void;
   showOrder?: "rtl" | "ltr" | null;
   showGuides?: boolean;
   seamless?: boolean;
@@ -103,6 +105,8 @@ export function PageCanvas({
   tool = "select",
   onKnife,
   onMoveVertex,
+  onMoveDivider,
+  onDrawPanel,
   showOrder = null,
   showGuides = false,
   seamless = false,
@@ -111,6 +115,9 @@ export function PageCanvas({
   const { width, height, margin } = layout.format;
   const pageRef = useRef<HTMLDivElement>(null);
   const [knife, setKnife] = useState<{ a: Point; b: Point } | null>(null);
+  const [drawBox, setDrawBox] = useState<{ a: Point; b: Point } | null>(null);
+  const [hoveredDivId, setHoveredDivId] = useState<string | null>(null);
+  const dragDivider = useRef<{ divider: SharedDivider; basePanels: PanelPolygon[]; startNorm: Point } | null>(null);
   const dragVertex = useRef<Point | null>(null);
   const pointerDownPanelRef = useRef<string | null>(null);
   const [snapGuides, setSnapGuides] = useState<SnapGuide[]>([]);
@@ -165,6 +172,19 @@ export function PageCanvas({
     return { x: (e.clientX - r.left) / zoom, y: (e.clientY - r.top) / zoom };
   };
   const toNorm = (p: Point): Point => ({ x: (p.x - margin) / pw, y: (p.y - margin) / ph });
+  const snapNormPt = (pt: Point, disableSnap: boolean): Point => {
+    const clamped = { x: Math.min(1, Math.max(0, pt.x)), y: Math.min(1, Math.max(0, pt.y)) };
+    if (disableSnap) return clamped;
+    const xs = new Set<number>([0, 0.25, 1 / 3, 0.5, 2 / 3, 0.75, 1]);
+    const ys = new Set<number>([0, 0.25, 1 / 3, 0.5, 2 / 3, 0.75, 1]);
+    for (const p of layout.panels) for (const q of p.points) { xs.add(q.x); ys.add(q.y); }
+    let bx = clamped.x, bestX = 0.016;
+    for (const tx of xs) if (Math.abs(clamped.x - tx) < bestX) { bestX = Math.abs(clamped.x - tx); bx = tx; }
+    let by = clamped.y, bestY = 0.016;
+    for (const ty of ys) if (Math.abs(clamped.y - ty) < bestY) { bestY = Math.abs(clamped.y - ty); by = ty; }
+    return { x: bx, y: by };
+  };
+  const sharedDividers = tool === "select" || tool === "dividers" ? findSharedDividers(layout.panels) : [];
 
   const renderPanelGroup = (p: PanelPolygon) => {
     const b = bounds.get(p.id)!;
@@ -291,6 +311,16 @@ export function PageCanvas({
           </svg>
 
           {base.map(renderPanelGroup)}
+
+          {layout.panels.length === 0 && (
+            <div
+              data-testid="empty-canvas-hint"
+              className="pointer-events-none absolute inset-12 flex flex-col items-center justify-center rounded border-2 border-dashed border-zinc-400/70 text-center text-zinc-500"
+            >
+              <span className="text-sm font-bold">Empty Page Canvas</span>
+              <span className="mt-1 text-xs">Use ▭ Draw Panel (R) to drag boxes, or click + Blank 1-Panel / a Template</span>
+            </div>
+          )}
 
           {speedLines.map((line) => (
             <SpeedLinesRenderer
@@ -419,6 +449,135 @@ export function PageCanvas({
                 </div>
               );
             })}
+
+          {/* Shared gutter / divider drag handles (visible in Dividers mode, interactive on hover in Select mode) */}
+          {sharedDividers.length > 0 && onMoveDivider && (
+            <svg
+              style={{ position: "absolute", inset: 0, width, height, pointerEvents: "none", zIndex: 82 }}
+            >
+              {sharedDividers.map((div) => {
+                const x1 = margin + div.a.x * pw;
+                const y1 = margin + div.a.y * ph;
+                const x2 = margin + div.b.x * pw;
+                const y2 = margin + div.b.y * ph;
+                const isHovered = hoveredDivId === div.id || dragDivider.current?.divider.id === div.id;
+                const cursor = div.axis === "h" ? "ns-resize" : div.axis === "v" ? "ew-resize" : "move";
+                return (
+                  <g key={div.id}>
+                    {(tool === "dividers" || isHovered) && (
+                      <line
+                        x1={x1}
+                        y1={y1}
+                        x2={x2}
+                        y2={y2}
+                        stroke={isHovered ? "#e11d2e" : "#2563eb"}
+                        strokeWidth={isHovered ? 6 : 4}
+                        strokeLinecap="round"
+                        opacity={isHovered ? 0.9 : 0.45}
+                        style={{ pointerEvents: "none" }}
+                      />
+                    )}
+                    <line
+                      x1={x1}
+                      y1={y1}
+                      x2={x2}
+                      y2={y2}
+                      stroke="transparent"
+                      strokeWidth={Math.max(12, (layout.format.gutterY ?? layout.format.gutter) + 6)}
+                      data-testid="divider-handle"
+                      data-divider-axis={div.axis}
+                      style={{ pointerEvents: "stroke", cursor, touchAction: "none" }}
+                      onPointerEnter={() => setHoveredDivId(div.id)}
+                      onPointerLeave={() => setHoveredDivId((c) => (c === div.id ? null : c))}
+                      onClick={(e) => e.stopPropagation()}
+                      onPointerDown={(e) => {
+                        e.stopPropagation();
+                        (e.currentTarget as Element).setPointerCapture(e.pointerId);
+                        dragDivider.current = {
+                          divider: div,
+                          basePanels: layout.panels,
+                          startNorm: toNorm(toPage(e)),
+                        };
+                      }}
+                      onPointerMove={(e) => {
+                        const st = dragDivider.current;
+                        if (!st || st.divider.id !== div.id) return;
+                        const cur = toNorm(toPage(e));
+                        const rawDelta =
+                          (cur.x - st.startNorm.x) * st.divider.nx + (cur.y - st.startNorm.y) * st.divider.ny;
+                        const { panels: moved, snappedAt } = moveDivider(st.basePanels, st.divider, rawDelta, {
+                          disableSnap: e.altKey,
+                        });
+                        if (snappedAt !== undefined && st.divider.axis !== "angled") {
+                          const pxPos =
+                            st.divider.axis === "h" ? margin + snappedAt * ph : margin + snappedAt * pw;
+                          setSnapGuides([{ orientation: st.divider.axis, pos: pxPos }]);
+                        } else {
+                          setSnapGuides([]);
+                        }
+                        onMoveDivider(moved);
+                      }}
+                      onPointerUp={() => {
+                        dragDivider.current = null;
+                        setSnapGuides([]);
+                      }}
+                    />
+                  </g>
+                );
+              })}
+            </svg>
+          )}
+
+          {/* Freehand Draw Custom Panel overlay */}
+          {tool === "draw" && (
+            <svg
+              data-testid="draw-panel-overlay"
+              style={{ position: "absolute", inset: 0, width, height, cursor: "crosshair", touchAction: "none", zIndex: 88 }}
+              onClick={(e) => e.stopPropagation()}
+              onPointerDown={(e) => {
+                e.stopPropagation();
+                (e.currentTarget as Element).setPointerCapture(e.pointerId);
+                const pt = snapNormPt(toNorm(toPage(e)), e.altKey);
+                setDrawBox({ a: pt, b: pt });
+              }}
+              onPointerMove={(e) => {
+                if (!drawBox) return;
+                const pt = snapNormPt(toNorm(toPage(e)), e.altKey);
+                setDrawBox({ a: drawBox.a, b: pt });
+              }}
+              onPointerUp={() => {
+                if (drawBox) {
+                  const x0 = Math.min(drawBox.a.x, drawBox.b.x);
+                  const x1 = Math.max(drawBox.a.x, drawBox.b.x);
+                  const y0 = Math.min(drawBox.a.y, drawBox.b.y);
+                  const y1 = Math.max(drawBox.a.y, drawBox.b.y);
+                  if (x1 - x0 >= 0.04 && y1 - y0 >= 0.04) {
+                    onDrawPanel?.({ x0, y0, x1, y1 });
+                  }
+                }
+                setDrawBox(null);
+              }}
+            >
+              {drawBox && (() => {
+                const x = margin + Math.min(drawBox.a.x, drawBox.b.x) * pw;
+                const y = margin + Math.min(drawBox.a.y, drawBox.b.y) * ph;
+                const rw = Math.abs(drawBox.b.x - drawBox.a.x) * pw;
+                const rh = Math.abs(drawBox.b.y - drawBox.a.y) * ph;
+                return (
+                  <rect
+                    x={x}
+                    y={y}
+                    width={rw}
+                    height={rh}
+                    fill="rgba(225, 29, 46, 0.08)"
+                    stroke="#e11d2e"
+                    strokeWidth={2.5}
+                    strokeDasharray="6,4"
+                  />
+                );
+              })()}
+            </svg>
+          )}
 
           {/* Knife tool overlay */}
           {tool === "knife" && (

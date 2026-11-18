@@ -240,31 +240,51 @@ export async function renderPageToCanvas(
     ctx.restore();
   }
 
-  // 5. Speech Balloons
+  // 5. Speech Balloons & Narration Caption Boxes
   for (const b of layout.balloons ?? []) {
     ctx.save();
     const pathD = balloonPathFromSpec(b);
     const p2d = new Path2D(pathD);
+    const strokeW = b.borderWidth ?? b.strokeWidth ?? 2.5;
+    const strokeCol = b.borderColor || b.strokeColor || "#000000";
 
     ctx.translate(b.x, b.y);
+    ctx.globalAlpha = b.opacity ?? 1;
+
+    if (b.shadow ?? b.shape === "narration") {
+      ctx.save();
+      ctx.translate(3, 3);
+      ctx.fillStyle = "rgba(0, 0, 0, 0.22)";
+      ctx.fill(p2d);
+      ctx.restore();
+    }
+
     ctx.fillStyle = b.backgroundColor || "#ffffff";
     ctx.fill(p2d);
 
-    ctx.lineWidth = b.borderWidth ?? b.strokeWidth ?? 2.5;
-    ctx.strokeStyle = b.borderColor || b.strokeColor || "#000000";
+    ctx.lineWidth = strokeW;
+    ctx.strokeStyle = strokeCol;
     ctx.lineJoin = "round";
     if (b.shape === "whisper") {
       ctx.setLineDash([5, 4]);
     }
     ctx.stroke(p2d);
 
+    if ((b.doubleBorder || b.shape === "narration") && b.width > 20 && b.height > 20) {
+      ctx.save();
+      ctx.setLineDash([]);
+      ctx.lineWidth = Math.max(0.8, strokeW * 0.42);
+      ctx.strokeRect(7.5, 7.5, Math.max(4, b.width - 15), Math.max(4, b.height - 15));
+      ctx.restore();
+    }
+
     // Render Text
     ctx.fillStyle = b.fontColor || "#000000";
     ctx.font = `${b.fontWeight === "normal" ? "" : "bold "}${b.fontSize}px ${fontStack(b.fontFamily)}`;
-    ctx.textAlign = "center";
     ctx.textBaseline = "middle";
 
     if (b.writingMode === "vertical-rl" || b.isVertical) {
+      ctx.textAlign = "center";
       // Vertical Japanese reading order (right-to-left columns, wrapping by height & newlines)
       const charStep = b.fontSize * 1.1;
       const colStep = b.fontSize * 1.25;
@@ -287,27 +307,37 @@ export async function renderPageToCanvas(
         });
       });
     } else {
-      // Horizontal text with auto line wrap
-      const words = b.text.split(" ");
-      let line = "";
+      // Horizontal text preserving explicit line breaks & configurable left/center/right alignment
+      const align = b.textAlign ?? (b.shape === "narration" ? "left" : "center");
+      const maxWidth = b.shape === "narration" ? b.width - 26 : b.width * 0.78;
+      const paragraphs = b.text.split(/\r?\n/);
       const lines: string[] = [];
-      const maxWidth = b.width * 0.8;
 
-      for (const w of words) {
-        const testLine = line ? `${line} ${w}` : w;
-        if (ctx.measureText(testLine).width > maxWidth && line) {
-          lines.push(line);
-          line = w;
-        } else {
-          line = testLine;
+      for (const para of paragraphs) {
+        const words = para.split(/\s+/).filter(Boolean);
+        if (words.length === 0) {
+          lines.push("");
+          continue;
         }
+        let line = "";
+        for (const w of words) {
+          const testLine = line ? `${line} ${w}` : w;
+          if (ctx.measureText(testLine).width > maxWidth && line) {
+            lines.push(line);
+            line = w;
+          } else {
+            line = testLine;
+          }
+        }
+        if (line) lines.push(line);
       }
-      if (line) lines.push(line);
 
+      ctx.textAlign = align;
+      const textX = align === "left" ? 13 : align === "right" ? b.width - 13 : b.width / 2;
       const lineHeight = b.fontSize * 1.25;
-      const startY = b.height / 2 - ((lines.length - 1) * lineHeight) / 2;
+      const startY = b.height / 2 - ((Math.max(1, lines.length) - 1) * lineHeight) / 2;
       lines.forEach((l, idx) => {
-        ctx.fillText(l, b.width / 2, startY + idx * lineHeight);
+        ctx.fillText(l, textX, startY + idx * lineHeight);
       });
     }
     ctx.restore();

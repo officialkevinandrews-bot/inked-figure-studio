@@ -155,4 +155,73 @@ test.describe("Inked Figure Studio End-to-End Regression", () => {
     expect(consoleErrors).toEqual([]);
     expect(pageErrors).toEqual([]);
   });
+
+  test("Manga Panels Master Upgrade: Dividers, Draw Panel, Merge Directions, Narration Caption & Custom Templates", async ({
+    page,
+  }) => {
+    const consoleErrors: string[] = [];
+    const pageErrors: string[] = [];
+    page.on("console", (msg) => {
+      if (msg.type() === "error") consoleErrors.push(msg.text());
+    });
+    page.on("pageerror", (err) => pageErrors.push(String(err)));
+    page.on("dialog", (d) => d.accept());
+
+    await page.goto("/");
+    await expect(page.locator("[data-scene-ready]")).toBeVisible();
+    await page.getByRole("button", { name: /Manga Panels/ }).click();
+    await expect(page.locator("#manga-page-container")).toBeVisible();
+
+    // 1. Template filtering by panel count & search -> apply Reference Stagger (5 panels)
+    await page.getByRole("group", { name: "Panel count" }).getByRole("button", { name: "5", exact: true }).click();
+    await page.getByLabel("Search grid templates").fill("Reference Stagger");
+    await page.getByRole("button", { name: "Template Reference Stagger" }).click();
+    await expect(page.getByTestId("divider-handle")).toHaveCount(4);
+
+    // 2. Dividers tool: drag horizontal top banner divider down
+    await page.getByRole("button", { name: /Dividers/ }).click();
+    const divBox = await page.getByTestId("divider-handle").first().boundingBox();
+    expect(divBox).not.toBeNull();
+    if (divBox) {
+      await page.mouse.move(divBox.x + divBox.width / 2, divBox.y + divBox.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(divBox.x + divBox.width / 2, divBox.y + divBox.height / 2 + 40, { steps: 5 });
+      await page.mouse.up();
+    }
+
+    // 3. Quick 2x2 grid split + directional merge
+    await page.getByRole("button", { name: /Select \(V\)/ }).click();
+    await page.getByRole("button", { name: "2×2 Grid" }).click();
+    await expect(page.getByTestId("merge-directions")).toBeVisible();
+    await page.getByTestId("merge-directions").getByRole("button").first().click();
+
+    // 4. Empty Canvas + Freehand Draw Panel tool
+    await page.getByRole("button", { name: /Empty Canvas/ }).click();
+    await expect(page.getByTestId("empty-canvas-hint")).toBeVisible();
+    const drawOverlay = page.getByTestId("draw-panel-overlay");
+    await expect(drawOverlay).toBeVisible();
+    const box = await drawOverlay.boundingBox();
+    if (box) {
+      await page.mouse.move(box.x + box.width * 0.1, box.y + box.height * 0.1);
+      await page.mouse.down();
+      await page.mouse.move(box.x + box.width * 0.9, box.y + box.height * 0.45, { steps: 5 });
+      await page.mouse.up();
+    }
+    await expect(page.getByTestId("empty-canvas-hint")).toBeHidden();
+
+    // 5. Save custom template
+    await page.getByRole("button", { name: "+ Save", exact: true }).click();
+    await page.getByLabel("Custom template name").fill("Kitchen Custom Beat");
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Template Kitchen Custom Beat" })).toBeVisible();
+
+    // 6. Narration Caption Box with on-canvas resize handles
+    await page.getByRole("button", { name: /💬 SFX/i }).click();
+    await page.getByRole("button", { name: /Narration Caption/ }).click();
+    await expect(page.getByRole("button", { name: "Resize balloon bottom-right" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "left", exact: true })).toBeVisible();
+
+    expect(consoleErrors).toEqual([]);
+    expect(pageErrors).toEqual([]);
+  });
 });

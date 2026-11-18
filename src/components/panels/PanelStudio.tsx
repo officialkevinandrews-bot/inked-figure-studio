@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from "react";
+import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import {
   type PageLayout,
   type PlacedElement,
@@ -8,6 +8,7 @@ import {
   getPresetPanels,
   splitPanel,
   getPanelPixelBounds,
+  swapPanelContents,
 } from "@/lib/manga-layout";
 import {
   type BalloonShape,
@@ -32,10 +33,20 @@ import {
   angledSplit,
   moveSharedVertex,
   mirrorPanels,
-  mergeRectPanels,
+  mergeCandidates,
+  splitPanelGrid,
   pointInPolygon,
   insetPanelPoints,
+  type MergeCandidate,
 } from "@/lib/manga-grid";
+import {
+  loadCustomTemplates,
+  saveCustomTemplates,
+  addCustomTemplate,
+  removeCustomTemplate,
+  toGridTemplates,
+  type SavedCustomTemplate,
+} from "@/lib/custom-templates";
 import { TONE_PRESETS, TONE_KINDS, TONE_FADES, toneDataUrl, type Screentone } from "@/lib/screentone";
 import type { Point } from "@/lib/manga-layout";
 import { PhotoFilterModal } from "./PhotoFilterModal";
@@ -140,6 +151,11 @@ export function PanelStudio({
   const [splitRatio, setSplitRatio] = useState(50);
   const [tplCat, setTplCat] = useState<TemplateCategory | "all">("all");
   const [tplCount, setTplCount] = useState<number | "all">("all");
+  const [tplStyle, setTplStyle] = useState<"all" | "stagger" | "banner" | "wrap" | "diagonal" | "custom">("all");
+  const [tplSearch, setTplSearch] = useState("");
+  const [customTemplates, setCustomTemplates] = useState<SavedCustomTemplate[]>(() => loadCustomTemplates());
+  const [savingTplOpen, setSavingTplOpen] = useState(false);
+  const [customTplName, setCustomTplName] = useState("");
   const [showOrder, setShowOrder] = useState<"rtl" | "ltr" | null>(null);
   const [showGuides, setShowGuides] = useState(false);
 
@@ -330,59 +346,194 @@ export function PanelStudio({
     selectedSpeedLine,
   ]);
 
-  /** Re-home elements whose panel vanished (cut / new template) into the panel under their centre. */
-  const rehome = (panels: PanelPolygon[], elements: PlacedElement[]) => {
-    const f = layout.format;
-    return elements.map((el) => {
-      if (panels.some((p) => p.id === el.panelId)) return el;
-      const c = {
-        x: (el.x + el.width / 2 - f.margin) / (f.width - f.margin * 2),
-        y: (el.y + el.height / 2 - f.margin) / (f.height - f.margin * 2),
+  // Hotkeys for Panel Canvas Tools: V Select, D Dividers, R Draw Panel, K Knife, C Corners
+  useEffect(() => {
+    const onToolKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const active = document.activeElement as HTMLElement | null;
+      if (
+        active &&
+        (active.tagName === "INPUT" ||
+          active.tagName === "TEXTAREA" ||
+          active.tagName === "SELECT" ||
+          active.isContentEditable)
+      ) {
+        return;
+      }
+      const keyMap: Record<string, CanvasTool> = {
+        v: "select",
+        d: "dividers",
+        r: "draw",
+        k: "knife",
+        c: "corners",
       };
+      const next = keyMap[e.key.toLowerCase()];
+      if (next) setTool(next);
+    };
+    window.addEventListener("keydown", onToolKey);
+    return () => window.removeEventListener("keydown", onToolKey);
+  }, []);
+
+  /** Re-home overlays whose panel vanished (cut / merge / new template) into the panel under their centre. */
+  const rehomeAt = useCallback(
+    (panels: PanelPolygon[], x: number, y: number, curId: string, targetFormat = layout.format): string => {
+      if (panels.length === 0) return curId;
+      if (panels.some((p) => p.id === curId)) return curId;
+      const pw = Math.max(1, targetFormat.width - targetFormat.margin * 2);
+      const ph = Math.max(1, targetFormat.height - targetFormat.margin * 2);
+      const c = { x: (x - targetFormat.margin) / pw, y: (y - targetFormat.margin) / ph };
       const home = [...panels].reverse().find((p) => pointInPolygon(c, p.points)) ?? panels[0];
-      return { ...el, panelId: home.id };
-    });
-  };
+      return home.id;
+    },
+    [layout.format],
+  );
+
+  const rehome = (panels: PanelPolygon[], elements: PlacedElement[]) =>
+    elements.map((el) => ({ ...el, panelId: rehomeAt(panels, el.x + el.width / 2, el.y + el.height / 2, el.panelId) }));
+
+  const rehomeLayout = (base: PageLayout, panels: PanelPolygon[]): PageLayout => ({
+    ...base,
+    panels,
+    elements: rehome(panels, base.elements),
+    balloons: (base.balloons ?? []).map((b) => ({
+      ...b,
+      panelId: rehomeAt(panels, b.x + b.width / 2, b.y + b.height / 2, b.panelId, base.format),
+    })),
+    sfxStamps: (base.sfxStamps ?? []).map((s) => ({
+      ...s,
+      panelId: rehomeAt(panels, s.x, s.y, s.panelId, base.format),
+    })),
+    comicMarks: (base.comicMarks ?? []).map((m) => ({
+      ...m,
+      panelId: rehomeAt(panels, m.x, m.y, m.panelId, base.format),
+    })),
+    speedLines: (base.speedLines ?? []).map((l) => ({
+      ...l,
+      panelId: rehomeAt(panels, l.centerX, l.centerY, l.panelId, base.format),
+    })),
+  });
 
   const commitPanels = (panels: PanelPolygon[], select?: string) => {
-    onUpdateLayout({
-      ...layout,
-      panels,
-      elements: rehome(panels, layout.elements),
-      balloons: (layout.balloons ?? []).map((x) => (panels.some((p) => p.id === x.panelId) ? x : { ...x, panelId: panels[0].id })),
-    });
+    onUpdateLayout(rehomeLayout(layout, panels));
     if (select) setSelectedPanelId(select);
     else if (!panels.some((p) => p.id === selectedPanelId)) setSelectedPanelId(panels[0]?.id ?? null);
   };
 
-  // Blank page / delete / merge
-  const handleBlankPage = () => {
-    if (!confirm("Start from a blank page? Panels and everything placed in them will be removed.")) return;
-    const blank: PanelPolygon = { id: `p${Date.now()}`, points: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }], borderWidth: 3, borderColor: "#000000", borderStyle: "solid", backgroundColor: "#ffffff" };
+  const merges = useMemo(
+    () => (selectedPanel ? mergeCandidates(selectedPanel, layout.panels) : []),
+    [selectedPanel, layout.panels],
+  );
+
+  // Blank page / empty slate / custom draw / merge
+  const handleBlankPage = (emptyCanvas = false) => {
+    const msg = emptyCanvas
+      ? "Clear the page to a 0-panel empty canvas? Panels and items will be removed."
+      : "Reset to a 1-panel blank page frame? Existing panels and items will be removed.";
+    if (!confirm(msg)) return;
+    if (emptyCanvas) {
+      onUpdateLayout({ ...layout, panels: [], elements: [], balloons: [], sfxStamps: [], comicMarks: [], speedLines: [] });
+      setSelectedPanelId(null);
+      setTool("draw");
+      return;
+    }
+    const blank: PanelPolygon = {
+      id: `p${Date.now()}`,
+      points: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }],
+      borderWidth: 3,
+      borderColor: "#000000",
+      borderStyle: "solid",
+      backgroundColor: "#ffffff",
+    };
     onUpdateLayout({ ...layout, panels: [blank], elements: [], balloons: [], sfxStamps: [], comicMarks: [], speedLines: [] });
     setSelectedPanelId(blank.id);
   };
+
+  const buildDrawnPanel = (
+    existing: PanelPolygon[],
+    r: { x0: number; y0: number; x1: number; y1: number },
+  ): PanelPolygon => {
+    // Auto-tile if it does not overlap existing base panels; otherwise place as floating inset.
+    const overlaps = existing.some((p) => {
+      if (p.floating) return false;
+      const px0 = Math.min(...p.points.map((q) => q.x)), px1 = Math.max(...p.points.map((q) => q.x));
+      const py0 = Math.min(...p.points.map((q) => q.y)), py1 = Math.max(...p.points.map((q) => q.y));
+      const ix = Math.max(0, Math.min(r.x1, px1) - Math.max(r.x0, px0));
+      const iy = Math.max(0, Math.min(r.y1, py1) - Math.max(r.y0, py0));
+      return ix * iy > 0.002;
+    });
+    return {
+      id: `p${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 5)}`,
+      points: [{ x: r.x0, y: r.y0 }, { x: r.x1, y: r.y0 }, { x: r.x1, y: r.y1 }, { x: r.x0, y: r.y1 }],
+      borderWidth: 3,
+      borderColor: "#000000",
+      borderStyle: "solid",
+      backgroundColor: "#ffffff",
+      floating: overlaps,
+    };
+  };
+
+  const handleDrawPanel = (r: { x0: number; y0: number; x1: number; y1: number }) => {
+    const np = buildDrawnPanel(layout.panels, r);
+    commitPanels([...layout.panels, np], np.id);
+  };
+
+  const handleMergeWith = (cand: MergeCandidate) => {
+    if (!selectedPanel) return;
+    const move = <T extends { panelId: string }>(xs?: T[]) =>
+      (xs ?? []).map((x) => (x.panelId === cand.neighborId ? { ...x, panelId: selectedPanel.id } : x));
+    onUpdateLayout({
+      ...layout,
+      panels: layout.panels
+        .filter((p) => p.id !== cand.neighborId)
+        .map((p) => (p.id === selectedPanel.id ? { ...p, points: cand.mergedPoints } : p)),
+      elements: move(layout.elements),
+      balloons: move(layout.balloons),
+      sfxStamps: move(layout.sfxStamps),
+      comicMarks: move(layout.comicMarks),
+      speedLines: move(layout.speedLines),
+    });
+  };
+
   const handleMergePanel = () => {
     if (!selectedPanel) return;
-    for (const other of layout.panels) {
-      if (other.id === selectedPanel.id || other.floating) continue;
-      const pts = mergeRectPanels(selectedPanel, other);
-      if (!pts) continue;
-      const move = <T extends { panelId?: string }>(xs?: T[]) => (xs ?? []).map((x) => (x.panelId === other.id ? { ...x, panelId: selectedPanel.id } : x));
-      onUpdateLayout({
-        ...layout,
-        panels: layout.panels.filter((p) => p.id !== other.id).map((p) => (p.id === selectedPanel.id ? { ...p, points: pts } : p)),
-        elements: move(layout.elements), balloons: move(layout.balloons), sfxStamps: move(layout.sfxStamps), comicMarks: move(layout.comicMarks), speedLines: move(layout.speedLines),
-      });
+    if (merges[0]) {
+      handleMergeWith(merges[0]);
       return;
     }
-    alert("No neighbouring panel lines up to merge into one rectangle.");
+    alert("No neighbouring panel lines up cleanly to merge into one rectangle.");
+  };
+
+  const handleGridSplit = (rows: number, cols: number) => {
+    if (!selectedPanel) return;
+    const parts = splitPanelGrid(selectedPanel, rows, cols);
+    commitPanels(
+      layout.panels.flatMap((p) => (p.id === selectedPanel.id ? parts : [p])),
+      parts[0].id,
+    );
+  };
+
+  const handleSaveCustomTemplate = () => {
+    if (layout.panels.length === 0) return;
+    const next = addCustomTemplate(customTemplates, customTplName, layout.panels);
+    setCustomTemplates(next);
+    saveCustomTemplates(next);
+    setCustomTplName("");
+    setSavingTplOpen(false);
+    setTplSearch("");
+    setTplCat("all");
+    setTplCount("all");
+    setTplStyle("custom");
   };
 
   // Template change
-  const handleApplyTemplate = (templateName: string) => {
-    const newPanels = buildTemplate(templateName) ?? getPresetPanels(templateName);
-    commitPanels(newPanels, newPanels[0].id);
+  const allTemplates = useMemo(
+    () => [...toGridTemplates(customTemplates), ...GRID_TEMPLATES],
+    [customTemplates],
+  );
+  const handleApplyTemplate = (templateId: string) => {
+    const found = allTemplates.find((t) => t.id === templateId);
+    const newPanels = found ? found.build() : buildTemplate(templateId) ?? getPresetPanels(templateId);
+    commitPanels(newPanels, newPanels[0]?.id);
   };
 
   // Format change
@@ -467,28 +618,34 @@ export function PanelStudio({
       layout.format.gutter
     );
 
+    const isNarr = shape === "narration";
     const newBalloon: SpeechBalloon = {
       id: `balloon-${Date.now()}`,
       panelId: selectedPanel.id,
       shape,
-      text: shape === "burst" || shape === "double_burst" ? "N-NANI?!" : shape === "cloud" ? "..." : shape === "narration" ? "Forty-two plates stacked. Three minutes until the shuttle." : "Speech...",
-      x: bounds.minX + bounds.width * 0.25,
-      y: bounds.minY + bounds.height * 0.2,
-      width: Math.min(bounds.width * 0.55, 200),
-      height: Math.min(bounds.height * 0.4, 120),
+      text: shape === "burst" || shape === "double_burst" ? "N-NANI?!" : shape === "cloud" ? "..." : isNarr ? "Forty-two plates stacked. Three minutes until the shuttle." : "Speech...",
+      x: bounds.minX + bounds.width * (isNarr ? 0.08 : 0.25),
+      y: bounds.minY + bounds.height * (isNarr ? 0.45 : 0.2),
+      width: Math.min(bounds.width * (isNarr ? 0.72 : 0.55), isNarr ? 260 : 200),
+      height: Math.min(bounds.height * (isNarr ? 0.42 : 0.4), isNarr ? 140 : 120),
       tail: {
         x: bounds.minX + bounds.width * 0.35,
         y: bounds.minY + bounds.height * 0.55,
       },
       tailX: -Math.min(bounds.width * 0.55, 200) * 0.2,
       tailY: Math.min(bounds.height * 0.4, 120) * 0.85,
-      hasTail: shape !== "box" && shape !== "narration",
-      fontSize: 16,
-      fontWeight: shape === "burst" || shape === "double_burst" ? "bold" : "normal",
+      hasTail: shape !== "box" && !isNarr,
+      fontSize: isNarr ? 14 : 16,
+      fontFamily: isNarr ? "sawarabi-mincho" : "comic-neue",
+      fontWeight: shape === "burst" || shape === "double_burst" ? "bold" : isNarr ? "normal" : "normal",
+      textAlign: isNarr ? "left" : "center",
+      doubleBorder: isNarr,
+      shadow: isNarr,
+      borderWidth: isNarr ? 2 : 2.5,
       writingMode: "horizontal-tb",
-      backgroundColor: "#ffffff",
+      backgroundColor: isNarr ? "#faf7f2" : "#ffffff",
       strokeColor: "#000000",
-      strokeWidth: 2.5,
+      strokeWidth: isNarr ? 2 : 2.5,
       fontColor: "#000000",
       zIndex: (layout.balloons?.length ?? 0) + 100,
     };
@@ -773,7 +930,7 @@ export function PanelStudio({
     setSelectedItemId(dup.id);
   };
 
-  // Center Element in Panel
+  // Center & Frame Element in Panel
   const handleCenterInPanel = (el: PlacedElement) => {
     const panel = layout.panels.find((p) => p.id === el.panelId);
     if (!panel) return;
@@ -794,6 +951,42 @@ export function PanelStudio({
               y: bounds.minY + (bounds.height - e.height) / 2,
             }
           : e
+      ),
+    });
+  };
+
+  /** Fits or fills an image element cleanly inside its parent panel bounds. */
+  const handleFrameInPanel = (el: PlacedElement, mode: "fit" | "fill") => {
+    const panel = layout.panels.find((p) => p.id === el.panelId);
+    if (!panel) return;
+    const bounds = getPanelPixelBounds(
+      panel,
+      layout.format.width,
+      layout.format.height,
+      layout.format.margin,
+      layout.format.gutter,
+    );
+    const aspect = Math.max(0.1, el.width / Math.max(1, el.height));
+    const bw = Math.max(20, bounds.width);
+    const bh = Math.max(20, bounds.height);
+    let w = bw;
+    let h = w / aspect;
+    if (mode === "fit" ? h > bh : h < bh) {
+      h = bh;
+      w = h * aspect;
+    }
+    onUpdateLayout({
+      ...layout,
+      elements: layout.elements.map((item) =>
+        item.id === el.id
+          ? {
+              ...item,
+              width: Math.round(w),
+              height: Math.round(h),
+              x: Math.round(bounds.minX + (bw - w) / 2),
+              y: Math.round(bounds.minY + (bh - h) / 2),
+            }
+          : item,
       ),
     });
   };
@@ -1023,32 +1216,38 @@ export function PanelStudio({
                 </h2>
                 <div className="grid grid-cols-3 gap-1" role="group" aria-label="Canvas tool">
                   {([
-                    { id: "select", label: "Select" },
-                    { id: "knife", label: "✂ Knife" },
-                    { id: "corners", label: "◇ Corners" },
+                    { id: "select", label: "Select (V)" },
+                    { id: "dividers", label: "⇕ Dividers (D)" },
+                    { id: "draw", label: "▭ Draw (R)" },
+                    { id: "knife", label: "✂ Knife (K)" },
+                    { id: "corners", label: "◇ Corners (C)" },
                   ] as const).map((t) => (
                     <button
                       key={t.id}
                       aria-pressed={tool === t.id}
                       onClick={() => setTool(t.id)}
-                      className={`rounded-sm border border-border py-1.5 text-[11px] font-semibold hover:border-foreground hover:bg-accent disabled:opacity-40 ${tool === t.id ? "bg-foreground text-background border-foreground" : ""}`}
+                      className={`rounded-sm border border-border py-1.5 text-[10px] font-semibold hover:border-foreground hover:bg-accent disabled:opacity-40 ${tool === t.id ? "bg-foreground text-background border-foreground" : ""}`}
                     >
                       {t.label}
                     </button>
                   ))}
                 </div>
                 <p className="text-[10px] text-muted-foreground mt-1.5 leading-snug">
-                  {tool === "knife"
+                  {tool === "dividers"
+                    ? "Grab any shared gutter line to slide panels smoothly (hold Alt to skip snap)."
+                    : tool === "draw"
+                    ? "Drag on the canvas to draw a custom panel or floating inset frame (Alt skips snap)."
+                    : tool === "knife"
                     ? "Drag a line across the page to slice every panel it crosses. Hold Shift to snap the angle."
                     : tool === "corners"
                     ? "Drag the dots on the selected panel. Shared corners move neighbouring panels too."
-                    : "Click a panel to select it. Switch to Knife or Corners to reshape the grid."}
+                    : "Click a panel to select it, or hover directly over any gutter line to drag it."}
                 </p>
               </div>
 
-              {/* Quick splits */}
+              {/* Quick splits & Merge & Blank */}
               <div className="border-t border-border pt-3 space-y-2">
-                <h3 className="font-display text-xs">Split Selected Panel</h3>
+                <h3 className="font-display text-xs">Split, Carve &amp; Merge</h3>
                 <div className="grid grid-cols-3 gap-1">
                   <button disabled={!selectedPanel} onClick={() => handleKnifeSplit("horizontal")} className="rounded-sm border border-border py-1.5 text-[11px] font-semibold hover:border-foreground hover:bg-accent disabled:opacity-40 flex items-center justify-center gap-1">
                     <SplitSquareHorizontal className="h-3.5 w-3.5" /> Horiz
@@ -1059,6 +1258,11 @@ export function PanelStudio({
                   <button disabled={!selectedPanel} onClick={() => handleKnifeSplit("diagonal")} className="rounded-sm border border-border py-1.5 text-[11px] font-semibold hover:border-foreground hover:bg-accent disabled:opacity-40">
                     ⟋ Slash
                   </button>
+                </div>
+                <div className="grid grid-cols-3 gap-1">
+                  <button disabled={!selectedPanel} onClick={() => handleGridSplit(2, 2)} className="rounded-sm border border-border py-1 text-[10px] font-semibold hover:border-foreground hover:bg-accent disabled:opacity-40">2×2 Grid</button>
+                  <button disabled={!selectedPanel} onClick={() => handleGridSplit(3, 1)} className="rounded-sm border border-border py-1 text-[10px] font-semibold hover:border-foreground hover:bg-accent disabled:opacity-40">3 Rows</button>
+                  <button disabled={!selectedPanel} onClick={() => handleGridSplit(1, 3)} className="rounded-sm border border-border py-1 text-[10px] font-semibold hover:border-foreground hover:bg-accent disabled:opacity-40">3 Cols</button>
                 </div>
                 <label className="block">
                   <span className="flex justify-between"><span>Cut angle</span><span className="font-mono">{splitAngle}°</span></span>
@@ -1077,16 +1281,73 @@ export function PanelStudio({
                   <button disabled={!selectedPanel} onClick={handleMergePanel} className="rounded-sm border border-border py-1.5 text-[11px] font-semibold hover:border-foreground hover:bg-accent disabled:opacity-40" title="Join the selected panel with the neighbour it lines up with">⊞ Merge panel</button>
                   <button disabled={!selectedPanel || layout.panels.length <= 1} onClick={handleDeletePanel} className="rounded-sm border border-border py-1.5 text-[11px] font-semibold hover:border-destructive hover:text-destructive disabled:opacity-40">🗑 Delete panel</button>
                 </div>
-                <button onClick={handleBlankPage} className="w-full rounded-sm border border-dashed border-border py-1.5 text-[11px] font-semibold hover:border-foreground hover:bg-accent">□ Start from blank page</button>
+                {merges.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-1 rounded border border-border bg-muted/40 p-1" data-testid="merge-directions">
+                    <span className="text-[10px] font-semibold text-muted-foreground mr-0.5">Merge:</span>
+                    {merges.map((cand) => {
+                      const arrow = cand.direction === "up" ? "↑ Up" : cand.direction === "down" ? "↓ Down" : cand.direction === "left" ? "← Left" : "→ Right";
+                      return (
+                        <button
+                          key={cand.neighborId}
+                          onClick={() => handleMergeWith(cand)}
+                          className="rounded border border-border bg-background px-1.5 py-0.5 text-[10px] font-semibold hover:border-foreground hover:bg-accent"
+                        >
+                          {arrow}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+                <div className="grid grid-cols-2 gap-1">
+                  <button onClick={() => handleBlankPage(false)} className="rounded-sm border border-dashed border-border py-1.5 text-[10px] font-semibold hover:border-foreground hover:bg-accent">□ Blank 1-Panel</button>
+                  <button onClick={() => handleBlankPage(true)} className="rounded-sm border border-dashed border-border py-1.5 text-[10px] font-semibold hover:border-foreground hover:bg-accent">▢ Empty Canvas</button>
+                </div>
               </div>
 
               {/* Layout Template Gallery */}
               <div className="border-t border-border pt-3">
-                <h2 className="font-display text-sm flex items-center gap-1.5 mb-2">
-                  <Compass className="h-4 w-4 text-primary" /> Grid Templates
-                  <span className="ml-auto text-[10px] font-normal text-muted-foreground">{GRID_TEMPLATES.length} layouts</span>
-                </h2>
-                <div className="flex flex-wrap gap-1 mb-2">
+                <div className="flex items-center gap-1.5 mb-2">
+                  <h2 className="font-display text-sm flex items-center gap-1.5">
+                    <Compass className="h-4 w-4 text-primary" /> Grid Templates
+                  </h2>
+                  <button
+                    type="button"
+                    disabled={layout.panels.length === 0}
+                    onClick={() => setSavingTplOpen((v) => !v)}
+                    className="ml-auto rounded border border-border px-1.5 py-0.5 text-[10px] font-semibold hover:border-foreground disabled:opacity-40"
+                    title="Save current page layout as a reusable template"
+                  >
+                    + Save
+                  </button>
+                  <span className="text-[10px] font-normal text-muted-foreground">{allTemplates.length}</span>
+                </div>
+                {savingTplOpen && (
+                  <div className="mb-2 flex gap-1 rounded border border-border bg-muted/40 p-1.5">
+                    <input
+                      value={customTplName}
+                      onChange={(e) => setCustomTplName(e.target.value)}
+                      placeholder="Template name..."
+                      aria-label="Custom template name"
+                      className="flex-1 rounded border border-input bg-background px-1.5 py-0.5 text-[11px]"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleSaveCustomTemplate}
+                      className="rounded bg-primary px-2 py-0.5 text-[10px] font-bold text-primary-foreground"
+                    >
+                      Save
+                    </button>
+                  </div>
+                )}
+                <input
+                  type="search"
+                  value={tplSearch}
+                  onChange={(e) => setTplSearch(e.target.value)}
+                  placeholder="Search layouts (e.g. Stagger, Hero, Rhythm)..."
+                  aria-label="Search grid templates"
+                  className="mb-2 w-full rounded border border-input bg-background px-2 py-1 text-[11px]"
+                />
+                <div className="flex flex-wrap gap-1 mb-1.5">
                   {TEMPLATE_CATEGORIES.map((c) => (
                     <button
                       key={c.id}
@@ -1097,7 +1358,7 @@ export function PanelStudio({
                     </button>
                   ))}
                 </div>
-                <div className="flex flex-wrap items-center gap-1 mb-2" role="group" aria-label="Panel count">
+                <div className="flex flex-wrap items-center gap-1 mb-1.5" role="group" aria-label="Panel count">
                   <span className="text-[10px] text-muted-foreground mr-0.5">Panels:</span>
                   {(["all", 1, 2, 3, 4, 5, 6, 7] as const).map((n) => (
                     <button key={n} onClick={() => setTplCount(n)} aria-pressed={tplCount === n}
@@ -1106,19 +1367,69 @@ export function PanelStudio({
                     </button>
                   ))}
                 </div>
-                <div className="grid grid-cols-3 gap-1.5" data-testid="template-grid">
-                  {GRID_TEMPLATES.filter((t) => (tplCat === "all" || t.category === tplCat) && (tplCount === "all" || (tplCount === 7 ? t.build().length >= 7 : t.build().length === tplCount))).map((tmpl) => (
+                <div className="flex flex-wrap items-center gap-1 mb-2" role="group" aria-label="Layout style">
+                  {(
+                    [
+                      ["all", "All styles"],
+                      ["stagger", "Staggered"],
+                      ["banner", "Wide Opener"],
+                      ["wrap", "Hero Wrap"],
+                      ["diagonal", "Diagonal"],
+                      ...(customTemplates.length ? [["custom", `My Saved (${customTemplates.length})`]] : []),
+                    ] as const
+                  ).map(([id, lbl]) => (
                     <button
-                      key={tmpl.id}
-                      onClick={() => handleApplyTemplate(tmpl.id)}
-                      title={tmpl.description}
-                      aria-label={`Template ${tmpl.label}`}
-                      className="rounded border border-border p-1 text-left hover:border-foreground hover:bg-accent/40 transition-all group"
+                      key={id}
+                      onClick={() => setTplStyle(id as typeof tplStyle)}
+                      className={`rounded border px-1.5 py-0.5 text-[9px] font-semibold ${tplStyle === id ? "bg-primary text-primary-foreground border-primary" : "border-border hover:border-foreground"}`}
                     >
-                      <TemplateThumb panels={tmpl.build()} />
-                      <div className="mt-1 text-[10px] font-semibold leading-tight text-foreground group-hover:text-primary line-clamp-1">{tmpl.label}</div>
+                      {lbl}
                     </button>
                   ))}
+                </div>
+                <div className="grid grid-cols-3 gap-1.5" data-testid="template-grid">
+                  {allTemplates
+                    .filter((t) => {
+                      const q = tplSearch.trim().toLowerCase();
+                      if (q && !t.label.toLowerCase().includes(q) && !t.description.toLowerCase().includes(q)) return false;
+                      if (tplCat !== "all" && t.category !== tplCat) return false;
+                      const cnt = t.build().length;
+                      if (tplCount !== "all" && (tplCount === 7 ? cnt < 7 : cnt !== tplCount)) return false;
+                      if (tplStyle === "custom") return "isCustom" in t;
+                      if (tplStyle === "stagger") return t.id.startsWith("st-") || t.id === "wr-kitchen" || t.description.toLowerCase().includes("offset");
+                      if (tplStyle === "banner") return t.description.toLowerCase().includes("opener") || t.id.includes("establish") || t.id === "wr-kitchen";
+                      if (tplStyle === "wrap") return t.id.startsWith("wr-hero") || t.id.includes("Lshape") || t.id.includes("shojo-focus");
+                      if (tplStyle === "diagonal") return t.id.startsWith("ta-") || t.category === "action";
+                      return true;
+                    })
+                    .map((tmpl) => (
+                      <div key={tmpl.id} className="relative group">
+                        <button
+                          onClick={() => handleApplyTemplate(tmpl.id)}
+                          title={tmpl.description}
+                          aria-label={`Template ${tmpl.label}`}
+                          className="w-full rounded border border-border p-1 text-left hover:border-foreground hover:bg-accent/40 transition-all"
+                        >
+                          <TemplateThumb panels={tmpl.build()} />
+                          <div className="mt-1 text-[10px] font-semibold leading-tight text-foreground group-hover:text-primary line-clamp-1">{tmpl.label}</div>
+                        </button>
+                        {"isCustom" in tmpl && (
+                          <button
+                            type="button"
+                            aria-label={`Delete template ${tmpl.label}`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const next = removeCustomTemplate(customTemplates, tmpl.id);
+                              setCustomTemplates(next);
+                              saveCustomTemplates(next);
+                            }}
+                            className="absolute right-1 top-1 hidden h-4 w-4 items-center justify-center rounded-full bg-destructive text-[10px] text-white group-hover:flex"
+                          >
+                            ×
+                          </button>
+                        )}
+                      </div>
+                    ))}
                 </div>
               </div>
 
@@ -1435,14 +1746,7 @@ export function PanelStudio({
                 const target = (allPages && allPages[pageIdx]) || layout;
                 const { panels, cut } = knifeCut(target.panels, a, b);
                 if (!cut.length) return;
-                const next: PageLayout = {
-                  ...target,
-                  panels,
-                  elements: rehome(panels, target.elements),
-                  balloons: (target.balloons ?? []).map((x) =>
-                    panels.some((p) => p.id === x.panelId) ? x : { ...x, panelId: panels[0].id }
-                  ),
-                };
+                const next = rehomeLayout(target, panels);
                 if (onUpdatePageAt) onUpdatePageAt(pageIdx, next);
                 else onUpdateLayout(next);
               }}
@@ -1455,6 +1759,20 @@ export function PanelStudio({
                 if (onUpdatePageAt) onUpdatePageAt(pageIdx, next);
                 else onUpdateLayout(next);
               }}
+              onMoveDivider={(pageIdx, nextPanels) => {
+                const target = (allPages && allPages[pageIdx]) || layout;
+                const next: PageLayout = { ...target, panels: nextPanels };
+                if (onUpdatePageAt) onUpdatePageAt(pageIdx, next);
+                else onUpdateLayout(next);
+              }}
+              onDrawPanel={(pageIdx, r) => {
+                const target = (allPages && allPages[pageIdx]) || layout;
+                const np = buildDrawnPanel(target.panels, r);
+                const next = rehomeLayout(target, [...target.panels, np]);
+                if (onUpdatePageAt) onUpdatePageAt(pageIdx, next);
+                else onUpdateLayout(next);
+                setSelectedPanelId(np.id);
+              }}
               onRePoseIn3D={onRePoseIn3D}
             />
           ) : (
@@ -1465,6 +1783,8 @@ export function PanelStudio({
             tool={tool}
             onKnife={handleKnifeStroke}
             onMoveVertex={handleMoveVertex}
+            onMoveDivider={(nextPanels) => onUpdateLayout({ ...layout, panels: nextPanels })}
+            onDrawPanel={handleDrawPanel}
             showOrder={showOrder}
             showGuides={showGuides}
             onSelectPanel={setSelectedPanelId}
@@ -1762,6 +2082,34 @@ export function PanelStudio({
                   })()}
                 </div>
 
+                {/* Swap panel contents */}
+                {layout.panels.length > 1 && (
+                  <div className="border-t border-border pt-2">
+                    <label className="flex items-center justify-between gap-2">
+                      <span className="font-semibold shrink-0">Swap contents</span>
+                      <select
+                        aria-label="Swap contents with panel"
+                        value=""
+                        onChange={(e) => {
+                          if (!e.target.value) return;
+                          onUpdateLayout(swapPanelContents(layout, selectedPanel.id, e.target.value));
+                        }}
+                        className="flex-1 rounded border border-input bg-background px-1.5 py-0.5 text-[10px]"
+                      >
+                        <option value="">Swap with Panel...</option>
+                        {layout.panels
+                          .map((p, idx) => ({ id: p.id, num: idx + 1 }))
+                          .filter((x) => x.id !== selectedPanel.id)
+                          .map((x) => (
+                            <option key={x.id} value={x.id}>
+                              Panel {x.num}
+                            </option>
+                          ))}
+                      </select>
+                    </label>
+                  </div>
+                )}
+
                 {/* Items in this panel (selectable even when overlapped) */}
                 {(() => {
                   const pid = selectedPanel.id;
@@ -1911,9 +2259,9 @@ export function PanelStudio({
                 </div>
               </div>
 
-              {/* Alignment & Flip */}
+              {/* Alignment, Fit/Fill & Flip */}
               <div className="space-y-1.5 text-xs">
-                <span className="font-semibold block">Position & Transforms</span>
+                <span className="font-semibold block">Position &amp; Transforms</span>
                 <div className="grid grid-cols-3 gap-1">
                   <button
                     onClick={() => handleCenterInPanel(selectedElement)}
@@ -1950,6 +2298,22 @@ export function PanelStudio({
                     }`}
                   >
                     <FlipVertical className="h-3 w-3" /> Flip V
+                  </button>
+                </div>
+                <div className="grid grid-cols-2 gap-1">
+                  <button
+                    onClick={() => handleFrameInPanel(selectedElement, "fit")}
+                    className="rounded border border-border py-1 hover:border-foreground text-[10px] font-semibold"
+                    title="Scale cleanly inside panel without cropping"
+                  >
+                    Fit inside panel
+                  </button>
+                  <button
+                    onClick={() => handleFrameInPanel(selectedElement, "fill")}
+                    className="rounded border border-border py-1 hover:border-foreground text-[10px] font-semibold"
+                    title="Scale to cover full panel width & height"
+                  >
+                    Fill panel edges
                   </button>
                 </div>
               </div>
@@ -2019,24 +2383,24 @@ export function PanelStudio({
                 />
               </div>
 
-              {/* Balloon Color Fill & Dark Demon Voice */}
+              {/* Balloon Color Fill & Narration / Demon Presets */}
               <div>
                 <span className="block mb-1 text-xs font-semibold">Balloon Style</span>
-                <div className="flex gap-1.5 text-xs">
+                <div className="grid grid-cols-3 gap-1 text-xs">
                   <button
                     onClick={() =>
                       onUpdateLayout({
                         ...layout,
                         balloons: (layout.balloons ?? []).map((b) =>
                           b.id === selectedBalloon.id
-                            ? { ...b, backgroundColor: "#ffffff", fontColor: "#000000", strokeColor: "#000000" }
+                            ? { ...b, backgroundColor: "#ffffff", fontColor: "#000000", strokeColor: "#000000", borderColor: "#000000" }
                             : b
                         ),
                       })
                     }
-                    className="flex-1 py-1 rounded border border-border bg-white text-black font-semibold text-[11px]"
+                    className="py-1 rounded border border-border bg-white text-black font-semibold text-[10px]"
                   >
-                    Standard White
+                    White
                   </button>
                   <button
                     onClick={() =>
@@ -2044,12 +2408,27 @@ export function PanelStudio({
                         ...layout,
                         balloons: (layout.balloons ?? []).map((b) =>
                           b.id === selectedBalloon.id
-                            ? { ...b, backgroundColor: "#09090b", fontColor: "#ffffff", strokeColor: "#ffffff" }
+                            ? { ...b, backgroundColor: "#faf7f2", fontColor: "#000000", strokeColor: "#000000", borderColor: "#000000", textAlign: "left", fontWeight: "normal", doubleBorder: true, shadow: true }
                             : b
                         ),
                       })
                     }
-                    className="flex-1 py-1 rounded border border-foreground bg-black text-white font-semibold text-[11px]"
+                    className="py-1 rounded border border-border bg-[#faf7f2] text-black font-semibold text-[10px]"
+                  >
+                    Caption Paper
+                  </button>
+                  <button
+                    onClick={() =>
+                      onUpdateLayout({
+                        ...layout,
+                        balloons: (layout.balloons ?? []).map((b) =>
+                          b.id === selectedBalloon.id
+                            ? { ...b, backgroundColor: "#09090b", fontColor: "#ffffff", strokeColor: "#ffffff", borderColor: "#ffffff" }
+                            : b
+                        ),
+                      })
+                    }
+                    className="py-1 rounded border border-foreground bg-black text-white font-semibold text-[10px]"
                   >
                     Dark / Demon
                   </button>
@@ -2110,11 +2489,26 @@ export function PanelStudio({
                           ))}
                         </select>
                       </label>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] font-semibold">Align:</span>
+                        {(["left", "center", "right"] as const).map((al) => (
+                          <button
+                            key={al}
+                            type="button"
+                            onClick={() => setB({ textAlign: al })}
+                            className={`rounded border px-1.5 py-0.5 text-[10px] capitalize ${(selectedBalloon.textAlign ?? (selectedBalloon.shape === "narration" ? "left" : "center")) === al ? "bg-foreground text-background border-foreground font-bold" : "border-border hover:border-foreground"}`}
+                          >
+                            {al}
+                          </button>
+                        ))}
+                      </div>
                       <div className="grid grid-cols-2 gap-1.5">
                         <label className="flex items-center gap-1.5"><input type="checkbox" checked={selectedBalloon.hasTail} onChange={(e) => setB({ hasTail: e.target.checked })} className="accent-primary" /> Tail</label>
                         <label className="flex items-center gap-1.5"><input type="checkbox" checked={!!selectedBalloon.isVertical} onChange={(e) => setB({ isVertical: e.target.checked, writingMode: e.target.checked ? "vertical-rl" : "horizontal-tb" })} className="accent-primary" /> Vertical (tategaki)</label>
                         <label className="flex items-center gap-1.5"><input type="checkbox" checked={!!selectedBalloon.tailCurved} onChange={(e) => setB({ tailCurved: e.target.checked })} className="accent-primary" /> Curved Tail</label>
                         <label className="flex items-center gap-1.5"><input type="checkbox" checked={!!selectedBalloon.hasSecondaryTail} onChange={(e) => setB({ hasSecondaryTail: e.target.checked, secondaryTail: selectedBalloon.secondaryTail ?? { x: -48, y: selectedBalloon.height * 0.8 } })} className="accent-primary" /> Dual Tail</label>
+                        <label className="flex items-center gap-1.5"><input type="checkbox" checked={Boolean(selectedBalloon.doubleBorder ?? selectedBalloon.shape === "narration")} onChange={(e) => setB({ doubleBorder: e.target.checked })} className="accent-primary" /> Double Border</label>
+                        <label className="flex items-center gap-1.5"><input type="checkbox" checked={Boolean(selectedBalloon.shadow ?? selectedBalloon.shape === "narration")} onChange={(e) => setB({ shadow: e.target.checked })} className="accent-primary" /> Drop Shadow</label>
                       </div>
                       <div className="grid grid-cols-2 gap-1.5">
                         <label className="block"><span className="flex justify-between"><span>Width</span><span className="font-mono">{Math.round(selectedBalloon.width)}</span></span>

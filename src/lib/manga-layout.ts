@@ -573,3 +573,40 @@ export function splitPanel(
     return [p1, p2];
   }
 }
+
+/** Swaps characters, backgrounds, balloons, SFX, marks, speed lines, and panel fills between two panels cleanly. */
+export function swapPanelContents(layout: PageLayout, idA: string, idB: string): PageLayout {
+  if (idA === idB) return layout;
+  const panA = layout.panels.find((p) => p.id === idA);
+  const panB = layout.panels.find((p) => p.id === idB);
+  if (!panA || !panB) return layout;
+
+  const bA = panelBounds(panA, layout.format);
+  const bB = panelBounds(panB, layout.format);
+  const dxAB = (bB.minX + bB.width / 2) - (bA.minX + bA.width / 2);
+  const dyAB = (bB.minY + bB.height / 2) - (bA.minY + bA.height / 2);
+
+  const shiftItem = <T extends { panelId: string; x: number; y: number }>(item: T): T => {
+    if (item.panelId === idA) return { ...item, panelId: idB, x: item.x + dxAB, y: item.y + dyAB };
+    if (item.panelId === idB) return { ...item, panelId: idA, x: item.x - dxAB, y: item.y - dyAB };
+    return item;
+  };
+
+  return {
+    ...layout,
+    panels: layout.panels.map((p) => {
+      if (p.id === idA) return { ...p, backgroundColor: panB.backgroundColor, tone: panB.tone ?? null };
+      if (p.id === idB) return { ...p, backgroundColor: panA.backgroundColor, tone: panA.tone ?? null };
+      return p;
+    }),
+    elements: layout.elements.map(shiftItem),
+    balloons: (layout.balloons ?? []).map(shiftItem),
+    sfxStamps: (layout.sfxStamps ?? []).map(shiftItem),
+    comicMarks: (layout.comicMarks ?? []).map(shiftItem),
+    speedLines: (layout.speedLines ?? []).map((l) => {
+      if (l.panelId === idA) return { ...l, panelId: idB, centerX: l.centerX + dxAB, centerY: l.centerY + dyAB };
+      if (l.panelId === idB) return { ...l, panelId: idA, centerX: l.centerX - dxAB, centerY: l.centerY - dyAB };
+      return l;
+    }),
+  };
+}

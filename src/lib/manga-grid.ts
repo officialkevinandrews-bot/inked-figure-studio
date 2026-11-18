@@ -513,3 +513,304 @@ export function mergeRectPanels(a: PanelPolygon, b: PanelPolygon): Point[] | nul
   if (Math.abs(box - sum) > 0.002) return null;
   return [{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }];
 }
+
+export type MergeDirection = "up" | "down" | "left" | "right";
+
+export interface MergeCandidate {
+  neighborId: string;
+  direction: MergeDirection;
+  mergedPoints: Point[];
+}
+
+/** Finds all neighboring rectangular panels that can merge cleanly with `target`, tagged by direction. */
+export function mergeCandidates(target: PanelPolygon, panels: PanelPolygon[]): MergeCandidate[] {
+  if (target.floating) return [];
+  const tBox = {
+    x0: Math.min(...target.points.map((p) => p.x)),
+    x1: Math.max(...target.points.map((p) => p.x)),
+    y0: Math.min(...target.points.map((p) => p.y)),
+    y1: Math.max(...target.points.map((p) => p.y)),
+  };
+  const tCx = (tBox.x0 + tBox.x1) / 2;
+  const tCy = (tBox.y0 + tBox.y1) / 2;
+  const out: MergeCandidate[] = [];
+
+  for (const other of panels) {
+    if (other.id === target.id || other.floating) continue;
+    const mergedPoints = mergeRectPanels(target, other);
+    if (!mergedPoints) continue;
+    const oCx = (Math.min(...other.points.map((p) => p.x)) + Math.max(...other.points.map((p) => p.x))) / 2;
+    const oCy = (Math.min(...other.points.map((p) => p.y)) + Math.max(...other.points.map((p) => p.y))) / 2;
+    const dx = oCx - tCx;
+    const dy = oCy - tCy;
+    const direction: MergeDirection =
+      Math.abs(dx) >= Math.abs(dy) ? (dx < 0 ? "left" : "right") : dy < 0 ? "up" : "down";
+    out.push({ neighborId: other.id, direction, mergedPoints });
+  }
+  return out;
+}
+
+export interface SharedDivider {
+  id: string;
+  a: Point;
+  b: Point;
+  nx: number;
+  ny: number;
+  c: number;
+  tx: number;
+  ty: number;
+  tMin: number;
+  tMax: number;
+  axis: "h" | "v" | "angled";
+  panelIds: string[];
+}
+
+/** Extracts contiguous interior dividing lines shared between non-floating panels (supports staggered T-junctions & slants). */
+export function findSharedDividers(panels: PanelPolygon[]): SharedDivider[] {
+  interface EdgeRec {
+    panelId: string;
+    t0: number;
+    t1: number;
+    side: 1 | -1;
+  }
+  interface LineGroup {
+    nx: number;
+    ny: number;
+    c: number;
+    tx: number;
+    ty: number;
+    edges: EdgeRec[];
+  }
+
+  const groups: LineGroup[] = [];
+  for (const p of panels) {
+    if (p.floating || p.points.length < 3) continue;
+    const areaSign = polygonArea(p.points) >= 0 ? 1 : -1;
+    const n = p.points.length;
+    for (let i = 0; i < n; i++) {
+      const a = p.points[i];
+      const b = p.points[(i + 1) % n];
+      if (onPageEdge(a, b)) continue;
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const len = Math.hypot(dx, dy);
+      if (len < 0.015) continue;
+      // Canonical normal so coincident opposite edges land in the exact same bucket.
+      let nx = -dy / len;
+      let ny = dx / len;
+      if (nx < -1e-4 || (Math.abs(nx) <= 1e-4 && ny < 0)) {
+        nx = -nx;
+        ny = -ny;
+      }
+      const c = nx * a.x + ny * a.y;
+      const tx = -ny;
+      const ty = nx;
+      const p0 = a.x * tx + a.y * ty;
+      const p1 = b.x * tx + b.y * ty;
+      const t0 = Math.min(p0, p1);
+      const t1 = Math.max(p0, p1);
+      // Side compares edge normal vs canonical normal.
+      const edgeNx = (areaSign * -dy) / len;
+      const edgeNy = (areaSign * dx) / len;
+      const side: 1 | -1 = edgeNx * nx + edgeNy * ny >= 0 ? 1 : -1;
+
+      let grp = groups.find(
+        (g) => Math.abs(g.nx - nx) < 2e-3 && Math.abs(g.ny - ny) < 2e-3 && Math.abs(g.c - c) < 3e-3,
+      );
+      if (!grp) {
+        grp = { nx, ny, c, tx, ty, edges: [] };
+        groups.push(grp);
+      }
+      grp.edges.push({ panelId: p.id, t0, t1, side });
+    }
+  }
+
+  const out: SharedDivider[] = [];
+  for (const g of groups) {
+    // Collect sweep events along tangent t to find every maximal overlap where BOTH sides exist.
+    const cuts = Array.from(
+      new Set(g.edges.flatMap((e) => [Math.round(e.t0 * 10000) / 10000, Math.round(e.t1 * 10000) / 10000])),
+    ).sort((x, y) => x - y);
+
+    let spanStart: number | null = null;
+    let spanEnd: number | null = null;
+    const spanPanels = new Set<string>();
+
+    const flush = () => {
+      if (spanStart !== null && spanEnd !== null && spanEnd - spanStart > 0.015 && spanPanels.size >= 2) {
+        const ax = snap(g.c * g.nx + spanStart * g.tx);
+        const ay = snap(g.c * g.ny + spanStart * g.ty);
+        const bx = snap(g.c * g.nx + spanEnd * g.tx);
+        const by = snap(g.c * g.ny + spanEnd * g.ty);
+        const axis: SharedDivider["axis"] = Math.abs(g.ny) > 0.995 ? "h" : Math.abs(g.nx) > 0.995 ? "v" : "angled";
+        out.push({
+          id: `div-${out.length + 1}`,
+          a: { x: ax, y: ay },
+          b: { x: bx, y: by },
+          nx: g.nx,
+          ny: g.ny,
+          c: g.c,
+          tx: g.tx,
+          ty: g.ty,
+          tMin: spanStart,
+          tMax: spanEnd,
+          axis,
+          panelIds: [...spanPanels],
+        });
+      }
+      spanStart = null;
+      spanEnd = null;
+      spanPanels.clear();
+    };
+
+    for (let i = 0; i < cuts.length - 1; i++) {
+      const lo = cuts[i];
+      const hi = cuts[i + 1];
+      if (hi - lo < 1e-3) continue;
+      const mid = (lo + hi) / 2;
+      const active = g.edges.filter((e) => e.t0 <= mid && e.t1 >= mid);
+      const hasPos = active.some((e) => e.side === 1);
+      const hasNeg = active.some((e) => e.side === -1);
+      if (hasPos && hasNeg) {
+        if (spanStart === null) spanStart = lo;
+        spanEnd = hi;
+        for (const e of active) spanPanels.add(e.panelId);
+      } else {
+        flush();
+      }
+    }
+    flush();
+  }
+  return out;
+}
+
+function tryShiftDivider(panels: PanelPolygon[], divider: SharedDivider, delta: number): PanelPolygon[] | null {
+  const newC = divider.c + delta;
+  const affected = new Set(divider.panelIds);
+  const minDim = 0.05;
+  const minArea = 0.003;
+
+  const next = panels.map((p) => {
+    if (!affected.has(p.id)) return p;
+    let changed = false;
+    const pts = p.points.map((pt) => {
+      const dist = Math.abs(pt.x * divider.nx + pt.y * divider.ny - divider.c);
+      const tVal = pt.x * divider.tx + pt.y * divider.ty;
+      if (dist < 4e-3 && tVal >= divider.tMin - 4e-3 && tVal <= divider.tMax + 4e-3) {
+        changed = true;
+        if (divider.axis === "h") {
+          return { x: pt.x, y: snap(Math.min(1, Math.max(0, pt.y + divider.ny * delta))) };
+        }
+        if (divider.axis === "v") {
+          return { x: snap(Math.min(1, Math.max(0, pt.x + divider.nx * delta))), y: pt.y };
+        }
+        // Keep boundary corners pinned to their exact outer page edge along slanted lines.
+        if (Math.abs(pt.x) < EPS && Math.abs(divider.ny) > 1e-3) {
+          return { x: 0, y: snap(Math.min(1, Math.max(0, newC / divider.ny))) };
+        }
+        if (Math.abs(pt.x - 1) < EPS && Math.abs(divider.ny) > 1e-3) {
+          return { x: 1, y: snap(Math.min(1, Math.max(0, (newC - divider.nx) / divider.ny))) };
+        }
+        if (Math.abs(pt.y) < EPS && Math.abs(divider.nx) > 1e-3) {
+          return { x: snap(Math.min(1, Math.max(0, newC / divider.nx))), y: 0 };
+        }
+        if (Math.abs(pt.y - 1) < EPS && Math.abs(divider.nx) > 1e-3) {
+          return { x: snap(Math.min(1, Math.max(0, (newC - divider.ny) / divider.nx))), y: 1 };
+        }
+        return {
+          x: snap(Math.min(1, Math.max(0, pt.x + divider.nx * delta))),
+          y: snap(Math.min(1, Math.max(0, pt.y + divider.ny * delta))),
+        };
+      }
+      return pt;
+    });
+    if (!changed) return p;
+    const xs = pts.map((q) => q.x);
+    const ys = pts.map((q) => q.y);
+    if (Math.max(...xs) - Math.min(...xs) < minDim || Math.max(...ys) - Math.min(...ys) < minDim) return null;
+    if (Math.abs(polygonArea(pts)) < minArea) return null;
+    return { ...p, points: pts };
+  });
+
+  return next.some((p) => p === null) ? null : (next as PanelPolygon[]);
+}
+
+const DEFAULT_SNAP_TICKS = [0.25, 1 / 3, 0.5, 2 / 3, 0.75];
+
+/**
+ * Slides a shared divider along its normal (`delta` in normalized page units),
+ * snapping cleanly to guides while clamping against neighboring panels so geometry never collapses.
+ */
+export function moveDivider(
+  panels: PanelPolygon[],
+  divider: SharedDivider,
+  rawDelta: number,
+  options: { snapTicks?: number[]; disableSnap?: boolean } = {},
+): { panels: PanelPolygon[]; appliedDelta: number; snappedAt?: number } {
+  let delta = rawDelta;
+  let snappedAt: number | undefined;
+
+  if (!options.disableSnap && divider.axis !== "angled") {
+    const curPos = divider.axis === "h" ? divider.a.y : divider.a.x;
+    const sign = divider.axis === "h" ? divider.ny : divider.nx;
+    const target = curPos + delta * sign;
+    const ticks = options.snapTicks ?? DEFAULT_SNAP_TICKS;
+    let bestDiff = 0.015;
+    for (const tk of ticks) {
+      const diff = Math.abs(target - tk);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        delta = (tk - curPos) * sign;
+        snappedAt = tk;
+      }
+    }
+  }
+
+  const direct = tryShiftDivider(panels, divider, delta);
+  if (direct) return { panels: direct, appliedDelta: delta, snappedAt };
+
+  // Binary search maximum safe slide along delta direction.
+  let lo = 0;
+  let hi = delta;
+  let best: PanelPolygon[] | null = null;
+  let bestDelta = 0;
+  for (let i = 0; i < 14; i++) {
+    const mid = (lo + hi) / 2;
+    const attempt = tryShiftDivider(panels, divider, mid);
+    if (attempt) {
+      best = attempt;
+      bestDelta = mid;
+      lo = mid;
+    } else {
+      hi = mid;
+    }
+  }
+  return { panels: best ?? panels, appliedDelta: bestDelta };
+}
+
+/** Splits a single rectangular or polygonal panel cleanly into a rows x cols sub-grid. */
+export function splitPanelGrid(panel: PanelPolygon, rows: number, cols: number): PanelPolygon[] {
+  const r = Math.max(1, Math.min(4, Math.round(rows)));
+  const c = Math.max(1, Math.min(4, Math.round(cols)));
+  if (r === 1 && c === 1) return [panel];
+  const xs = panel.points.map((p) => p.x);
+  const ys = panel.points.map((p) => p.y);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs);
+  const y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const out: PanelPolygon[] = [];
+  const baseSeed = ++cutSeq;
+  for (let ri = 0; ri < r; ri++) {
+    const ty0 = snap(y0 + ((y1 - y0) * ri) / r);
+    const ty1 = snap(y0 + ((y1 - y0) * (ri + 1)) / r);
+    for (let ci = 0; ci < c; ci++) {
+      const tx0 = snap(x0 + ((x1 - x0) * ci) / c);
+      const tx1 = snap(x0 + ((x1 - x0) * (ci + 1)) / c);
+      out.push({
+        ...panel,
+        id: `${panel.id}-g${baseSeed}-${ri}_${ci}`,
+        points: rect(tx0, ty0, tx1, ty1),
+      });
+    }
+  }
+  return out;
+}
