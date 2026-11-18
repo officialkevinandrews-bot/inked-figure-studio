@@ -28,12 +28,22 @@ export interface CameraSnapshotPose {
   fov?: number;
 }
 
+export const PAGE_LAYER_ID = "__page__";
+
+export type PageLayerPlacement =
+  | { kind: "behind" }
+  | { kind: "above" }
+  | { kind: "below-panel"; panelId: string }
+  | { kind: "above-panel"; panelId: string };
+
 export interface PlacedElement {
   id: string;
   panelId: string;
   type: "character" | "prop" | "background";
   imageUrl: string;
   imageFileId?: string;
+  fitMode?: "free" | "fill-panel";
+  pageLayer?: PageLayerPlacement;
   // Position & transform relative to the panel's bounding box
   x: number; // in pixels relative to panel min bounds
   y: number;
@@ -592,7 +602,7 @@ export function swapPanelContents(layout: PageLayout, idA: string, idB: string):
     return item;
   };
 
-  return {
+  return syncPanelBoundElements({
     ...layout,
     panels: layout.panels.map((p) => {
       if (p.id === idA) return { ...p, backgroundColor: panB.backgroundColor, tone: panB.tone ?? null };
@@ -608,5 +618,29 @@ export function swapPanelContents(layout: PageLayout, idA: string, idB: string):
       if (l.panelId === idB) return { ...l, panelId: idA, centerX: l.centerX - dxAB, centerY: l.centerY - dyAB };
       return l;
     }),
-  };
+  });
+}
+
+/** Re-scales panel-bound `fill-panel` backgrounds cleanly whenever panel sizes, dividers, gutters, or formats change. */
+export function syncPanelBoundElements(layout: PageLayout): PageLayout {
+  const hasBound = layout.elements.some((el) => el.fitMode === "fill-panel" && el.panelId !== PAGE_LAYER_ID);
+  if (!hasBound) return layout;
+
+  const panelMap = new Map(layout.panels.map((p) => [p.id, p]));
+  let changed = false;
+  const elements = layout.elements.map((el) => {
+    if (el.fitMode !== "fill-panel" || el.panelId === PAGE_LAYER_ID) return el;
+    const panel = panelMap.get(el.panelId);
+    if (!panel) return el;
+    const b = panelBounds(panel, layout.format);
+    const nx = Math.round(b.minX);
+    const ny = Math.round(b.minY);
+    const nw = Math.max(1, Math.round(b.width));
+    const nh = Math.max(1, Math.round(b.height));
+    if (el.x === nx && el.y === ny && el.width === nw && el.height === nh) return el;
+    changed = true;
+    return { ...el, x: nx, y: ny, width: nw, height: nh };
+  });
+
+  return changed ? { ...layout, elements } : layout;
 }

@@ -1,4 +1,50 @@
+import { deflateSync } from "node:zlib";
 import { expect, test } from "@playwright/test";
+
+function makeSolidPng(width: number, height: number): Buffer {
+  const crcTable = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    crcTable[n] = c >>> 0;
+  }
+  const crc32 = (buf: Buffer) => {
+    let c = 0xffffffff;
+    for (let i = 0; i < buf.length; i++) c = crcTable[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (type: string, data: Buffer) => {
+    const t = Buffer.from(type, "ascii");
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length, 0);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(Buffer.concat([t, data])), 0);
+    return Buffer.concat([len, t, data, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 2; // RGB
+  const rowSize = 1 + width * 3;
+  const raw = Buffer.alloc(rowSize * height);
+  for (let y = 0; y < height; y++) {
+    raw[y * rowSize] = 0;
+    for (let x = 0; x < width; x++) {
+      const off = y * rowSize + 1 + x * 3;
+      raw[off] = 40;
+      raw[off + 1] = 120;
+      raw[off + 2] = 220;
+    }
+  }
+  const idat = deflateSync(raw);
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk("IHDR", ihdr),
+    chunk("IDAT", idat),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+}
 
 test.describe("Inked Figure Studio End-to-End Regression", () => {
   test("Create/3D Pose -> Cast/Hands/Lighting -> 2D Snapshot -> Panels/Webtoon -> Reload Persistence", async ({
@@ -220,6 +266,109 @@ test.describe("Inked Figure Studio End-to-End Regression", () => {
     await page.getByRole("button", { name: /Narration Caption/ }).click();
     await expect(page.getByRole("button", { name: "Resize balloon bottom-right" })).toBeVisible();
     await expect(page.getByRole("button", { name: "left", exact: true })).toBeVisible();
+
+    expect(consoleErrors).toEqual([]);
+    expect(pageErrors).toEqual([]);
+  });
+
+  test("Upload Background Image: Auto-scale with panel, Deselect page mode, Whole-Page Layer ordering & Clear panel fill", async ({
+    page,
+  }) => {
+    const consoleErrors: string[] = [];
+    const pageErrors: string[] = [];
+    page.on("console", (msg) => {
+      if (msg.type() === "error") consoleErrors.push(msg.text());
+    });
+    page.on("pageerror", (err) => pageErrors.push(String(err)));
+
+    await page.goto("/");
+    await expect(page.locator("[data-scene-ready]")).toBeVisible();
+    await page.getByRole("button", { name: /Manga Panels/ }).click();
+    await expect(page.locator("#manga-page-container")).toBeVisible();
+
+    // 1. Upload background with Panel 1 selected -> auto-fills Panel 1 and scales when divider moves
+    await page.getByRole("button", { name: /Backs/ }).click();
+    const uploadBtn = page.getByTestId("upload-background-btn");
+    await expect(uploadBtn).toBeVisible();
+
+    const pngBuf = makeSolidPng(120, 80);
+    const [chooser1] = await Promise.all([
+      page.waitForEvent("filechooser"),
+      uploadBtn.click(),
+    ]);
+    await chooser1.setFiles({ name: "panel-bg.png", mimeType: "image/png", buffer: pngBuf });
+
+    const bgImg = page.locator('#manga-page-container img[src^="data:image/png"]').first();
+    await expect(bgImg).toBeVisible();
+    const beforeBox = await bgImg.boundingBox();
+    expect(beforeBox).not.toBeNull();
+
+    // Drag a divider to change Panel 1's dimensions and confirm background auto-scales with it
+    await page.getByTitle("Panels, Knife Cut & Grid Layouts").click();
+    await page.getByRole("button", { name: /Dividers/ }).click();
+    const divHandle = page.getByTestId("divider-handle").first();
+    await expect(divHandle).toBeAttached();
+    const divBox = await divHandle.boundingBox();
+    expect(divBox).not.toBeNull();
+    if (divBox) {
+      await page.mouse.move(divBox.x + divBox.width / 2, divBox.y + divBox.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(divBox.x + divBox.width / 2 + 45, divBox.y + divBox.height / 2 + 45, {
+        steps: 5,
+      });
+      await page.mouse.up();
+    }
+    const afterBox = await bgImg.boundingBox();
+    expect(afterBox).not.toBeNull();
+    if (beforeBox && afterBox) {
+      const changed =
+        Math.abs(afterBox.width - beforeBox.width) > 2 ||
+        Math.abs(afterBox.height - beforeBox.height) > 2;
+      expect(changed).toBe(true);
+    }
+
+    // 2. Deselect panel -> upload whole-page background -> check Page Layer Ordering controls
+    await page.getByRole("button", { name: /Select \(V\)/ }).click();
+    await page.getByRole("button", { name: "Deselect", exact: true }).click();
+    await page.getByRole("button", { name: /Backs/ }).click();
+    await expect(page.getByText(/No panel selected/)).toBeVisible();
+
+    const [chooser2] = await Promise.all([
+      page.waitForEvent("filechooser"),
+      uploadBtn.click(),
+    ]);
+    await chooser2.setFiles({ name: "whole-page-bg.png", mimeType: "image/png", buffer: pngBuf });
+
+    const pageLayerList = page.getByTestId("page-layer-list");
+    await expect(pageLayerList).toBeVisible();
+    await expect(pageLayerList).toContainText("Behind all");
+
+    const layerSelect = page.getByLabel("Page element layer relative to panel");
+    await expect(layerSelect).toBeVisible();
+
+    const optionValues = await layerSelect
+      .locator("option")
+      .evaluateAll((opts) => opts.map((o) => (o as HTMLOptionElement).value));
+    const abovePanelOpt = optionValues.find((v) => v.startsWith("above:"));
+    const belowPanel2Opt = optionValues.filter((v) => v.startsWith("below:"))[1];
+    expect(abovePanelOpt).toBeTruthy();
+
+    if (abovePanelOpt) {
+      await layerSelect.selectOption(abovePanelOpt);
+      await expect(pageLayerList).toContainText("Above P1");
+    }
+    if (belowPanel2Opt) {
+      await layerSelect.selectOption(belowPanel2Opt);
+      await expect(pageLayerList).toContainText("Below P2");
+    }
+
+    // 3. Re-select Panel 1 on canvas and set Background Fill -> Clear (transparent)
+    await page.getByRole("button", { name: "Behind All Panels" }).click();
+    await expect(pageLayerList).toContainText("Behind all");
+    const firstPanelPath = page.locator("#manga-page-container svg path[fill]").first();
+    await firstPanelPath.click({ force: true });
+    await page.getByRole("button", { name: "Clear", exact: true }).click();
+    await expect(firstPanelPath).toHaveAttribute("fill", "none");
 
     expect(consoleErrors).toEqual([]);
     expect(pageErrors).toEqual([]);

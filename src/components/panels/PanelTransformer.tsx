@@ -134,7 +134,9 @@ export function PanelTransformer({
           <img
             src={element.imageUrl}
             alt="Placed Character"
-            className="w-full h-full object-contain pointer-events-none select-none"
+            className={`w-full h-full pointer-events-none select-none ${
+              element.fitMode === "fill-panel" || element.type === "background" ? "object-fill" : "object-contain"
+            }`}
             draggable={false}
           />
 

@@ -24,7 +24,7 @@ interface WebtoonCanvasProps {
   showSeams: boolean;
   onToggleSeams: (v: boolean) => void;
   onSelectPage: (index: number) => void;
-  onSelectPanel: (panelId: string) => void;
+  onSelectPanel: (panelId: string | null) => void;
   onSelectItem: (itemId: string | null) => void;
   onUpdatePageAt: (index: number, updated: PageLayout) => void;
   onInsertPageAt: (index: number, page: PageLayout) => void;

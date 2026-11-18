@@ -1,5 +1,4 @@
-import type { PageLayout, PlacedElement } from "./manga-layout";
-import { panelBounds } from "./manga-layout";
+import { PAGE_LAYER_ID, panelBounds, type PageLayout, type PlacedElement } from "./manga-layout";
 import { toneDataUrl, fadeGeometry, type Screentone } from "./screentone";
 import { fontStack, ensureFontsLoaded } from "./manga-fonts";
 import {
@@ -143,18 +142,49 @@ export async function renderPageToCanvas(
     })
   );
 
-  // 2. Draw Panel Backgrounds & Inside Elements
+  const drawElementImage = (el: PlacedElement) => {
+    const img = loadedImages.get(el.id);
+    if (!img) return;
+    ctx.save();
+    ctx.globalAlpha = el.opacity ?? 1;
+    ctx.translate(el.x + el.width / 2, el.y + el.height / 2);
+    ctx.rotate((el.rotation * Math.PI) / 180);
+    ctx.scale(el.flipX ? -1 : 1, el.flipY ? -1 : 1);
+    ctx.drawImage(img, -el.width / 2, -el.height / 2, el.width, el.height);
+    ctx.restore();
+  };
+
+  const panelIdSet = new Set(layout.panels.map((p) => p.id));
+  const pageElements = layout.elements.filter((el) => el.panelId === PAGE_LAYER_ID);
+  const pageKind = (el: PlacedElement) =>
+    el.pageLayer?.kind ?? (el.type === "background" ? "behind" : "above");
+
+  // 1b. Page-level images behind all panels
+  pageElements
+    .filter((el) => pageKind(el) === "behind")
+    .sort((a, b) => a.zIndex - b.zIndex)
+    .forEach(drawElementImage);
+
+  // 2. Draw Panel Backgrounds & Inside Elements (plus panel-relative free page images)
   const orderedPanels = [...layout.panels].sort((a, b) => Number(!!a.floating) - Number(!!b.floating));
   for (const panel of orderedPanels) {
     const bounds = panelBounds(panel, layout.format);
     const pts = bounds.points;
     if (pts.length < 3) continue;
 
-    // Panel Fill
+    pageElements
+      .filter((el) => el.pageLayer?.kind === "below-panel" && el.pageLayer.panelId === panel.id)
+      .sort((a, b) => a.zIndex - b.zIndex)
+      .forEach(drawElementImage);
+
+    // Panel Fill (supports transparent fills so backdrop images show through)
     ctx.save();
+    ctx.globalAlpha = panel.opacity ?? 1;
     tracePanelCanvasPath(ctx, pts, panel.cornerRadius ?? 0, Boolean(panel.scalloped));
-    ctx.fillStyle = panel.backgroundColor || "#ffffff";
-    ctx.fill();
+    if (panel.backgroundColor !== "transparent") {
+      ctx.fillStyle = panel.backgroundColor || "#ffffff";
+      ctx.fill();
+    }
     if (panel.tone) {
       ctx.restore();
       await drawTone(
@@ -193,26 +223,16 @@ export async function renderPageToCanvas(
     }
 
     // Draw In-Panel (non-breakout) Elements sorted by z-index
-    const inPanelElements = layout.elements
+    layout.elements
       .filter((el) => el.panelId === panel.id && !el.breakout)
-      .sort((a, b) => a.zIndex - b.zIndex);
-
-    for (const el of inPanelElements) {
-      const img = loadedImages.get(el.id);
-      if (!img) continue;
-
-      ctx.save();
-      ctx.translate(el.x + el.width / 2, el.y + el.height / 2);
-      ctx.rotate((el.rotation * Math.PI) / 180);
-      ctx.scale(el.flipX ? -1 : 1, el.flipY ? -1 : 1);
-      ctx.drawImage(img, -el.width / 2, -el.height / 2, el.width, el.height);
-      ctx.restore();
-    }
+      .sort((a, b) => a.zIndex - b.zIndex)
+      .forEach(drawElementImage);
 
     ctx.restore(); // Restore clip
 
     // 3. Draw Panel Border Stroke
     ctx.save();
+    ctx.globalAlpha = panel.opacity ?? 1;
     tracePanelCanvasPath(ctx, pts, panel.cornerRadius ?? 0, Boolean(panel.scalloped));
     ctx.lineWidth = panel.borderWidth;
     ctx.strokeStyle = panel.borderColor;
@@ -221,24 +241,29 @@ export async function renderPageToCanvas(
     if (panel.borderStyle === "dotted") ctx.setLineDash([3, 4]);
     if (panel.borderStyle !== "none" && panel.borderWidth > 0) ctx.stroke();
     ctx.restore();
+
+    pageElements
+      .filter((el) => el.pageLayer?.kind === "above-panel" && el.pageLayer.panelId === panel.id)
+      .sort((a, b) => a.zIndex - b.zIndex)
+      .forEach(drawElementImage);
   }
 
-  // 4. Breakout Character Elements (Pop out over borders and gutters)
-  const breakoutElements = layout.elements
-    .filter((el) => el.breakout)
-    .sort((a, b) => a.zIndex - b.zIndex);
+  // 4. Page-level above images & Breakout Character Elements
+  pageElements
+    .filter((el) => {
+      const lyr = el.pageLayer;
+      if (!lyr) return el.type !== "background";
+      if (lyr.kind === "above") return true;
+      if ((lyr.kind === "below-panel" || lyr.kind === "above-panel") && !panelIdSet.has(lyr.panelId)) return true;
+      return false;
+    })
+    .sort((a, b) => a.zIndex - b.zIndex)
+    .forEach(drawElementImage);
 
-  for (const el of breakoutElements) {
-    const img = loadedImages.get(el.id);
-    if (!img) continue;
-
-    ctx.save();
-    ctx.translate(el.x + el.width / 2, el.y + el.height / 2);
-    ctx.rotate((el.rotation * Math.PI) / 180);
-    ctx.scale(el.flipX ? -1 : 1, el.flipY ? -1 : 1);
-    ctx.drawImage(img, -el.width / 2, -el.height / 2, el.width, el.height);
-    ctx.restore();
-  }
+  layout.elements
+    .filter((el) => el.panelId !== PAGE_LAYER_ID && el.breakout)
+    .sort((a, b) => a.zIndex - b.zIndex)
+    .forEach(drawElementImage);
 
   // 5. Speech Balloons & Narration Caption Boxes
   for (const b of layout.balloons ?? []) {

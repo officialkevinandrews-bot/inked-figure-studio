@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import type { PageLayout, PlacedElement, PanelPolygon, Point } from "@/lib/manga-layout";
-import { panelBounds } from "@/lib/manga-layout";
+import { PAGE_LAYER_ID, panelBounds } from "@/lib/manga-layout";
 import { findSharedDividers, moveDivider, readingOrder, centroid, type SharedDivider } from "@/lib/manga-grid";
 import { buildPanelSvgPath, computeSnapPosition, type SnapGuide } from "@/lib/panel-geometry";
 import { fadeGeometry, toneTile } from "@/lib/screentone";
@@ -16,7 +16,7 @@ interface PageCanvasProps {
   layout: PageLayout;
   selectedPanelId: string | null;
   selectedItemId: string | null;
-  onSelectPanel: (panelId: string) => void;
+  onSelectPanel: (panelId: string | null) => void;
   onSelectItem: (itemId: string | null) => void;
   onUpdateElement: (id: string, updated: Partial<PlacedElement>) => void;
   onDeleteElement: (id: string) => void;
@@ -158,8 +158,25 @@ export function PageCanvas({
     }
     onUpdateElement(id, updated);
   };
-  const clippedElements = layout.elements.filter((el) => !el.breakout);
-  const breakoutElements = layout.elements.filter((el) => el.breakout);
+  const panelIdSet = new Set(layout.panels.map((p) => p.id));
+  const pageElements = layout.elements.filter((el) => el.panelId === PAGE_LAYER_ID);
+  const pageKind = (el: PlacedElement) =>
+    el.pageLayer?.kind ?? (el.type === "background" ? "behind" : "above");
+  const behindPageEls = pageElements
+    .filter((el) => pageKind(el) === "behind")
+    .sort((a, b) => a.zIndex - b.zIndex);
+  const abovePageEls = pageElements
+    .filter((el) => {
+      const lyr = el.pageLayer;
+      if (!lyr) return el.type !== "background";
+      if (lyr.kind === "above") return true;
+      if ((lyr.kind === "below-panel" || lyr.kind === "above-panel") && !panelIdSet.has(lyr.panelId)) return true;
+      return false;
+    })
+    .sort((a, b) => a.zIndex - b.zIndex);
+  const clippedElements = layout.elements.filter((el) => el.panelId !== PAGE_LAYER_ID && !el.breakout);
+  const breakoutElements = layout.elements.filter((el) => el.panelId !== PAGE_LAYER_ID && el.breakout);
+  const handleTargetElements = [...clippedElements, ...pageElements];
   const balloons = layout.balloons ?? [];
   const comicMarks = layout.comicMarks ?? [];
   const speedLines = layout.speedLines ?? [];
@@ -186,14 +203,41 @@ export function PageCanvas({
   };
   const sharedDividers = tool === "select" || tool === "dividers" ? findSharedDividers(layout.panels) : [];
 
+  const renderPageLayerElement = (el: PlacedElement) => (
+    <div
+      key={el.id}
+      style={{ position: "absolute", top: 0, left: 0, width, height, pointerEvents: tool === "select" ? "auto" : "none", opacity: el.opacity ?? 1 }}
+      onDoubleClick={() => el.source3d && onRePoseIn3D?.(el.source3d)}
+    >
+      <PanelTransformer
+        element={el}
+        isSelected={selectedItemId === el.id}
+        mode="art-only"
+        onSelect={() => {
+          onSelectPanel(null);
+          onSelectItem(el.id);
+        }}
+        onChange={(updated) => handleElementChangeWithSnap(el.id, updated)}
+        onDelete={() => onDeleteElement(el.id)}
+      />
+    </div>
+  );
+
   const renderPanelGroup = (p: PanelPolygon) => {
     const b = bounds.get(p.id)!;
     const isSelected = selectedPanelId === p.id;
     const panelPath = buildPanelSvgPath(b.points, p.cornerRadius ?? 0, Boolean(p.scalloped));
     const uid = `${layout.id}-${p.id}`;
     const panelElements = clippedElements.filter((el) => el.panelId === p.id);
+    const belowPanelEls = pageElements
+      .filter((el) => el.pageLayer?.kind === "below-panel" && el.pageLayer.panelId === p.id)
+      .sort((a, b2) => a.zIndex - b2.zIndex);
+    const abovePanelEls = pageElements
+      .filter((el) => el.pageLayer?.kind === "above-panel" && el.pageLayer.panelId === p.id)
+      .sort((a, b2) => a.zIndex - b2.zIndex);
     return (
       <React.Fragment key={`grp-${p.id}`}>
+        {belowPanelEls.map(renderPageLayerElement)}
         <svg
           style={{ position: "absolute", top: 0, left: 0, width, height, pointerEvents: "none", opacity: p.opacity ?? 1, overflow: "visible" }}
         >
@@ -202,12 +246,12 @@ export function PageCanvas({
           </defs>
           <path
             d={panelPath}
-            fill={p.backgroundColor || "#ffffff"}
+            fill={p.backgroundColor === "transparent" ? "none" : p.backgroundColor || "#ffffff"}
             stroke={isSelected ? "#e11d2e" : "none"}
             strokeWidth={isSelected ? 2 : 0}
             className="cursor-pointer"
             data-panel-id={p.id}
-            style={{ pointerEvents: tool === "select" ? "auto" : "none" }}
+            style={{ pointerEvents: tool === "select" ? "all" : "none" }}
           onPointerDown={() => {
             pointerDownPanelRef.current = p.id;
           }}
@@ -260,6 +304,7 @@ export function PageCanvas({
             strokeLinejoin="round"
           />
         </svg>
+        {abovePanelEls.map(renderPageLayerElement)}
       </React.Fragment>
     );
   };
@@ -291,6 +336,7 @@ export function PageCanvas({
           onClick={(e) => {
             if (pointerDownPanelRef.current === "__page__" && e.target === e.currentTarget) {
               pointerDownPanelRef.current = null;
+              onSelectPanel(null);
               onSelectItem(null);
             }
           }}
@@ -309,6 +355,8 @@ export function PageCanvas({
               })}
             </defs>
           </svg>
+
+          {behindPageEls.map(renderPageLayerElement)}
 
           {base.map(renderPanelGroup)}
 
@@ -337,6 +385,8 @@ export function PageCanvas({
 
           {floats.map(renderPanelGroup)}
 
+          {abovePageEls.map(renderPageLayerElement)}
+
           <div style={{ position: "absolute", top: 0, left: 0, width, height, pointerEvents: "none" }}>
             {breakoutElements.map((el) => (
               <div
@@ -357,7 +407,7 @@ export function PageCanvas({
               </div>
             ))}
             {tool === "select" &&
-              clippedElements
+              handleTargetElements
                 .filter((el) => el.id === selectedItemId)
                 .map((el) => (
                   <PanelTransformer
@@ -366,7 +416,7 @@ export function PageCanvas({
                     isSelected={true}
                     mode="handles-only"
                     onSelect={() => {
-                      onSelectPanel(el.panelId);
+                      onSelectPanel(el.panelId === PAGE_LAYER_ID ? null : el.panelId);
                       onSelectItem(el.id);
                     }}
                     onChange={(updated) => handleElementChangeWithSnap(el.id, updated)}

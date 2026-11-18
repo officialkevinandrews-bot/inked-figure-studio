@@ -9,7 +9,16 @@ import {
   polygonArea,
   splitPanelGrid,
 } from "./manga-grid";
-import { PAGE_FORMATS, swapPanelContents, type PageLayout, type PanelPolygon } from "./manga-layout";
+import {
+  PAGE_FORMATS,
+  PAGE_LAYER_ID,
+  panelBounds,
+  swapPanelContents,
+  syncPanelBoundElements,
+  type PageLayout,
+  type PanelPolygon,
+  type PlacedElement,
+} from "./manga-layout";
 import { addCustomTemplate, loadCustomTemplates, removeCustomTemplate, saveCustomTemplates } from "./custom-templates";
 
 describe("extended template library", () => {
@@ -152,5 +161,168 @@ describe("draggable dividers, grid split & panel content swap", () => {
 
     const afterDel = removeCustomTemplate(loadCustomTemplates(), saved[0].id);
     expect(afterDel).toHaveLength(0);
+  });
+});
+
+describe("panel-bound backgrounds & whole-page elements", () => {
+  it("syncs fitMode fill-panel backgrounds to new panel bounds after moveDivider while leaving free & whole-page elements untouched", () => {
+    const panels = buildTemplate("wr-kitchen")!;
+    const format = PAGE_FORMATS[0];
+    const p0 = panelBounds(panels[0], format);
+
+    const boundBg: PlacedElement = {
+      id: "bg-1",
+      panelId: panels[0].id,
+      type: "background",
+      imageUrl: "bg.png",
+      x: p0.minX,
+      y: p0.minY,
+      width: p0.width,
+      height: p0.height,
+      rotation: 0,
+      flipX: false,
+      flipY: false,
+      zIndex: 1,
+      breakout: false,
+      fitMode: "fill-panel",
+    };
+    const freeChar: PlacedElement = {
+      id: "ch-1",
+      panelId: panels[0].id,
+      type: "character",
+      imageUrl: "ch.png",
+      x: p0.minX + 10,
+      y: p0.minY + 10,
+      width: 90,
+      height: 140,
+      rotation: 0,
+      flipX: false,
+      flipY: false,
+      zIndex: 5,
+      breakout: false,
+      fitMode: "free",
+    };
+    const wholePage: PlacedElement = {
+      id: "wp-1",
+      panelId: PAGE_LAYER_ID,
+      type: "background",
+      imageUrl: "page-bg.png",
+      x: 50,
+      y: 60,
+      width: 512,
+      height: 384,
+      rotation: 0,
+      flipX: false,
+      flipY: false,
+      zIndex: 2,
+      breakout: false,
+      fitMode: "free",
+      pageLayer: { kind: "behind" },
+    };
+
+    const dividers = findSharedDividers(panels);
+    const horizontalDiv = dividers.find((d) => d.axis === "h" && Math.abs(d.a.y - 0.35) < 0.01)!;
+    const { panels: movedPanels } = moveDivider(panels, horizontalDiv, 0.1, { disableSnap: true });
+    const synced = syncPanelBoundElements({
+      id: "p-sync",
+      pageNumber: 1,
+      format,
+      panels: movedPanels,
+      elements: [boundBg, freeChar, wholePage],
+      balloons: [],
+      sfxStamps: [],
+      comicMarks: [],
+      speedLines: [],
+    });
+
+    const newP0 = panelBounds(movedPanels[0], format);
+    const syncedBg = synced.elements.find((e) => e.id === "bg-1")!;
+    const syncedChar = synced.elements.find((e) => e.id === "ch-1")!;
+    const syncedPage = synced.elements.find((e) => e.id === "wp-1")!;
+
+    expect(syncedBg.x).toBe(Math.round(newP0.minX));
+    expect(syncedBg.y).toBe(Math.round(newP0.minY));
+    expect(syncedBg.width).toBe(Math.round(newP0.width));
+    expect(syncedBg.height).toBe(Math.round(newP0.height));
+    expect(syncedBg.height).not.toBeCloseTo(p0.height, 1);
+    expect(syncedChar.x).toBe(freeChar.x);
+    expect(syncedChar.width).toBe(90);
+    expect(syncedPage.panelId).toBe(PAGE_LAYER_ID);
+    expect(syncedPage.width).toBe(512);
+    expect(syncedPage.height).toBe(384);
+  });
+
+  it("preserves PAGE_LAYER_ID elements across splitPanelGrid rehoming and swaps bound backgrounds cleanly in swapPanelContents", () => {
+    const panels = buildTemplate("2-vert")!;
+    const format = PAGE_FORMATS[0];
+    const p0 = panelBounds(panels[0], format);
+    const p1 = panelBounds(panels[1], format);
+
+    const boundBg0: PlacedElement = {
+      id: "bg-swap",
+      panelId: panels[0].id,
+      type: "background",
+      imageUrl: "bg0.png",
+      x: p0.minX,
+      y: p0.minY,
+      width: p0.width,
+      height: p0.height,
+      rotation: 0,
+      flipX: false,
+      flipY: false,
+      zIndex: 1,
+      breakout: false,
+      fitMode: "fill-panel",
+    };
+    const wholePage: PlacedElement = {
+      id: "wp-keep",
+      panelId: PAGE_LAYER_ID,
+      type: "background",
+      imageUrl: "whole.png",
+      x: 25,
+      y: 35,
+      width: 400,
+      height: 300,
+      rotation: 0,
+      flipX: false,
+      flipY: false,
+      zIndex: 2,
+      breakout: false,
+      pageLayer: { kind: "above-panel", panelId: panels[0].id },
+    };
+
+    const layout: PageLayout = {
+      id: "p-swap",
+      pageNumber: 1,
+      format,
+      panels,
+      elements: [boundBg0, wholePage],
+      balloons: [],
+      sfxStamps: [],
+      comicMarks: [],
+      speedLines: [],
+    };
+
+    const swapped = swapPanelContents(layout, panels[0].id, panels[1].id);
+    const swappedBg = swapped.elements.find((e) => e.id === "bg-swap")!;
+    const keptWhole = swapped.elements.find((e) => e.id === "wp-keep")!;
+
+    expect(swappedBg.panelId).toBe(panels[1].id);
+    expect(swappedBg.width).toBeCloseTo(p1.width, 3);
+    expect(swappedBg.height).toBeCloseTo(p1.height, 3);
+    expect(swappedBg.x).toBeCloseTo(p1.minX, 3);
+    expect(swappedBg.y).toBeCloseTo(p1.minY, 3);
+    expect(keptWhole.panelId).toBe(PAGE_LAYER_ID);
+    expect(keptWhole.width).toBe(400);
+
+    // Split panel 0 into a 2x1 sub-grid and ensure PAGE_LAYER_ID survives syncPanelBoundElements
+    const subPanels = splitPanelGrid(panels[0], 2, 1);
+    expect(subPanels).toHaveLength(2);
+    const splitPanels = [...subPanels, ...panels.slice(1)];
+    const afterSplit = syncPanelBoundElements({ ...swapped, panels: splitPanels });
+    const wholeAfterSplit = afterSplit.elements.find((e) => e.id === "wp-keep")!;
+    expect(wholeAfterSplit.panelId).toBe(PAGE_LAYER_ID);
+    expect(wholeAfterSplit.x).toBe(25);
+    expect(wholeAfterSplit.height).toBe(300);
   });
 });

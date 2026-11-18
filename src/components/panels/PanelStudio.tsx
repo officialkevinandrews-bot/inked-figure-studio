@@ -1,5 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import {
+  PAGE_LAYER_ID,
+  type PageLayerPlacement,
   type PageLayout,
   type PlacedElement,
   type PanelPolygon,
@@ -9,6 +11,7 @@ import {
   splitPanel,
   getPanelPixelBounds,
   swapPanelContents,
+  syncPanelBoundElements,
 } from "@/lib/manga-layout";
 import {
   type BalloonShape,
@@ -160,6 +163,7 @@ export function PanelStudio({
   const [showGuides, setShowGuides] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const bgFileInputRef = useRef<HTMLInputElement>(null);
   const canvasContainerRef = useRef<HTMLDivElement>(null);
 
   const selectedPanel = layout.panels.find((p) => p.id === selectedPanelId);
@@ -184,12 +188,18 @@ export function PanelStudio({
     setZoom(Math.max(0.2, Math.min(1.2, Math.round(scale * 100) / 100)));
   }, [layout.format.width, layout.format.height]);
 
-  // Keep selectedPanelId synced when switching chapter pages/webtoon beats
+  // Keep selectedPanelId synced when switching pages or deleting an active panel; allow explicit null deselection.
+  const prevPageIdRef = useRef(layout.id);
   useEffect(() => {
-    if (!layout.panels.some((p) => p.id === selectedPanelId)) {
+    if (prevPageIdRef.current !== layout.id) {
+      prevPageIdRef.current = layout.id;
+      setSelectedPanelId(layout.panels[0]?.id ?? null);
+      return;
+    }
+    if (selectedPanelId && !layout.panels.some((p) => p.id === selectedPanelId)) {
       setSelectedPanelId(layout.panels[0]?.id ?? null);
     }
-  }, [layout.panels, selectedPanelId]);
+  }, [layout.id, layout.panels, selectedPanelId]);
 
   // Run auto-fit on initial mount and when layout dimensions change
   useEffect(() => {
@@ -346,7 +356,7 @@ export function PanelStudio({
     selectedSpeedLine,
   ]);
 
-  // Hotkeys for Panel Canvas Tools: V Select, D Dividers, R Draw Panel, K Knife, C Corners
+  // Hotkeys for Panel Canvas Tools & Esc Deselection: V Select, D Dividers, R Draw Panel, K Knife, C Corners
   useEffect(() => {
     const onToolKey = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
@@ -358,6 +368,14 @@ export function PanelStudio({
           active.tagName === "SELECT" ||
           active.isContentEditable)
       ) {
+        return;
+      }
+      if (e.key === "Escape") {
+        setSelectedItemId((cur) => {
+          if (cur) return null;
+          setSelectedPanelId(null);
+          return null;
+        });
         return;
       }
       const keyMap: Record<string, CanvasTool> = {
@@ -388,30 +406,44 @@ export function PanelStudio({
     [layout.format],
   );
 
-  const rehome = (panels: PanelPolygon[], elements: PlacedElement[]) =>
-    elements.map((el) => ({ ...el, panelId: rehomeAt(panels, el.x + el.width / 2, el.y + el.height / 2, el.panelId) }));
+  const rehome = (panels: PanelPolygon[], elements: PlacedElement[]) => {
+    const valid = new Set(panels.map((p) => p.id));
+    return elements.map((el) => {
+      if (el.panelId === PAGE_LAYER_ID) {
+        if (
+          (el.pageLayer?.kind === "below-panel" || el.pageLayer?.kind === "above-panel") &&
+          !valid.has(el.pageLayer.panelId)
+        ) {
+          return { ...el, pageLayer: { kind: "behind" as const } };
+        }
+        return el;
+      }
+      return { ...el, panelId: rehomeAt(panels, el.x + el.width / 2, el.y + el.height / 2, el.panelId) };
+    });
+  };
 
-  const rehomeLayout = (base: PageLayout, panels: PanelPolygon[]): PageLayout => ({
-    ...base,
-    panels,
-    elements: rehome(panels, base.elements),
-    balloons: (base.balloons ?? []).map((b) => ({
-      ...b,
-      panelId: rehomeAt(panels, b.x + b.width / 2, b.y + b.height / 2, b.panelId, base.format),
-    })),
-    sfxStamps: (base.sfxStamps ?? []).map((s) => ({
-      ...s,
-      panelId: rehomeAt(panels, s.x, s.y, s.panelId, base.format),
-    })),
-    comicMarks: (base.comicMarks ?? []).map((m) => ({
-      ...m,
-      panelId: rehomeAt(panels, m.x, m.y, m.panelId, base.format),
-    })),
-    speedLines: (base.speedLines ?? []).map((l) => ({
-      ...l,
-      panelId: rehomeAt(panels, l.centerX, l.centerY, l.panelId, base.format),
-    })),
-  });
+  const rehomeLayout = (base: PageLayout, panels: PanelPolygon[]): PageLayout =>
+    syncPanelBoundElements({
+      ...base,
+      panels,
+      elements: rehome(panels, base.elements),
+      balloons: (base.balloons ?? []).map((b) => ({
+        ...b,
+        panelId: rehomeAt(panels, b.x + b.width / 2, b.y + b.height / 2, b.panelId, base.format),
+      })),
+      sfxStamps: (base.sfxStamps ?? []).map((s) => ({
+        ...s,
+        panelId: rehomeAt(panels, s.x, s.y, s.panelId, base.format),
+      })),
+      comicMarks: (base.comicMarks ?? []).map((m) => ({
+        ...m,
+        panelId: rehomeAt(panels, m.x, m.y, m.panelId, base.format),
+      })),
+      speedLines: (base.speedLines ?? []).map((l) => ({
+        ...l,
+        panelId: rehomeAt(panels, l.centerX, l.centerY, l.panelId, base.format),
+      })),
+    });
 
   const commitPanels = (panels: PanelPolygon[], select?: string) => {
     onUpdateLayout(rehomeLayout(layout, panels));
@@ -481,17 +513,19 @@ export function PanelStudio({
     if (!selectedPanel) return;
     const move = <T extends { panelId: string }>(xs?: T[]) =>
       (xs ?? []).map((x) => (x.panelId === cand.neighborId ? { ...x, panelId: selectedPanel.id } : x));
-    onUpdateLayout({
-      ...layout,
-      panels: layout.panels
-        .filter((p) => p.id !== cand.neighborId)
-        .map((p) => (p.id === selectedPanel.id ? { ...p, points: cand.mergedPoints } : p)),
-      elements: move(layout.elements),
-      balloons: move(layout.balloons),
-      sfxStamps: move(layout.sfxStamps),
-      comicMarks: move(layout.comicMarks),
-      speedLines: move(layout.speedLines),
-    });
+    onUpdateLayout(
+      syncPanelBoundElements({
+        ...layout,
+        panels: layout.panels
+          .filter((p) => p.id !== cand.neighborId)
+          .map((p) => (p.id === selectedPanel.id ? { ...p, points: cand.mergedPoints } : p)),
+        elements: move(layout.elements),
+        balloons: move(layout.balloons),
+        sfxStamps: move(layout.sfxStamps),
+        comicMarks: move(layout.comicMarks),
+        speedLines: move(layout.speedLines),
+      }),
+    );
   };
 
   const handleMergePanel = () => {
@@ -539,10 +573,12 @@ export function PanelStudio({
   // Format change
   const handleFormatChange = (formatId: string) => {
     const fmt = PAGE_FORMATS.find((f) => f.id === formatId) || PAGE_FORMATS[0];
-    onUpdateLayout({
-      ...layout,
-      format: fmt,
-    });
+    onUpdateLayout(
+      syncPanelBoundElements({
+        ...layout,
+        format: fmt,
+      }),
+    );
   };
 
   // Knife Cut tools
@@ -563,11 +599,13 @@ export function PanelStudio({
   };
 
   const handleMoveVertex = (from: Point, to: Point) => {
-    onUpdateLayout({ ...layout, panels: moveSharedVertex(layout.panels, from, to) });
+    onUpdateLayout(syncPanelBoundElements({ ...layout, panels: moveSharedVertex(layout.panels, from, to) }));
   };
 
   const updatePanel = (id: string, patch: Partial<PanelPolygon>) =>
-    onUpdateLayout({ ...layout, panels: layout.panels.map((p) => (p.id === id ? { ...p, ...patch } : p)) });
+    onUpdateLayout(
+      syncPanelBoundElements({ ...layout, panels: layout.panels.map((p) => (p.id === id ? { ...p, ...patch } : p)) }),
+    );
 
   const handleAddInset = () => {
     const id = `inset-${Date.now()}`;
@@ -824,40 +862,129 @@ export function PanelStudio({
     setSelectedItemId(newEl.id);
   };
 
-  // Image import onto panel
-  const handleImportImage = (files: FileList | null) => {
-    const file = files?.[0];
-    if (!file || !selectedPanel) return;
-    const url = URL.createObjectURL(file);
-    const bounds = getPanelPixelBounds(
-      selectedPanel,
-      layout.format.width,
-      layout.format.height,
-      layout.format.margin,
-      layout.format.gutter
-    );
+  /** Reads an uploaded image file cleanly to a persistent data URL plus natural pixel dimensions. */
+  const readImageFileWithSize = (file: File): Promise<{ dataUrl: string; width: number; height: number }> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = String(reader.result ?? "");
+        const img = new Image();
+        img.onload = () => resolve({ dataUrl, width: img.naturalWidth || 400, height: img.naturalHeight || 400 });
+        img.onerror = () => resolve({ dataUrl, width: 400, height: 400 });
+        img.src = dataUrl;
+      };
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(file);
+    });
 
-    const newEl: PlacedElement = {
-      id: `el-${Date.now()}`,
-      panelId: selectedPanel.id,
-      type: "character",
-      imageUrl: url,
-      x: bounds.minX + 20,
-      y: bounds.minY + 20,
-      width: Math.min(bounds.width * 0.8, 300),
-      height: Math.min(bounds.height * 0.8, 400),
+  // Upload Background Image: auto-fills selected panel & scales with it, OR places freely on whole page at natural size
+  const handleUploadBackground = async (files: FileList | null) => {
+    const file = files?.[0];
+    if (!file) return;
+    const { dataUrl, width: natW, height: natH } = await readImageFileWithSize(file);
+    if (selectedPanel) {
+      const temp: PageLayout = {
+        ...layout,
+        elements: [
+          {
+            id: `bg-${Date.now()}`,
+            panelId: selectedPanel.id,
+            type: "background",
+            fitMode: "fill-panel",
+            imageUrl: dataUrl,
+            x: 0,
+            y: 0,
+            width: natW,
+            height: natH,
+            rotation: 0,
+            flipX: false,
+            flipY: false,
+            zIndex: 1,
+            breakout: false,
+          },
+          ...layout.elements.filter((el) => !(el.panelId === selectedPanel.id && el.type === "background")),
+        ],
+      };
+      const synced = syncPanelBoundElements(temp);
+      onUpdateLayout(synced);
+      setSelectedItemId(synced.elements[0].id);
+      return;
+    }
+
+    const freeBg: PlacedElement = {
+      id: `bg-${Date.now()}`,
+      panelId: PAGE_LAYER_ID,
+      type: "background",
+      fitMode: "free",
+      pageLayer: { kind: "behind" },
+      imageUrl: dataUrl,
+      x: Math.round((layout.format.width - natW) / 2),
+      y: Math.round((layout.format.height - natH) / 2),
+      width: natW,
+      height: natH,
       rotation: 0,
       flipX: false,
       flipY: false,
-      zIndex: layout.elements.length + 1,
+      zIndex: 1,
       breakout: false,
     };
+    onUpdateLayout({ ...layout, elements: [freeBg, ...layout.elements] });
+    setSelectedItemId(freeBg.id);
+  };
 
-    onUpdateLayout({
-      ...layout,
-      elements: [...layout.elements, newEl],
-    });
-    setSelectedItemId(newEl.id);
+  // Image import onto selected panel OR whole page at natural image size
+  const handleImportImage = async (files: FileList | null) => {
+    const file = files?.[0];
+    if (!file) return;
+    const { dataUrl, width: natW, height: natH } = await readImageFileWithSize(file);
+    if (selectedPanel) {
+      const bounds = getPanelPixelBounds(
+        selectedPanel,
+        layout.format.width,
+        layout.format.height,
+        layout.format.margin,
+        layout.format.gutter
+      );
+      const newEl: PlacedElement = {
+        id: `el-${Date.now()}`,
+        panelId: selectedPanel.id,
+        type: "character",
+        fitMode: "free",
+        imageUrl: dataUrl,
+        x: Math.round(bounds.minX + (bounds.width - natW) / 2),
+        y: Math.round(bounds.minY + (bounds.height - natH) / 2),
+        width: natW,
+        height: natH,
+        rotation: 0,
+        flipX: false,
+        flipY: false,
+        zIndex: layout.elements.length + 1,
+        breakout: false,
+      };
+      onUpdateLayout({ ...layout, elements: [...layout.elements, newEl] });
+      setSelectedItemId(newEl.id);
+      return;
+    }
+
+    const freeEl: PlacedElement = {
+      id: `el-${Date.now()}`,
+      panelId: PAGE_LAYER_ID,
+      type: "character",
+      fitMode: "free",
+      pageLayer: { kind: "above" },
+      imageUrl: dataUrl,
+      x: Math.round((layout.format.width - natW) / 2),
+      y: Math.round((layout.format.height - natH) / 2),
+      width: natW,
+      height: natH,
+      rotation: 0,
+      flipX: false,
+      flipY: false,
+      zIndex: layout.elements.length + 10,
+      breakout: false,
+    };
+    onUpdateLayout({ ...layout, elements: [...layout.elements, freeEl] });
+    setSelectedItemId(freeEl.id);
   };
 
   // Photo Filter Background Injection
@@ -1436,9 +1563,13 @@ export function PanelStudio({
               {/* Gutters & Margins Settings */}
               <div className="space-y-2 border-t border-border pt-3">
                 <div className="flex items-center justify-between">
-                  <h3 className="font-display text-xs">Gutters & Margins</h3>
+                  <h3 className="font-display text-xs">Gutters &amp; Margins</h3>
                   <button
-                    onClick={() => onUpdateLayout({ ...layout, format: { ...layout.format, gutter: 10, gutterY: 24 } })}
+                    onClick={() =>
+                      onUpdateLayout(
+                        syncPanelBoundElements({ ...layout, format: { ...layout.format, gutter: 10, gutterY: 24 } }),
+                      )
+                    }
                     className="rounded border border-border px-1.5 py-0.5 text-[10px] font-semibold hover:border-foreground"
                     title="Thin column gutters, wide tier gutters — the eye reads across before moving down"
                   >
@@ -1448,19 +1579,31 @@ export function PanelStudio({
                 <label className="block">
                   <span className="flex justify-between"><span>Column gutter (↔)</span><span className="font-semibold">{layout.format.gutter}px</span></span>
                   <input type="range" min={0} max={48} value={layout.format.gutter}
-                    onChange={(e) => onUpdateLayout({ ...layout, format: { ...layout.format, gutter: +e.target.value } })}
+                    onChange={(e) =>
+                      onUpdateLayout(
+                        syncPanelBoundElements({ ...layout, format: { ...layout.format, gutter: +e.target.value } }),
+                      )
+                    }
                     className="w-full accent-primary" />
                 </label>
                 <label className="block">
                   <span className="flex justify-between"><span>Tier gutter (↕)</span><span className="font-semibold">{layout.format.gutterY ?? layout.format.gutter}px</span></span>
                   <input type="range" min={0} max={60} value={layout.format.gutterY ?? layout.format.gutter}
-                    onChange={(e) => onUpdateLayout({ ...layout, format: { ...layout.format, gutterY: +e.target.value } })}
+                    onChange={(e) =>
+                      onUpdateLayout(
+                        syncPanelBoundElements({ ...layout, format: { ...layout.format, gutterY: +e.target.value } }),
+                      )
+                    }
                     className="w-full accent-primary" />
                 </label>
                 <label className="block">
                   <span className="flex justify-between"><span>Outer page margin</span><span className="font-semibold">{layout.format.margin}px</span></span>
                   <input type="range" min={0} max={80} value={layout.format.margin}
-                    onChange={(e) => onUpdateLayout({ ...layout, format: { ...layout.format, margin: +e.target.value } })}
+                    onChange={(e) =>
+                      onUpdateLayout(
+                        syncPanelBoundElements({ ...layout, format: { ...layout.format, margin: +e.target.value } }),
+                      )
+                    }
                     className="w-full accent-primary" />
                 </label>
               </div>
@@ -1488,6 +1631,46 @@ export function PanelStudio({
           {/* Tray 2: Manga Background Plates & Screentones */}
           {leftTab === "backgrounds" && (
             <div className="flex-1 overflow-y-auto p-3 space-y-3 text-xs">
+              {/* Dedicated Upload Background Image */}
+              <div className="space-y-1.5 rounded border border-border bg-muted/30 p-2">
+                <button
+                  type="button"
+                  data-testid="upload-background-btn"
+                  onClick={() => bgFileInputRef.current?.click()}
+                  className="w-full flex items-center justify-center gap-1.5 rounded border-2 border-foreground bg-card py-2 font-bold shadow-ink hover:bg-accent transition-colors"
+                >
+                  <ImageIcon className="h-4 w-4 text-primary" />
+                  Upload Background Image
+                </button>
+                <input
+                  ref={bgFileInputRef}
+                  type="file"
+                  accept="image/*"
+                  aria-label="Upload Background Image File"
+                  hidden
+                  onChange={(e) => {
+                    void handleUploadBackground(e.target.files);
+                    e.target.value = "";
+                  }}
+                />
+                <div className="flex items-center justify-between gap-1 text-[10px] text-muted-foreground">
+                  <span>
+                    {selectedPanel
+                      ? `Auto-scales to fill Panel #${layout.panels.findIndex((p) => p.id === selectedPanel.id) + 1}`
+                      : "No panel selected — places freely on page"}
+                  </span>
+                  {selectedPanel && (
+                    <button
+                      type="button"
+                      onClick={() => setSelectedPanelId(null)}
+                      className="shrink-0 font-semibold text-primary underline"
+                    >
+                      Deselect panel
+                    </button>
+                  )}
+                </div>
+              </div>
+
               {/* Photo-to-Manga Filter Hero Button */}
               <button
                 onClick={() => setFilterModalOpen(true)}
@@ -1567,7 +1750,7 @@ export function PanelStudio({
               </div>
 
               {/* Upload Custom Sprite */}
-              <div className="border-t border-border pt-3">
+              <div className="border-t border-border pt-3 space-y-1">
                 <button
                   onClick={() => fileInputRef.current?.click()}
                   className="w-full flex items-center justify-center gap-1.5 rounded border-2 border-dashed border-foreground/40 bg-muted/40 py-2 font-medium hover:border-primary hover:bg-primary/5 transition-colors"
@@ -1575,6 +1758,9 @@ export function PanelStudio({
                   <ImageIcon className="h-4 w-4" />
                   Upload Custom Transparent Sprite
                 </button>
+                <p className="text-[10px] text-muted-foreground text-center">
+                  {selectedPanel ? "Drops into selected panel" : "No panel selected — places freely on whole page"}
+                </p>
               </div>
             </div>
           )}
@@ -1761,7 +1947,7 @@ export function PanelStudio({
               }}
               onMoveDivider={(pageIdx, nextPanels) => {
                 const target = (allPages && allPages[pageIdx]) || layout;
-                const next: PageLayout = { ...target, panels: nextPanels };
+                const next = syncPanelBoundElements({ ...target, panels: nextPanels });
                 if (onUpdatePageAt) onUpdatePageAt(pageIdx, next);
                 else onUpdateLayout(next);
               }}
@@ -1783,7 +1969,7 @@ export function PanelStudio({
             tool={tool}
             onKnife={handleKnifeStroke}
             onMoveVertex={handleMoveVertex}
-            onMoveDivider={(nextPanels) => onUpdateLayout({ ...layout, panels: nextPanels })}
+            onMoveDivider={(nextPanels) => onUpdateLayout(syncPanelBoundElements({ ...layout, panels: nextPanels }))}
             onDrawPanel={handleDrawPanel}
             showOrder={showOrder}
             showGuides={showGuides}
@@ -1868,20 +2054,83 @@ export function PanelStudio({
 
         {/* Right Inspector: Panels, Characters, Balloons, Layers */}
         <aside className="flex w-76 flex-col border-l-2 border-foreground bg-card p-3 space-y-4 overflow-y-auto shrink-0">
+          {/* Free Whole-Page Elements (visible even when no panel is selected or image sits behind panels) */}
+          {layout.elements.some((el) => el.panelId === PAGE_LAYER_ID) && (
+            <div className="border-b border-border pb-3 space-y-1.5" data-testid="page-layer-list">
+              <div className="flex items-center justify-between">
+                <span className="font-display text-xs">Whole-Page Images</span>
+                {selectedPanel && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedPanelId(null)}
+                    className="text-[10px] font-semibold text-primary underline"
+                  >
+                    Target Page
+                  </button>
+                )}
+              </div>
+              <div className="max-h-24 overflow-y-auto space-y-1">
+                {layout.elements
+                  .filter((el) => el.panelId === PAGE_LAYER_ID)
+                  .map((el) => {
+                    const lyr = el.pageLayer ?? (el.type === "background" ? { kind: "behind" as const } : { kind: "above" as const });
+                    const pNum =
+                      lyr.kind === "below-panel" || lyr.kind === "above-panel"
+                        ? layout.panels.findIndex((p) => p.id === lyr.panelId) + 1
+                        : 0;
+                    const tag =
+                      lyr.kind === "behind"
+                        ? "Behind all"
+                        : lyr.kind === "above"
+                        ? "Above all"
+                        : `${lyr.kind === "below-panel" ? "Below" : "Above"} P${pNum || "?"}`;
+                    return (
+                      <button
+                        key={el.id}
+                        type="button"
+                        onClick={() => {
+                          setSelectedPanelId(null);
+                          setSelectedItemId(el.id);
+                        }}
+                        className={`w-full flex items-center justify-between rounded border px-2 py-1 text-[11px] font-medium ${
+                          selectedItemId === el.id
+                            ? "border-primary bg-primary/10 font-bold text-foreground"
+                            : "border-border hover:border-foreground"
+                        }`}
+                      >
+                        <span className="truncate">{el.type === "background" ? "🖼️ Page Background" : "🧍 Page Sprite"}</span>
+                        <span className="ml-1 shrink-0 text-[9px] text-muted-foreground">{tag}</span>
+                      </button>
+                    );
+                  })}
+              </div>
+            </div>
+          )}
+
           {/* Selected Panel Inspector */}
           {selectedPanel && (
             <div className="border-b border-border pb-3">
               <div className="flex items-center justify-between mb-2">
                 <h3 className="font-display text-sm">Panel Properties</h3>
-                {layout.panels.length > 1 && (
+                <div className="flex items-center gap-1">
                   <button
-                    onClick={handleDeletePanel}
-                    className="text-destructive hover:bg-destructive/10 p-1 rounded"
-                    title="Delete panel"
+                    type="button"
+                    onClick={() => setSelectedPanelId(null)}
+                    className="rounded border border-border px-1.5 py-0.5 text-[10px] font-semibold hover:border-foreground"
+                    title="Deselect panel to target whole page"
                   >
-                    <Trash2 className="h-4 w-4" />
+                    Deselect
                   </button>
-                )}
+                  {layout.panels.length > 1 && (
+                    <button
+                      onClick={handleDeletePanel}
+                      className="text-destructive hover:bg-destructive/10 p-1 rounded"
+                      title="Delete panel"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  )}
+                </div>
               </div>
 
               <div className="space-y-2 text-xs">
@@ -1969,10 +2218,11 @@ export function PanelStudio({
                 {/* Panel Background Color */}
                 <div>
                   <span className="block mb-1 font-semibold">Background Fill</span>
-                  <div className="flex gap-1.5">
+                  <div className="grid grid-cols-5 gap-1">
                     {[
                       { color: "#ffffff", label: "White" },
-                      { color: "#09090b", label: "Night Black" },
+                      { color: "transparent", label: "Clear" },
+                      { color: "#09090b", label: "Black" },
                       { color: "#e4e4e7", label: "Gray" },
                       { color: "#fef3c7", label: "Warm" },
                     ].map((c) => (
@@ -1986,10 +2236,20 @@ export function PanelStudio({
                             ),
                           })
                         }
-                        className={`flex-1 py-1 rounded text-[10px] border font-medium ${
+                        className={`py-1 rounded text-[10px] border font-medium ${
                           selectedPanel.backgroundColor === c.color ? "border-primary ring-1 ring-primary font-bold" : "border-border"
                         }`}
-                        style={{ backgroundColor: c.color, color: c.color === "#09090b" ? "#ffffff" : "#000000" }}
+                        style={
+                          c.color === "transparent"
+                            ? {
+                                backgroundImage:
+                                  "linear-gradient(45deg, #e4e4e7 25%, transparent 25%), linear-gradient(-45deg, #e4e4e7 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #e4e4e7 75%), linear-gradient(-45deg, transparent 75%, #e4e4e7 75%)",
+                                backgroundSize: "8px 8px",
+                                backgroundPosition: "0 0, 0 4px, 4px -4px, -4px 0",
+                                color: "#000000",
+                              }
+                            : { backgroundColor: c.color, color: c.color === "#09090b" ? "#ffffff" : "#000000" }
+                        }
                       >
                         {c.label}
                       </button>
@@ -2160,11 +2420,41 @@ export function PanelStudio({
           )}
 
           {/* Selected Character / Sprite Inspector */}
-          {selectedElement && (
+          {selectedElement && (() => {
+            const setEl = (patch: Partial<typeof selectedElement>) =>
+              onUpdateLayout(
+                syncPanelBoundElements({
+                  ...layout,
+                  elements: layout.elements.map((el) =>
+                    el.id === selectedElement.id ? { ...el, ...patch } : el
+                  ),
+                })
+              );
+            const currentLayer: PageLayerPlacement =
+              selectedElement.pageLayer ??
+              (selectedElement.type === "background" ? { kind: "behind" } : { kind: "above" });
+            const encodeLayer = (layer: PageLayerPlacement): string => {
+              if (layer.kind === "below-panel") return `below:${layer.panelId}`;
+              if (layer.kind === "above-panel") return `above:${layer.panelId}`;
+              return layer.kind;
+            };
+            const decodeLayer = (value: string): PageLayerPlacement => {
+              if (value === "behind") return { kind: "behind" };
+              if (value === "above") return { kind: "above" };
+              if (value.startsWith("below:")) return { kind: "below-panel", panelId: value.slice(6) };
+              if (value.startsWith("above:")) return { kind: "above-panel", panelId: value.slice(6) };
+              return { kind: "behind" };
+            };
+            const isWholePage = selectedElement.panelId === PAGE_LAYER_ID;
+            return (
             <div className="border-b border-border pb-3 space-y-3">
               <div className="flex items-center justify-between">
                 <h3 className="font-display text-sm">
-                  {selectedElement.type === "character" ? "Character Figure" : "Background / Prop"}
+                  {isWholePage
+                    ? "Whole-Page Image"
+                    : selectedElement.type === "character"
+                    ? "Character Figure"
+                    : "Background / Prop"}
                 </h3>
                 <div className="flex items-center gap-1">
                   <button
@@ -2190,28 +2480,138 @@ export function PanelStudio({
                 </div>
               </div>
 
-              {/* 1-Click Breakout Overlay Toggle */}
-              <div className="rounded border-2 border-primary bg-primary/10 p-2 text-xs">
-                <label className="flex items-center justify-between cursor-pointer font-bold text-primary">
-                  <span>Breakout (Pop-out of border)</span>
-                  <input
-                    type="checkbox"
-                    checked={selectedElement.breakout}
-                    onChange={(e) =>
-                      onUpdateLayout({
-                        ...layout,
-                        elements: layout.elements.map((el) =>
-                          el.id === selectedElement.id ? { ...el, breakout: e.target.checked } : el
-                        ),
-                      })
-                    }
-                    className="h-4 w-4 accent-primary"
-                  />
-                </label>
-                <p className="text-[10px] text-muted-foreground mt-1">
-                  Allows character heads, weapons, or action blasts to boldly overlap borders and gutters!
-                </p>
-              </div>
+              {isWholePage ? (
+                <div className="rounded border-2 border-primary/70 bg-primary/5 p-2 text-xs space-y-2">
+                  <div className="font-bold text-primary">Page Layer Placement</div>
+                  <div className="grid grid-cols-2 gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setEl({ pageLayer: { kind: "behind" } })}
+                      className={`px-2 py-1 rounded border text-[11px] font-medium transition-colors ${
+                        currentLayer.kind === "behind"
+                          ? "bg-primary text-primary-foreground border-primary"
+                          : "bg-background border-border hover:bg-accent"
+                      }`}
+                    >
+                      Behind All Panels
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEl({ pageLayer: { kind: "above" } })}
+                      className={`px-2 py-1 rounded border text-[11px] font-medium transition-colors ${
+                        currentLayer.kind === "above"
+                          ? "bg-primary text-primary-foreground border-primary"
+                          : "bg-background border-border hover:bg-accent"
+                      }`}
+                    >
+                      Above All Panels
+                    </button>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground block">
+                      Relative to Panel
+                    </label>
+                    <select
+                      aria-label="Page element layer relative to panel"
+                      value={encodeLayer(currentLayer)}
+                      onChange={(e) => setEl({ pageLayer: decodeLayer(e.target.value) })}
+                      className="w-full px-2 py-1 text-xs rounded border border-border bg-background"
+                    >
+                      <option value="behind">Behind All Panels</option>
+                      <option value="above">Above All Panels</option>
+                      {layout.panels.map((p, idx) => (
+                        <option key={`below-${p.id}`} value={`below:${p.id}`}>
+                          Below Panel {idx + 1}
+                        </option>
+                      ))}
+                      {layout.panels.map((p, idx) => (
+                        <option key={`above-${p.id}`} value={`above:${p.id}`}>
+                          Above Panel {idx + 1}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  {layout.panels.length > 0 && (
+                    <div className="space-y-1 pt-1 border-t border-border/60">
+                      <label className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground block">
+                        Attach Inside Panel
+                      </label>
+                      <select
+                        aria-label="Attach image inside panel"
+                        value=""
+                        onChange={(e) => {
+                          const targetPanelId = e.target.value;
+                          if (!targetPanelId) return;
+                          setEl({
+                            panelId: targetPanelId,
+                            pageLayer: undefined,
+                            fitMode: selectedElement.type === "background" ? "fill-panel" : "free",
+                          });
+                          setSelectedPanelId(targetPanelId);
+                        }}
+                        className="w-full px-2 py-1 text-xs rounded border border-border bg-background"
+                      >
+                        <option value="">Move into a panel...</option>
+                        {layout.panels.map((p, idx) => (
+                          <option key={p.id} value={p.id}>
+                            Attach to Panel {idx + 1}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <>
+                  {/* 1-Click Breakout Overlay Toggle */}
+                  <div className="rounded border-2 border-primary bg-primary/10 p-2 text-xs">
+                    <label className="flex items-center justify-between cursor-pointer font-bold text-primary">
+                      <span>Breakout (Pop-out of border)</span>
+                      <input
+                        type="checkbox"
+                        checked={selectedElement.breakout}
+                        onChange={(e) => setEl({ breakout: e.target.checked })}
+                        className="h-4 w-4 accent-primary"
+                      />
+                    </label>
+                    <p className="text-[10px] text-muted-foreground mt-1">
+                      Allows character heads, weapons, or action blasts to boldly overlap borders and gutters!
+                    </p>
+                  </div>
+
+                  {/* Auto-scale with Panel + Detach to Whole Page */}
+                  <div className="rounded border border-border bg-muted/40 p-2 text-xs space-y-2">
+                    <label className="flex items-center justify-between cursor-pointer font-medium">
+                      <span>Auto-scale with panel</span>
+                      <input
+                        type="checkbox"
+                        checked={selectedElement.fitMode === "fill-panel"}
+                        onChange={(e) =>
+                          setEl({ fitMode: e.target.checked ? "fill-panel" : "free" })
+                        }
+                        className="h-4 w-4 accent-primary"
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEl({
+                          panelId: PAGE_LAYER_ID,
+                          fitMode: "free",
+                          breakout: false,
+                          pageLayer: {
+                            kind: selectedElement.type === "background" ? "behind" : "above",
+                          },
+                        });
+                        setSelectedPanelId(null);
+                      }}
+                      className="w-full px-2 py-1 rounded border border-border bg-background hover:bg-accent text-[11px] font-medium"
+                    >
+                      Detach to Whole Page
+                    </button>
+                  </div>
+                </>
+              )}
 
               {/* Non-Destructive Re-Pose in 3D Button */}
               {selectedElement.source3d && onRePoseIn3D && (
@@ -2344,7 +2744,8 @@ export function PanelStudio({
                 </label>
               </div>
             </div>
-          )}
+            );
+          })()}
 
           {/* Selected Speech Balloon Inspector */}
           {selectedBalloon && (
