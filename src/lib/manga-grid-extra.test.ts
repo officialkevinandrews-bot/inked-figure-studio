@@ -12,6 +12,7 @@ import {
 import {
   PAGE_FORMATS,
   PAGE_LAYER_ID,
+  applyManualElementPatch,
   panelBounds,
   swapPanelContents,
   syncPanelBoundElements,
@@ -324,5 +325,72 @@ describe("panel-bound backgrounds & whole-page elements", () => {
     expect(wholeAfterSplit.panelId).toBe(PAGE_LAYER_ID);
     expect(wholeAfterSplit.x).toBe(25);
     expect(wholeAfterSplit.height).toBe(300);
+  });
+
+  it("releases fill-panel lock on breakout or manual resize and scopes syncPanelBoundElements to targeted panel only", () => {
+    const panels = buildTemplate("2-vert")!;
+    const format = PAGE_FORMATS[0];
+    const p0 = panelBounds(panels[0], format);
+
+    const bg0: PlacedElement = {
+      id: "bg-p0",
+      panelId: panels[0].id,
+      type: "background",
+      imageUrl: "bg0.png",
+      x: Math.round(p0.minX),
+      y: Math.round(p0.minY),
+      width: Math.round(p0.width),
+      height: Math.round(p0.height),
+      rotation: 0,
+      flipX: false,
+      flipY: false,
+      zIndex: 1,
+      breakout: false,
+      fitMode: "fill-panel",
+    };
+    const bg1: PlacedElement = {
+      id: "bg-p1",
+      panelId: panels[1].id,
+      type: "background",
+      imageUrl: "bg1.png",
+      x: 0,
+      y: 0,
+      width: 50,
+      height: 50,
+      rotation: 0,
+      flipX: false,
+      flipY: false,
+      zIndex: 1,
+      breakout: false,
+      fitMode: "fill-panel",
+    };
+
+    // Enabling breakout or manually resizing releases fill-panel lock on bg0 only
+    const popped = applyManualElementPatch(bg0, { breakout: true });
+    expect(popped.fitMode).toBe("free");
+    const resized = applyManualElementPatch(popped, { width: 520, height: 610 });
+    expect(resized.fitMode).toBe("free");
+    expect(resized.width).toBe(520);
+
+    // Syncing only Panel 2 never alters Panel 1's image even if format or other panel changed
+    const synced = syncPanelBoundElements(
+      {
+        id: "p-iso",
+        pageNumber: 1,
+        format,
+        panels,
+        elements: [resized, bg1],
+        balloons: [],
+        sfxStamps: [],
+        comicMarks: [],
+        speedLines: [],
+      },
+      [panels[1].id],
+    );
+    const untouched0 = synced.elements.find((e) => e.id === "bg-p0")!;
+    const updated1 = synced.elements.find((e) => e.id === "bg-p1")!;
+    expect(untouched0.width).toBe(520);
+    expect(untouched0.height).toBe(610);
+    expect(updated1.width).toBeGreaterThan(100);
   });
 });

@@ -1,6 +1,8 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import {
   PAGE_LAYER_ID,
+  applyManualElementPatch,
+  panelBounds,
   type PageLayerPlacement,
   type PageLayout,
   type PlacedElement,
@@ -230,7 +232,7 @@ export function PanelStudio({
           onUpdateLayout({
             ...layout,
             elements: layout.elements.map((el) =>
-              el.id === selectedElement.id ? { ...el, [axis]: el[axis] + step } : el
+              el.id === selectedElement.id ? applyManualElementPatch(el, { [axis]: el[axis] + step }) : el
             ),
           });
         } else if (selectedBalloon) {
@@ -514,17 +516,20 @@ export function PanelStudio({
     const move = <T extends { panelId: string }>(xs?: T[]) =>
       (xs ?? []).map((x) => (x.panelId === cand.neighborId ? { ...x, panelId: selectedPanel.id } : x));
     onUpdateLayout(
-      syncPanelBoundElements({
-        ...layout,
-        panels: layout.panels
-          .filter((p) => p.id !== cand.neighborId)
-          .map((p) => (p.id === selectedPanel.id ? { ...p, points: cand.mergedPoints } : p)),
-        elements: move(layout.elements),
-        balloons: move(layout.balloons),
-        sfxStamps: move(layout.sfxStamps),
-        comicMarks: move(layout.comicMarks),
-        speedLines: move(layout.speedLines),
-      }),
+      syncPanelBoundElements(
+        {
+          ...layout,
+          panels: layout.panels
+            .filter((p) => p.id !== cand.neighborId)
+            .map((p) => (p.id === selectedPanel.id ? { ...p, points: cand.mergedPoints } : p)),
+          elements: move(layout.elements),
+          balloons: move(layout.balloons),
+          sfxStamps: move(layout.sfxStamps),
+          comicMarks: move(layout.comicMarks),
+          speedLines: move(layout.speedLines),
+        },
+        [selectedPanel.id],
+      ),
     );
   };
 
@@ -604,7 +609,10 @@ export function PanelStudio({
 
   const updatePanel = (id: string, patch: Partial<PanelPolygon>) =>
     onUpdateLayout(
-      syncPanelBoundElements({ ...layout, panels: layout.panels.map((p) => (p.id === id ? { ...p, ...patch } : p)) }),
+      syncPanelBoundElements(
+        { ...layout, panels: layout.panels.map((p) => (p.id === id ? { ...p, ...patch } : p)) },
+        [id],
+      ),
     );
 
   const handleAddInset = () => {
@@ -883,31 +891,31 @@ export function PanelStudio({
     if (!file) return;
     const { dataUrl, width: natW, height: natH } = await readImageFileWithSize(file);
     if (selectedPanel) {
-      const temp: PageLayout = {
+      const b = panelBounds(selectedPanel, layout.format);
+      const newBg: PlacedElement = {
+        id: `bg-${Date.now()}`,
+        panelId: selectedPanel.id,
+        type: "background",
+        fitMode: "fill-panel",
+        imageUrl: dataUrl,
+        x: Math.round(b.minX),
+        y: Math.round(b.minY),
+        width: Math.max(1, Math.round(b.width)),
+        height: Math.max(1, Math.round(b.height)),
+        rotation: 0,
+        flipX: false,
+        flipY: false,
+        zIndex: 1,
+        breakout: false,
+      };
+      onUpdateLayout({
         ...layout,
         elements: [
-          {
-            id: `bg-${Date.now()}`,
-            panelId: selectedPanel.id,
-            type: "background",
-            fitMode: "fill-panel",
-            imageUrl: dataUrl,
-            x: 0,
-            y: 0,
-            width: natW,
-            height: natH,
-            rotation: 0,
-            flipX: false,
-            flipY: false,
-            zIndex: 1,
-            breakout: false,
-          },
+          newBg,
           ...layout.elements.filter((el) => !(el.panelId === selectedPanel.id && el.type === "background")),
         ],
-      };
-      const synced = syncPanelBoundElements(temp);
-      onUpdateLayout(synced);
-      setSelectedItemId(synced.elements[0].id);
+      });
+      setSelectedItemId(newBg.id);
       return;
     }
 
@@ -1072,11 +1080,10 @@ export function PanelStudio({
       ...layout,
       elements: layout.elements.map((e) =>
         e.id === el.id
-          ? {
-              ...e,
+          ? applyManualElementPatch(e, {
               x: bounds.minX + (bounds.width - e.width) / 2,
               y: bounds.minY + (bounds.height - e.height) / 2,
-            }
+            })
           : e
       ),
     });
@@ -1106,13 +1113,12 @@ export function PanelStudio({
       ...layout,
       elements: layout.elements.map((item) =>
         item.id === el.id
-          ? {
-              ...item,
+          ? applyManualElementPatch(item, {
               width: Math.round(w),
               height: Math.round(h),
               x: Math.round(bounds.minX + (bw - w) / 2),
               y: Math.round(bounds.minY + (bh - h) / 2),
-            }
+            })
           : item,
       ),
     });
@@ -1978,7 +1984,7 @@ export function PanelStudio({
             onUpdateElement={(id, u) =>
               onUpdateLayout({
                 ...layout,
-                elements: layout.elements.map((el) => (el.id === id ? { ...el, ...u } : el)),
+                elements: layout.elements.map((el) => (el.id === id ? applyManualElementPatch(el, u) : el)),
               })
             }
             onDeleteElement={(id) => {
@@ -2421,15 +2427,27 @@ export function PanelStudio({
 
           {/* Selected Character / Sprite Inspector */}
           {selectedElement && (() => {
-            const setEl = (patch: Partial<typeof selectedElement>) =>
-              onUpdateLayout(
-                syncPanelBoundElements({
-                  ...layout,
-                  elements: layout.elements.map((el) =>
-                    el.id === selectedElement.id ? { ...el, ...patch } : el
-                  ),
-                })
-              );
+            const setEl = (patch: Partial<typeof selectedElement>) => {
+              const elements = layout.elements.map((el) => {
+                if (el.id !== selectedElement.id) return el;
+                const patched = applyManualElementPatch(el, patch);
+                if (patched.fitMode === "fill-panel" && patched.panelId !== PAGE_LAYER_ID && !patched.breakout) {
+                  const targetPanel = layout.panels.find((p) => p.id === patched.panelId);
+                  if (targetPanel) {
+                    const b = panelBounds(targetPanel, layout.format);
+                    return {
+                      ...patched,
+                      x: Math.round(b.minX),
+                      y: Math.round(b.minY),
+                      width: Math.max(1, Math.round(b.width)),
+                      height: Math.max(1, Math.round(b.height)),
+                    };
+                  }
+                }
+                return patched;
+              });
+              onUpdateLayout({ ...layout, elements });
+            };
             const currentLayer: PageLayerPlacement =
               selectedElement.pageLayer ??
               (selectedElement.type === "background" ? { kind: "behind" } : { kind: "above" });
@@ -2587,7 +2605,9 @@ export function PanelStudio({
                         type="checkbox"
                         checked={selectedElement.fitMode === "fill-panel"}
                         onChange={(e) =>
-                          setEl({ fitMode: e.target.checked ? "fill-panel" : "free" })
+                          setEl(
+                            e.target.checked ? { fitMode: "fill-panel", breakout: false } : { fitMode: "free" }
+                          )
                         }
                         className="h-4 w-4 accent-primary"
                       />

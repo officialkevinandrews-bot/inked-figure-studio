@@ -133,6 +133,7 @@ export function PanelTransformer({
         <>
           <img
             src={element.imageUrl}
+            data-element-id={element.id}
             alt="Placed Character"
             className={`w-full h-full pointer-events-none select-none ${
               element.fitMode === "fill-panel" || element.type === "background" ? "object-fill" : "object-contain"

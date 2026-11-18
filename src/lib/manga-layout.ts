@@ -602,34 +602,75 @@ export function swapPanelContents(layout: PageLayout, idA: string, idB: string):
     return item;
   };
 
-  return syncPanelBoundElements({
-    ...layout,
-    panels: layout.panels.map((p) => {
-      if (p.id === idA) return { ...p, backgroundColor: panB.backgroundColor, tone: panB.tone ?? null };
-      if (p.id === idB) return { ...p, backgroundColor: panA.backgroundColor, tone: panA.tone ?? null };
-      return p;
-    }),
-    elements: layout.elements.map(shiftItem),
-    balloons: (layout.balloons ?? []).map(shiftItem),
-    sfxStamps: (layout.sfxStamps ?? []).map(shiftItem),
-    comicMarks: (layout.comicMarks ?? []).map(shiftItem),
-    speedLines: (layout.speedLines ?? []).map((l) => {
-      if (l.panelId === idA) return { ...l, panelId: idB, centerX: l.centerX + dxAB, centerY: l.centerY + dyAB };
-      if (l.panelId === idB) return { ...l, panelId: idA, centerX: l.centerX - dxAB, centerY: l.centerY - dyAB };
-      return l;
-    }),
-  });
+  return syncPanelBoundElements(
+    {
+      ...layout,
+      panels: layout.panels.map((p) => {
+        if (p.id === idA) return { ...p, backgroundColor: panB.backgroundColor, tone: panB.tone ?? null };
+        if (p.id === idB) return { ...p, backgroundColor: panA.backgroundColor, tone: panA.tone ?? null };
+        return p;
+      }),
+      elements: layout.elements.map(shiftItem),
+      balloons: (layout.balloons ?? []).map(shiftItem),
+      sfxStamps: (layout.sfxStamps ?? []).map(shiftItem),
+      comicMarks: (layout.comicMarks ?? []).map(shiftItem),
+      speedLines: (layout.speedLines ?? []).map((l) => {
+        if (l.panelId === idA) return { ...l, panelId: idB, centerX: l.centerX + dxAB, centerY: l.centerY + dyAB };
+        if (l.panelId === idB) return { ...l, panelId: idA, centerX: l.centerX - dxAB, centerY: l.centerY - dyAB };
+        return l;
+      }),
+    },
+    [idA, idB],
+  );
+}
+
+/** Merges a manual transform or breakout edit onto an element, releasing `fill-panel` lock unless `fitMode` is set explicitly. */
+export function applyManualElementPatch(
+  el: PlacedElement,
+  patch: Partial<PlacedElement>,
+): PlacedElement {
+  const touchesTransform =
+    patch.x !== undefined ||
+    patch.y !== undefined ||
+    patch.width !== undefined ||
+    patch.height !== undefined ||
+    patch.rotation !== undefined ||
+    patch.breakout === true;
+  const nextFitMode =
+    patch.fitMode !== undefined
+      ? patch.fitMode
+      : touchesTransform && el.fitMode === "fill-panel"
+      ? "free"
+      : el.fitMode;
+  return { ...el, ...patch, fitMode: nextFitMode };
 }
 
 /** Re-scales panel-bound `fill-panel` backgrounds cleanly whenever panel sizes, dividers, gutters, or formats change. */
-export function syncPanelBoundElements(layout: PageLayout): PageLayout {
-  const hasBound = layout.elements.some((el) => el.fitMode === "fill-panel" && el.panelId !== PAGE_LAYER_ID);
+export function syncPanelBoundElements(
+  layout: PageLayout,
+  onlyPanelIds?: Iterable<string>,
+): PageLayout {
+  const allowedPanels = onlyPanelIds ? new Set(onlyPanelIds) : null;
+  const hasBound = layout.elements.some(
+    (el) =>
+      el.fitMode === "fill-panel" &&
+      el.panelId !== PAGE_LAYER_ID &&
+      !el.breakout &&
+      (!allowedPanels || allowedPanels.has(el.panelId)),
+  );
   if (!hasBound) return layout;
 
   const panelMap = new Map(layout.panels.map((p) => [p.id, p]));
   let changed = false;
   const elements = layout.elements.map((el) => {
-    if (el.fitMode !== "fill-panel" || el.panelId === PAGE_LAYER_ID) return el;
+    if (
+      el.fitMode !== "fill-panel" ||
+      el.panelId === PAGE_LAYER_ID ||
+      el.breakout ||
+      (allowedPanels && !allowedPanels.has(el.panelId))
+    ) {
+      return el;
+    }
     const panel = panelMap.get(el.panelId);
     if (!panel) return el;
     const b = panelBounds(panel, layout.format);

@@ -1,6 +1,12 @@
 import React, { useMemo, useRef, useState } from "react";
 import { GripHorizontal, Minus, Plus, PlusCircle, Scissors } from "lucide-react";
-import type { PageLayout, PanelPolygon, PlacedElement, Point } from "@/lib/manga-layout";
+import {
+  applyManualElementPatch,
+  type PageLayout,
+  type PanelPolygon,
+  type PlacedElement,
+  type Point,
+} from "@/lib/manga-layout";
 import type { ComicMark, SFXStamp, SpeechBalloon, SpeedLinesEffect } from "@/lib/manga-effects";
 import {
   WEBTOON_SLICE_HEIGHT,
@@ -150,7 +156,7 @@ export function WebtoonCanvas({
                 onUpdateElement={(id, u) =>
                   patchPage(idx, (cur) => ({
                     ...cur,
-                    elements: cur.elements.map((el) => (el.id === id ? { ...el, ...u } : el)),
+                    elements: cur.elements.map((el) => (el.id === id ? applyManualElementPatch(el, u) : el)),
                   }))
                 }
                 onDeleteElement={(id) => {

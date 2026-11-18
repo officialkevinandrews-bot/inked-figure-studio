@@ -303,6 +303,9 @@ test.describe("Inked Figure Studio End-to-End Regression", () => {
     const beforeBox = await bgImg.boundingBox();
     expect(beforeBox).not.toBeNull();
 
+    const bgId = await bgImg.getAttribute("data-element-id");
+    expect(bgId).toBeTruthy();
+
     // Drag a divider to change Panel 1's dimensions and confirm background auto-scales with it
     await page.getByTitle("Panels, Knife Cut & Grid Layouts").click();
     await page.getByRole("button", { name: /Dividers/ }).click();
@@ -327,7 +330,46 @@ test.describe("Inked Figure Studio End-to-End Regression", () => {
       expect(changed).toBe(true);
     }
 
+    // 1b. Enable Breakout + resize Panel 1's background, then upload to Panel 2 -> Panel 1's custom size MUST stay untouched
+    await page.getByRole("button", { name: /Select \(V\)/ }).click();
+    const trackedBg = page.locator(`#manga-page-container img[data-element-id="${bgId}"]`);
+    await trackedBg.click({ force: true });
+    await page.getByLabel(/Breakout \(Pop-out of border\)/i).check();
+    await expect(page.getByLabel(/Auto-scale with panel/i)).not.toBeChecked();
+
+    const resizeHandle = page.getByRole("button", { name: "Resize bottom-right corner" });
+    await expect(resizeHandle).toBeVisible();
+    const rhBox = await resizeHandle.boundingBox();
+    expect(rhBox).not.toBeNull();
+    if (rhBox) {
+      await page.mouse.move(rhBox.x + rhBox.width / 2, rhBox.y + rhBox.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(rhBox.x + rhBox.width / 2 + 50, rhBox.y + rhBox.height / 2 + 50, { steps: 5 });
+      await page.mouse.up();
+    }
+    const poppedBox = await trackedBg.boundingBox();
+    expect(poppedBox).not.toBeNull();
+
+    // Switch to Panel 2 and upload another background -> must NOT resize Panel 1's popped-out background
+    await page.locator("#manga-page-container svg path[data-panel-id]").nth(1).click();
+    await page.getByRole("button", { name: /Backs/ }).click();
+    await expect(page.getByText(/Auto-scales to fill Panel #2/)).toBeVisible();
+    const [chooserPanel2] = await Promise.all([
+      page.waitForEvent("filechooser"),
+      uploadBtn.click(),
+    ]);
+    await chooserPanel2.setFiles({ name: "panel2-bg.png", mimeType: "image/png", buffer: pngBuf });
+
+    // Confirm Panel 1 background kept its exact custom resized dimensions
+    await expect(page.locator('#manga-page-container img[src^="data:image/png"]')).toHaveCount(2);
+    const panel1BoxAfter = await trackedBg.boundingBox();
+    if (poppedBox && panel1BoxAfter) {
+      expect(Math.abs(panel1BoxAfter.width - poppedBox.width)).toBeLessThan(2);
+      expect(Math.abs(panel1BoxAfter.height - poppedBox.height)).toBeLessThan(2);
+    }
+
     // 2. Deselect panel -> upload whole-page background -> check Page Layer Ordering controls
+    await page.getByTitle("Panels, Knife Cut & Grid Layouts").click();
     await page.getByRole("button", { name: /Select \(V\)/ }).click();
     await page.getByRole("button", { name: "Deselect", exact: true }).click();
     await page.getByRole("button", { name: /Backs/ }).click();
