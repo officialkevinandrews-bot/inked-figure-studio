@@ -4,6 +4,7 @@ import { emitStorageChange, getActiveStorageUser } from "./user-storage";
 const LEGACY_DB = "koma-files";
 const STORE = "files";
 const KV_STORE = "kv";
+const IDB_OPEN_TIMEOUT_MS = 2500;
 
 export interface Stored {
   id: string;
@@ -15,6 +16,7 @@ export interface Stored {
 type CloudFileFetcher = (id: string) => Promise<Stored | null>;
 let cloudFileFetcher: CloudFileFetcher | null = null;
 const inflightCloudFetches = new Map<string, Promise<Stored | null>>();
+const openDbs = new Map<string, Promise<IDBDatabase>>();
 
 export function registerCloudFileFetcher(fetcher: CloudFileFetcher | null): void {
   cloudFileFetcher = fetcher;
@@ -25,19 +27,79 @@ export function getActiveFilesDbName(uid: string | null = getActiveStorageUser()
 }
 
 function open(dbName: string = getActiveFilesDbName()): Promise<IDBDatabase> {
-  return new Promise((res, rej) => {
-    const r = indexedDB.open(dbName, 2);
-    r.onupgradeneeded = () => {
-      if (!r.result.objectStoreNames.contains(STORE)) {
-        r.result.createObjectStore(STORE, { keyPath: "id" });
+  const cached = openDbs.get(dbName);
+  if (cached) return cached;
+
+  const p = new Promise<IDBDatabase>((res, rej) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      openDbs.delete(dbName);
+      rej(new Error(`IndexedDB open timed out for ${dbName}`));
+    }, IDB_OPEN_TIMEOUT_MS);
+
+    try {
+      const r = indexedDB.open(dbName, 2);
+      r.onupgradeneeded = () => {
+        if (!r.result.objectStoreNames.contains(STORE)) {
+          r.result.createObjectStore(STORE, { keyPath: "id" });
+        }
+        if (!r.result.objectStoreNames.contains(KV_STORE)) {
+          r.result.createObjectStore(KV_STORE, { keyPath: "id" });
+        }
+      };
+      r.onblocked = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        openDbs.delete(dbName);
+        rej(new Error(`IndexedDB blocked while opening ${dbName}`));
+      };
+      r.onsuccess = () => {
+        if (settled) {
+          try {
+            r.result.close();
+          } catch {
+            /* ignore */
+          }
+          return;
+        }
+        settled = true;
+        clearTimeout(timer);
+        const db = r.result;
+        db.onversionchange = () => {
+          openDbs.delete(dbName);
+          try {
+            db.close();
+          } catch {
+            /* ignore */
+          }
+        };
+        db.onclose = () => {
+          openDbs.delete(dbName);
+        };
+        res(db);
+      };
+      r.onerror = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        openDbs.delete(dbName);
+        rej(r.error ?? new Error(`IndexedDB error opening ${dbName}`));
+      };
+    } catch (err) {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        openDbs.delete(dbName);
+        rej(err);
       }
-      if (!r.result.objectStoreNames.contains(KV_STORE)) {
-        r.result.createObjectStore(KV_STORE, { keyPath: "id" });
-      }
-    };
-    r.onsuccess = () => res(r.result);
-    r.onerror = () => rej(r.error);
+    }
   });
+
+  openDbs.set(dbName, p);
+  return p;
 }
 
 export async function putFile(
@@ -72,7 +134,7 @@ export async function getLocalFile(
 }
 
 export async function getFile(id: string): Promise<Stored | null> {
-  const local = await getLocalFile(id);
+  const local = await getLocalFile(id).catch(() => null);
   if (local) return local;
 
   const uid = getActiveStorageUser();

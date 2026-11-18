@@ -44,16 +44,19 @@ export async function verifyUserAllowlistAccess(email?: string | null): Promise<
   const norm = normalizeEmail(email);
   if (!norm) return { allowed: false, emails: [...CORE_ALLOWED_EMAILS] };
   if (isCoreAllowedEmail(norm)) {
-    const emails = await loadSharedAllowlist().catch(() => [...CORE_ALLOWED_EMAILS]);
-    return { allowed: true, emails };
+    // Core owner emails are always authorized immediately without blocking on a network read.
+    return { allowed: true, emails: [...CORE_ALLOWED_EMAILS] };
   }
   if (!isFirebaseConfigured()) {
     return { allowed: false, emails: [...CORE_ALLOWED_EMAILS] };
   }
   try {
     const db = getFirebaseDb();
-    const snap = await getDoc(doc(db, "config", "allowlist"));
-    if (!snap.exists()) return { allowed: false, emails: [...CORE_ALLOWED_EMAILS] };
+    const snap = await Promise.race([
+      getDoc(doc(db, "config", "allowlist")),
+      new Promise<null>((_, reject) => setTimeout(() => reject(new Error("Allowlist lookup timeout")), 5000)),
+    ]);
+    if (!snap || !snap.exists()) return { allowed: false, emails: [...CORE_ALLOWED_EMAILS] };
     const list = normalizeAllowlistEmails(
       Array.isArray(snap.data()?.emails) ? (snap.data()?.emails as string[]) : [],
     );

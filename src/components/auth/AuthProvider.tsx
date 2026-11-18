@@ -3,6 +3,7 @@ import { onAuthStateChanged, type User } from "firebase/auth";
 import {
   CORE_ALLOWED_EMAILS,
   isValidEmailAddress,
+  loadSharedAllowlist,
   normalizeEmail,
   saveSharedAllowlist,
   verifyUserAllowlistAccess,
@@ -68,6 +69,7 @@ interface AuthContextValue {
   resolveConflict: (choice: "cloud" | "local") => Promise<void>;
   confirmImportLegacyData: () => Promise<void>;
   skipLegacyData: () => void;
+  continueWhileSyncing: () => void;
   addAllowedEmail: (email: string) => Promise<{ ok: boolean; error?: string }>;
   removeAllowedEmail: (email: string) => Promise<{ ok: boolean; error?: string }>;
 }
@@ -99,30 +101,52 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const activateAuthenticatedUser = useCallback(async (verifiedUser: User) => {
-    const access = await verifyUserAllowlistAccess(verifiedUser.email);
-    setAllowedEmails(access.emails);
+    try {
+      const access = await verifyUserAllowlistAccess(verifiedUser.email);
+      setAllowedEmails(access.emails);
 
-    if (!access.allowed) {
-      teardownUserCloudSession();
-      setActiveStorageUser(null);
-      setLegacyPrompt(null);
-      setDeniedEmail(verifiedUser.email ?? "this email address");
-      setUser(null);
-      await signOutFirebase().catch(() => {});
-      setPhase("access_denied");
-      return;
+      if (!access.allowed) {
+        teardownUserCloudSession();
+        setActiveStorageUser(null);
+        setLegacyPrompt(null);
+        setDeniedEmail(verifiedUser.email ?? "this email address");
+        setUser(null);
+        await signOutFirebase().catch(() => {});
+        setPhase("access_denied");
+        return;
+      }
+
+      setDeniedEmail(null);
+      setAuthError(null);
+      setUser(verifiedUser);
+      setActiveStorageUser(verifiedUser.uid);
+      setPhase("syncing_initial");
+
+      // Refresh shared allowlist in the background without ever blocking studio startup
+      void loadSharedAllowlist()
+        .then((emails) => {
+          if (emails.length > 0) setAllowedEmails(emails);
+        })
+        .catch(() => {});
+
+      const watchdog = setTimeout(() => {
+        setPhase((cur) => (cur === "syncing_initial" ? "authenticated" : cur));
+      }, 5000);
+
+      try {
+        const { legacyPrompt: summary } = await initializeUserCloudSession(verifiedUser);
+        setLegacyPrompt(summary);
+      } catch (err) {
+        setAuthError(friendlyAuthError(err));
+      } finally {
+        clearTimeout(watchdog);
+        setHydrationVersion((v) => v + 1);
+        setPhase("authenticated");
+      }
+    } catch (err) {
+      setAuthError(friendlyAuthError(err));
+      setPhase("signed_out");
     }
-
-    setDeniedEmail(null);
-    setAuthError(null);
-    setUser(verifiedUser);
-    setActiveStorageUser(verifiedUser.uid);
-    setPhase("syncing_initial");
-
-    const { legacyPrompt: summary } = await initializeUserCloudSession(verifiedUser);
-    setLegacyPrompt(summary);
-    setHydrationVersion((v) => v + 1);
-    setPhase("authenticated");
   }, []);
 
   useEffect(() => {
@@ -345,6 +369,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setLegacyPrompt(null);
   }, [user]);
 
+  const continueWhileSyncing = useCallback(() => {
+    if (user) {
+      setHydrationVersion((v) => v + 1);
+      setPhase("authenticated");
+    }
+  }, [user]);
+
   const addAllowedEmail = useCallback(
     async (rawEmail: string) => {
       const clean = normalizeEmail(rawEmail);
@@ -418,6 +449,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         resolveConflict: handleResolveConflict,
         confirmImportLegacyData,
         skipLegacyData,
+        continueWhileSyncing,
         addAllowedEmail,
         removeAllowedEmail,
       }}

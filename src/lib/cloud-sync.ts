@@ -30,6 +30,7 @@ import {
 } from "./file-store";
 import { getFirebaseDb, getFirebaseStorage } from "./firebase";
 import { isFirebaseConfigured } from "./firebase-config";
+import { normalizeEmail } from "./allowlist";
 import { loadPanelOverlapPreference, type PanelOverlapPreference } from "./manga-layout";
 import {
   createDefaultLibrary,
@@ -304,6 +305,24 @@ async function decompressBytes(bytes: Uint8Array, compressed: boolean): Promise<
   return new Uint8Array(outBuf);
 }
 
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${ms}ms`));
+    }, ms);
+    promise.then(
+      (val) => {
+        clearTimeout(timer);
+        resolve(val);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
 function isNetworkOrOfflineError(err: unknown): boolean {
   const code = String((err as { code?: string })?.code ?? "").toLowerCase();
   const msg = String((err as { message?: string })?.message ?? "").toLowerCase();
@@ -311,6 +330,7 @@ function isNetworkOrOfflineError(err: unknown): boolean {
   return (
     code.includes("unavailable") ||
     code.includes("network") ||
+    msg.includes("timed out") ||
     msg.includes("offline") ||
     msg.includes("network") ||
     msg.includes("failed to get document because the client is offline")
@@ -495,8 +515,31 @@ export async function fetchCloudFileForUser(uid: string, fileId: string): Promis
   return null;
 }
 
+function compactWorkspaceForCloud(ws: WorkspaceCloudDoc): WorkspaceCloudDoc {
+  try {
+    if (JSON.stringify(ws).length <= 820_000) return ws;
+    return {
+      ...ws,
+      customPoses: ws.customPoses.map((p) => ({
+        ...p,
+        thumbnail: p.thumbnail && p.thumbnail.length > 24_000 ? undefined : p.thumbnail,
+      })),
+      characters: ws.characters.map((c) => ({
+        ...c,
+        thumbnail: c.thumbnail && c.thumbnail.length > 24_000 ? undefined : c.thumbnail,
+      })),
+      roster: ws.roster.map((r) => ({
+        ...r,
+        previewUrl: r.previewUrl && r.previewUrl.length > 24_000 ? "" : r.previewUrl,
+      })),
+    };
+  } catch {
+    return ws;
+  }
+}
+
 function collectWorkspaceDoc(uid: string, library: MangaLibraryState | null): WorkspaceCloudDoc {
-  return stripUndefined({
+  const raw = stripUndefined({
     version: 1,
     schemaVersion: 1,
     updatedAt: Date.now(),
@@ -516,6 +559,7 @@ function collectWorkspaceDoc(uid: string, library: MangaLibraryState | null): Wo
       panelOverlapPref: loadPanelOverlapPreference(),
     },
   });
+  return compactWorkspaceForCloud(raw);
 }
 
 function serializeProjectDoc(
@@ -655,17 +699,17 @@ export async function inspectLegacyBrowserData(
   };
 }
 
-/** Imports existing unscoped browser work into the signed-in user's scoped cache and uploads it to Cloud. */
-export async function importLegacyBrowserData(uid: string): Promise<number> {
+async function copyLegacyDataLocally(uid: string): Promise<number> {
   const lsEntries = readLegacyLocalStorageEntries();
-  const legacyIdb = await readLegacyIndexedDbSnapshot();
+  const legacyIdb = await readLegacyIndexedDbSnapshot().catch(() => ({ files: [], kv: [] }));
 
   let importedItems = 0;
   setApplyingRemoteSync(true);
   try {
     for (const entry of lsEntries) {
       const scoped = scopeStorageKey(entry.key, uid);
-      if (window.localStorage.getItem(scoped) === null) {
+      const existing = window.localStorage.getItem(scoped);
+      if (existing === null || existing === "[]") {
         window.localStorage.setItem(scoped, entry.value);
         importedItems++;
       }
@@ -675,12 +719,15 @@ export async function importLegacyBrowserData(uid: string): Promise<number> {
     for (const file of legacyIdb.files) {
       const existing = await getLocalFile(file.id, targetDb).catch(() => null);
       if (!existing) {
-        await putFile(file.id, file.blob, file.name, file.slot, { dbName: targetDb, silent: true });
+        await putFile(file.id, file.blob, file.name, file.slot, {
+          dbName: targetDb,
+          silent: true,
+        }).catch(() => {});
         importedItems++;
       }
     }
     for (const row of legacyIdb.kv) {
-      await putKv(row.id, row.value, { dbName: targetDb, silent: true });
+      await putKv(row.id, row.value, { dbName: targetDb, silent: true }).catch(() => {});
       importedItems++;
     }
   } finally {
@@ -700,8 +747,14 @@ export async function importLegacyBrowserData(uid: string): Promise<number> {
   }
   saveSyncQueue(uid, q);
   notifyStatus({ legacyImportedCount: importedItems });
-  await flushCloudSync(uid);
+  return importedItems;
+}
+
+/** Imports existing unscoped browser work into the signed-in user's scoped cache and syncs in background. */
+export async function importLegacyBrowserData(uid: string): Promise<number> {
+  const importedItems = await copyLegacyDataLocally(uid);
   cloudPullCallback?.();
+  void flushCloudSync(uid);
   return importedItems;
 }
 
@@ -726,7 +779,7 @@ export async function flushCloudSync(uid: string = activeSyncUid ?? ""): Promise
       const rawLib = await loadMangaLibrary().catch(() => createDefaultLibrary(null));
       const lib = await externalizeLibraryAssets(rawLib);
 
-      // 1. Upload referenced or dirty binary files first so project/character docs never point to missing cloud assets
+      // 1. Upload referenced or dirty binary files first; isolate per-file failures so projects/workspace still save
       const allFiles = await listAllFiles(getActiveFilesDbName(uid)).catch(() => []);
       const fileMap = new Map(allFiles.map((f) => [f.id, f]));
       const neededIds = new Set<string>([
@@ -740,14 +793,19 @@ export async function flushCloudSync(uid: string = activeSyncUid ?? ""): Promise
         ),
       ]);
 
+      const failedFileIds: string[] = [];
       for (const fid of neededIds) {
         if (!fid || fid.startsWith("builtin:")) continue;
         const file = fileMap.get(fid);
         if (file) {
-          await uploadBlobToCloud(uid, file);
+          try {
+            await uploadBlobToCloud(uid, file);
+          } catch {
+            failedFileIds.push(fid);
+          }
         }
       }
-      q.dirtyFileIds = [];
+      q.dirtyFileIds = failedFileIds;
 
       // 2. Upload dirty/active MangaProjects
       const projectIdsToPush = new Set(q.dirtyProjectIds);
@@ -949,8 +1007,21 @@ export async function initializeUserCloudSession(user: User): Promise<{
 
   notifyStatus({ phase: "syncing", errorMessage: null, conflict: null });
 
+  let legacyPrompt: LegacyBrowserSummary | null = null;
+  try {
+    legacyPrompt = await inspectLegacyBrowserData(user.uid);
+  } catch {
+    legacyPrompt = null;
+  }
+
+  // Ensure existing pre-login browser work is preserved cleanly for officialkevinandrews@gmail.com
+  // right away while still prompting other accounts before importing.
+  if (legacyPrompt && normalizeEmail(user.email) === "officialkevinandrews@gmail.com") {
+    await copyLegacyDataLocally(user.uid).catch(() => 0);
+    legacyPrompt = null;
+  }
+
   const q = loadSyncQueue(user.uid);
-  const legacyPrompt = await inspectLegacyBrowserData(user.uid);
 
   if (!isFirebaseConfigured()) {
     notifyStatus({
@@ -961,12 +1032,18 @@ export async function initializeUserCloudSession(user: User): Promise<{
   }
 
   try {
-    await ensureUserProfile(user);
+    // Update user profile in background so slow/offline auth doesn't delay opening the studio
+    void ensureUserProfile(user).catch(() => {});
+
     const db = getFirebaseDb();
-    const [wsSnap, projSnap] = await Promise.all([
-      getDoc(doc(db, "users", user.uid, "studio", "workspace")),
-      getDocs(collection(db, "users", user.uid, "projects")),
-    ]);
+    const [wsSnap, projSnap] = await withTimeout(
+      Promise.all([
+        getDoc(doc(db, "users", user.uid, "studio", "workspace")),
+        getDocs(collection(db, "users", user.uid, "projects")),
+      ]),
+      4000,
+      "Initial cloud workspace fetch",
+    );
 
     const remoteWorkspace = wsSnap.exists() ? (wsSnap.data() as WorkspaceCloudDoc) : null;
     const remoteProjects: MangaProject[] = [];
@@ -989,9 +1066,10 @@ export async function initializeUserCloudSession(user: User): Promise<{
       if (localHasData) {
         q.dirtyWorkspace = true;
         const lib = await loadMangaLibrary().catch(() => createDefaultLibrary(null));
-        q.dirtyProjectIds = lib.projects.map((p) => p.id);
+        q.dirtyProjectIds = [...new Set([...q.dirtyProjectIds, ...lib.projects.map((p) => p.id)])];
         saveSyncQueue(user.uid, q);
-        await flushCloudSync(user.uid);
+        // Upload in background so large 3D models/images never block opening the studio
+        void flushCloudSync(user.uid);
       } else {
         notifyStatus({
           phase: "saved",
@@ -1025,14 +1103,17 @@ export async function initializeUserCloudSession(user: User): Promise<{
         },
       });
     } else {
-      await flushCloudSync(user.uid);
+      void flushCloudSync(user.uid);
     }
   } catch (err) {
     if (isNetworkOrOfflineError(err)) {
       notifyStatus({
         phase: "offline",
-        errorMessage: "Offline — loaded your local account backup and queued changes.",
+        errorMessage: "Loaded locally — cloud sync will retry automatically in the background.",
       });
+      if (countPending(q) > 0) {
+        scheduleBackgroundSync(user.uid, 3000);
+      }
     } else {
       notifyStatus({
         phase: "error",

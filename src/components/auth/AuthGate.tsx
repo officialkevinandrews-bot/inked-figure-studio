@@ -44,6 +44,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     resolveConflict,
     confirmImportLegacyData,
     skipLegacyData,
+    continueWhileSyncing,
   } = useAuth();
 
   const [emailMode, setEmailMode] = useState<"signin" | "signup">("signin");
@@ -64,6 +65,16 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
               ? `Loading projects, 3D characters, and models for ${user?.email ?? "your account"}…`
               : "Checking your account session…"}
           </p>
+          {phase === "syncing_initial" && (
+            <button
+              type="button"
+              data-testid="skip-sync-wait-btn"
+              onClick={continueWhileSyncing}
+              className="mt-4 rounded-sm border border-border bg-background px-3 py-1.5 text-xs font-semibold hover:border-foreground"
+            >
+              Open Studio Now (Sync in Background)
+            </button>
+          )}
         </div>
       </div>
     );
