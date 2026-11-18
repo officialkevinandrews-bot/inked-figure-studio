@@ -2,9 +2,17 @@ import React, { useState, useRef, useEffect, useCallback, useMemo } from "react"
 import {
   PAGE_LAYER_ID,
   applyManualElementPatch,
+  loadPanelOverlapPreference,
   panelBounds,
+  panelPointsForTargetRect,
+  savePanelOverlapPreference,
+  transformPanelWithContents,
+  type DrawnLine,
+  type LineCapStyle,
+  type LineStyleVariant,
   type PageLayerPlacement,
   type PageLayout,
+  type PanelOverlapPreference,
   type PlacedElement,
   type PanelPolygon,
   PAGE_FORMATS,
@@ -101,6 +109,8 @@ import {
   ScrollText,
   BookOpen,
   FolderOpen,
+  Move,
+  PenTool,
   Plus,
 } from "lucide-react";
 
@@ -199,6 +209,15 @@ export function PanelStudio({
   const [customTplName, setCustomTplName] = useState("");
   const [showOrder, setShowOrder] = useState<"rtl" | "ltr" | null>(null);
   const [showGuides, setShowGuides] = useState(false);
+  const [panelOverlapPref, setPanelOverlapPref] = useState<PanelOverlapPreference>(() =>
+    loadPanelOverlapPreference(),
+  );
+  const [lineColor, setLineColor] = useState<string>("#000000");
+  const [lineWidth, setLineWidth] = useState<number>(3);
+  const [lineStyle, setLineStyle] = useState<LineStyleVariant>("solid");
+  const [lineCap, setLineCap] = useState<LineCapStyle>("none");
+  const [lineLayer, setLineLayer] = useState<"above" | "behind">("above");
+  const [lineAngleSnap, setLineAngleSnap] = useState<boolean>(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const bgFileInputRef = useRef<HTMLInputElement>(null);
@@ -206,12 +225,20 @@ export function PanelStudio({
 
   const selectedPanel = layout.panels.find((p) => p.id === selectedPanelId);
 
+  // Sync Straight-Line Pen color automatically with the active panel's border colour when editing a panel
+  useEffect(() => {
+    if (selectedPanel?.borderColor) {
+      setLineColor(selectedPanel.borderColor);
+    }
+  }, [selectedPanel?.id, selectedPanel?.borderColor]);
+
   // Identify what is currently selected
   const selectedElement = layout.elements.find((el) => el.id === selectedItemId);
   const selectedBalloon = layout.balloons?.find((b) => b.id === selectedItemId);
   const selectedComicMark = layout.comicMarks?.find((m) => m.id === selectedItemId);
   const selectedSpeedLine = layout.speedLines?.find((l) => l.id === selectedItemId);
   const selectedSFX = layout.sfxStamps?.find((s) => s.id === selectedItemId);
+  const selectedDrawnLine = layout.drawnLines?.find((l) => l.id === selectedItemId);
 
   // Dynamic Auto-Fit calculation
   const fitToScreen = useCallback(() => {
@@ -260,7 +287,8 @@ export function PanelStudio({
   // Canvas item keyboard shortcuts: Delete/Backspace, Arrow nudge (+Shift x10), Ctrl/Cmd+D duplicate
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (!selectedItemId) return;
+      const canNudgePanel = !selectedItemId && tool === "move-panel" && Boolean(selectedPanel);
+      if (!selectedItemId && !canNudgePanel) return;
       const active = document.activeElement as HTMLElement | null;
       if (
         active &&
@@ -274,6 +302,23 @@ export function PanelStudio({
 
       const nudgeDelta = (axis: "x" | "y", sign: number) => {
         const step = (e.shiftKey ? 10 : 1) * sign;
+        if (canNudgePanel && selectedPanel) {
+          const box = panelBounds(selectedPanel, layout.format);
+          const forceFloat = panelOverlapPref === "float";
+          const nextPts = panelPointsForTargetRect(
+            selectedPanel,
+            {
+              x: box.minX + (axis === "x" ? step : 0),
+              y: box.minY + (axis === "y" ? step : 0),
+              width: box.width,
+              height: box.height,
+            },
+            layout.format,
+            forceFloat || Boolean(selectedPanel.floating),
+          );
+          onUpdateLayout(transformPanelWithContents(layout, selectedPanel.id, nextPts, { forceFloating: forceFloat }));
+          return;
+        }
         if (selectedElement) {
           onUpdateLayout({
             ...layout,
@@ -310,6 +355,15 @@ export function PanelStudio({
               s.id === selectedSFX.id ? { ...s, [axis]: s[axis] + step } : s
             ),
           });
+        } else if (selectedDrawnLine) {
+          const f1 = axis === "x" ? "x1" : "y1";
+          const f2 = axis === "x" ? "x2" : "y2";
+          onUpdateLayout({
+            ...layout,
+            drawnLines: (layout.drawnLines ?? []).map((l) =>
+              l.id === selectedDrawnLine.id ? { ...l, [f1]: l[f1] + step, [f2]: l[f2] + step } : l
+            ),
+          });
         }
       };
 
@@ -325,6 +379,8 @@ export function PanelStudio({
           onUpdateLayout({ ...layout, speedLines: (layout.speedLines ?? []).filter((l) => l.id !== selectedSpeedLine.id) });
         } else if (selectedSFX) {
           onUpdateLayout({ ...layout, sfxStamps: (layout.sfxStamps ?? []).filter((s) => s.id !== selectedSFX.id) });
+        } else if (selectedDrawnLine) {
+          onUpdateLayout({ ...layout, drawnLines: (layout.drawnLines ?? []).filter((l) => l.id !== selectedDrawnLine.id) });
         }
         setSelectedItemId(null);
       } else if (e.key === "ArrowLeft") {
@@ -387,6 +443,17 @@ export function PanelStudio({
           };
           onUpdateLayout({ ...layout, sfxStamps: [...(layout.sfxStamps ?? []), copy] });
           setSelectedItemId(copy.id);
+        } else if (selectedDrawnLine) {
+          const copy: DrawnLine = {
+            ...selectedDrawnLine,
+            id: `line-${suffix}`,
+            x1: selectedDrawnLine.x1 + 20,
+            y1: selectedDrawnLine.y1 + 20,
+            x2: selectedDrawnLine.x2 + 20,
+            y2: selectedDrawnLine.y2 + 20,
+          };
+          onUpdateLayout({ ...layout, drawnLines: [...(layout.drawnLines ?? []), copy] });
+          setSelectedItemId(copy.id);
         }
       }
     };
@@ -396,15 +463,19 @@ export function PanelStudio({
   }, [
     layout,
     onUpdateLayout,
+    panelOverlapPref,
     selectedBalloon,
     selectedComicMark,
+    selectedDrawnLine,
     selectedElement,
     selectedItemId,
+    selectedPanel,
     selectedSFX,
     selectedSpeedLine,
+    tool,
   ]);
 
-  // Hotkeys for Panel Canvas Tools & Esc Deselection: V Select, D Dividers, R Draw Panel, K Knife, C Corners
+  // Hotkeys for Panel Canvas Tools & Esc Deselection: V Select, M Move/Size, D Dividers, R Draw Panel, K Knife, C Corners, L Line Pen
   useEffect(() => {
     const onToolKey = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
@@ -428,10 +499,12 @@ export function PanelStudio({
       }
       const keyMap: Record<string, CanvasTool> = {
         v: "select",
+        m: "move-panel",
         d: "dividers",
         r: "draw",
         k: "knife",
         c: "corners",
+        l: "line",
       };
       const next = keyMap[e.key.toLowerCase()];
       if (next) setTool(next);
@@ -491,6 +564,14 @@ export function PanelStudio({
         ...l,
         panelId: rehomeAt(panels, l.centerX, l.centerY, l.panelId, base.format),
       })),
+      drawnLines: (base.drawnLines ?? []).map((d) =>
+        d.panelId === PAGE_LAYER_ID
+          ? d
+          : {
+              ...d,
+              panelId: rehomeAt(panels, (d.x1 + d.x2) / 2, (d.y1 + d.y2) / 2, d.panelId, base.format),
+            },
+      ),
     });
 
   const commitPanels = (panels: PanelPolygon[], select?: string) => {
@@ -511,7 +592,16 @@ export function PanelStudio({
       : "Reset to a 1-panel blank page frame? Existing panels and items will be removed.";
     if (!confirm(msg)) return;
     if (emptyCanvas) {
-      onUpdateLayout({ ...layout, panels: [], elements: [], balloons: [], sfxStamps: [], comicMarks: [], speedLines: [] });
+      onUpdateLayout({
+        ...layout,
+        panels: [],
+        elements: [],
+        balloons: [],
+        sfxStamps: [],
+        comicMarks: [],
+        speedLines: [],
+        drawnLines: [],
+      });
       setSelectedPanelId(null);
       setTool("draw");
       return;
@@ -524,7 +614,16 @@ export function PanelStudio({
       borderStyle: "solid",
       backgroundColor: "#ffffff",
     };
-    onUpdateLayout({ ...layout, panels: [blank], elements: [], balloons: [], sfxStamps: [], comicMarks: [], speedLines: [] });
+    onUpdateLayout({
+      ...layout,
+      panels: [blank],
+      elements: [],
+      balloons: [],
+      sfxStamps: [],
+      comicMarks: [],
+      speedLines: [],
+      drawnLines: [],
+    });
     setSelectedPanelId(blank.id);
   };
 
@@ -573,6 +672,7 @@ export function PanelStudio({
           sfxStamps: move(layout.sfxStamps),
           comicMarks: move(layout.comicMarks),
           speedLines: move(layout.speedLines),
+          drawnLines: move(layout.drawnLines),
         },
         [selectedPanel.id],
       ),
@@ -656,10 +756,37 @@ export function PanelStudio({
   const updatePanel = (id: string, patch: Partial<PanelPolygon>) =>
     onUpdateLayout(
       syncPanelBoundElements(
-        { ...layout, panels: layout.panels.map((p) => (p.id === id ? { ...p, ...patch } : p)) },
+        {
+          ...layout,
+          panels: layout.panels.map((p) => (p.id === id ? { ...p, ...patch } : p)),
+          drawnLines:
+            patch.borderColor !== undefined
+              ? (layout.drawnLines ?? []).map((l) =>
+                  l.panelId === id && l.matchPanelBorder ? { ...l, color: patch.borderColor! } : l,
+                )
+              : layout.drawnLines,
+        },
         [id],
       ),
     );
+
+  const handleTransformPanelRect = (
+    panelId: string,
+    targetRect: { x: number; y: number; width: number; height: number },
+  ) => {
+    const targetPanel = layout.panels.find((p) => p.id === panelId);
+    if (!targetPanel) return;
+    const forceFloat = panelOverlapPref === "float";
+    const nextPts = panelPointsForTargetRect(
+      targetPanel,
+      targetRect,
+      layout.format,
+      forceFloat || Boolean(targetPanel.floating),
+    );
+    onUpdateLayout(
+      transformPanelWithContents(layout, panelId, nextPts, { forceFloating: forceFloat }),
+    );
+  };
 
   const handleAddInset = () => {
     const id = `inset-${Date.now()}`;
@@ -676,9 +803,15 @@ export function PanelStudio({
     if (!selectedPanel) return;
     const xs = selectedPanel.points.map((p) => p.x), ys = selectedPanel.points.map((p) => p.y);
     const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cy = (Math.min(...ys) + Math.max(...ys)) / 2;
-    updatePanel(selectedPanel.id, {
-      points: selectedPanel.points.map((p) => ({ x: cx + (p.x - cx) * scale + dx, y: cy + (p.y - cy) * scale + dy })),
-    });
+    const nextPts = selectedPanel.points.map((p) => ({
+      x: cx + (p.x - cx) * scale + dx,
+      y: cy + (p.y - cy) * scale + dy,
+    }));
+    onUpdateLayout(
+      transformPanelWithContents(layout, selectedPanel.id, nextPts, {
+        forceFloating: panelOverlapPref === "float",
+      }),
+    );
   };
 
   // Delete selected panel & its child items
@@ -694,6 +827,7 @@ export function PanelStudio({
       comicMarks: (layout.comicMarks ?? []).filter((m) => m.panelId !== pid),
       speedLines: (layout.speedLines ?? []).filter((l) => l.panelId !== pid),
       sfxStamps: (layout.sfxStamps ?? []).filter((s) => s.panelId !== pid),
+      drawnLines: (layout.drawnLines ?? []).filter((d) => d.panelId !== pid),
     });
     setSelectedPanelId(remaining[0].id);
     setSelectedItemId(null);
@@ -1441,10 +1575,12 @@ export function PanelStudio({
                 <div className="grid grid-cols-3 gap-1" role="group" aria-label="Canvas tool">
                   {([
                     { id: "select", label: "Select (V)" },
+                    { id: "move-panel", label: "✥ Move/Size (M)" },
                     { id: "dividers", label: "⇕ Dividers (D)" },
                     { id: "draw", label: "▭ Draw (R)" },
                     { id: "knife", label: "✂ Knife (K)" },
                     { id: "corners", label: "◇ Corners (C)" },
+                    { id: "line", label: "╱ Line Pen (L)" },
                   ] as const).map((t) => (
                     <button
                       key={t.id}
@@ -1457,7 +1593,11 @@ export function PanelStudio({
                   ))}
                 </div>
                 <p className="text-[10px] text-muted-foreground mt-1.5 leading-snug">
-                  {tool === "dividers"
+                  {tool === "move-panel"
+                    ? "Drag inside the selected panel to move it, or drag its 8 handles to resize — everything inside moves & scales with it."
+                    : tool === "line"
+                    ? "Click start & end (or drag) to draw a straight line. Matches panel border colour when selected, or draws anywhere if none selected. Shift snaps angles."
+                    : tool === "dividers"
                     ? "Grab any shared gutter line to slide panels smoothly (hold Alt to skip snap)."
                     : tool === "draw"
                     ? "Drag on the canvas to draw a custom panel or floating inset frame (Alt skips snap)."
@@ -1467,6 +1607,142 @@ export function PanelStudio({
                     ? "Drag the dots on the selected panel. Shared corners move neighbouring panels too."
                     : "Click a panel to select it, or hover directly over any gutter line to drag it."}
                 </p>
+
+                {/* Straight-Line Pen Options (shown whenever Line Pen is active) */}
+                {tool === "line" && (
+                  <div
+                    data-testid="line-pen-options"
+                    className="mt-2 rounded border-2 border-primary/70 bg-primary/5 p-2 space-y-2 text-[11px]"
+                  >
+                    <div className="flex items-center justify-between gap-1 font-bold text-primary">
+                      <span className="flex items-center gap-1">
+                        <PenTool className="h-3 w-3" /> Straight-Line Pen
+                      </span>
+                      <span className="text-[10px] font-normal text-muted-foreground">
+                        {selectedPanel
+                          ? `Panel #${layout.panels.findIndex((p) => p.id === selectedPanel.id) + 1}`
+                          : "Whole Page"}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[10px] text-muted-foreground">
+                        {selectedPanel ? "Auto-matches panel border:" : "Free page line colour:"}
+                      </span>
+                      <div className="flex items-center gap-1">
+                        <input
+                          type="color"
+                          aria-label="Straight line colour"
+                          value={lineColor}
+                          onChange={(e) => setLineColor(e.target.value)}
+                          className="h-6 w-7 cursor-pointer rounded border border-border"
+                        />
+                        {selectedPanel && lineColor.toLowerCase() !== selectedPanel.borderColor.toLowerCase() && (
+                          <button
+                            type="button"
+                            onClick={() => setLineColor(selectedPanel.borderColor)}
+                            className="rounded border border-border bg-background px-1.5 py-0.5 text-[10px] hover:border-foreground"
+                          >
+                            Match
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {selectedPanel && (
+                      <button
+                        type="button"
+                        onClick={() => setSelectedPanelId(null)}
+                        className="w-full rounded border border-border bg-background px-2 py-0.5 text-[10px] font-semibold hover:border-foreground"
+                      >
+                        Deselect Panel to Draw Anywhere
+                      </button>
+                    )}
+
+                    <div>
+                      <span className="block mb-1 font-semibold text-[10px]">Line Style</span>
+                      <div className="grid grid-cols-4 gap-1">
+                        {(["solid", "dashed", "dotted", "double"] as const).map((st) => (
+                          <button
+                            key={st}
+                            type="button"
+                            onClick={() => setLineStyle(st)}
+                            className={`rounded border py-0.5 text-[10px] capitalize font-semibold ${
+                              lineStyle === st
+                                ? "bg-foreground text-background border-foreground"
+                                : "border-border bg-background hover:border-foreground"
+                            }`}
+                          >
+                            {st}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <span className="block mb-1 font-semibold text-[10px]">Line Ends</span>
+                      <div className="grid grid-cols-4 gap-1">
+                        {([
+                          { id: "none", label: "None" },
+                          { id: "arrow", label: "Arrow →" },
+                          { id: "both", label: "Both ↔" },
+                          { id: "tapered", label: "Taper" },
+                        ] as const).map((cp) => (
+                          <button
+                            key={cp.id}
+                            type="button"
+                            onClick={() => setLineCap(cp.id)}
+                            className={`rounded border py-0.5 text-[10px] font-semibold ${
+                              lineCap === cp.id
+                                ? "bg-foreground text-background border-foreground"
+                                : "border-border bg-background hover:border-foreground"
+                            }`}
+                          >
+                            {cp.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <label className="block">
+                      <span className="flex justify-between text-[10px]">
+                        <span>Thickness</span>
+                        <span className="font-mono">{lineWidth}px</span>
+                      </span>
+                      <input
+                        type="range"
+                        aria-label="Straight line thickness"
+                        min={1}
+                        max={18}
+                        step={0.5}
+                        value={lineWidth}
+                        onChange={(e) => setLineWidth(+e.target.value)}
+                        className="w-full accent-primary"
+                      />
+                    </label>
+
+                    <div className="flex items-center justify-between gap-2 text-[10px]">
+                      <label className="flex items-center gap-1 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={lineAngleSnap}
+                          onChange={(e) => setLineAngleSnap(e.target.checked)}
+                          className="accent-primary"
+                        />
+                        Snap 0°/45°/90°
+                      </label>
+                      <select
+                        aria-label="Straight line layer"
+                        value={lineLayer}
+                        onChange={(e) => setLineLayer(e.target.value as "above" | "behind")}
+                        className="rounded border border-border bg-background px-1.5 py-0.5 text-[10px]"
+                      >
+                        <option value="above">Above Panels</option>
+                        <option value="behind">Behind Panels</option>
+                      </select>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Quick splits & Merge & Blank */}
@@ -2056,6 +2332,15 @@ export function PanelStudio({
                 else onUpdateLayout(next);
                 setSelectedPanelId(np.id);
               }}
+              panelOverlapPref={panelOverlapPref}
+              linePenOptions={{
+                color: lineColor,
+                width: lineWidth,
+                style: lineStyle,
+                cap: lineCap,
+                layer: lineLayer,
+                angleSnap: lineAngleSnap,
+              }}
               onRePoseIn3D={onRePoseIn3D}
             />
           ) : (
@@ -2068,6 +2353,41 @@ export function PanelStudio({
             onMoveVertex={handleMoveVertex}
             onMoveDivider={(nextPanels) => onUpdateLayout(syncPanelBoundElements({ ...layout, panels: nextPanels }))}
             onDrawPanel={handleDrawPanel}
+            onTransformPanel={(panelId, nextPts, opts) =>
+              onUpdateLayout(transformPanelWithContents(layout, panelId, nextPts, opts))
+            }
+            panelOverlapPref={panelOverlapPref}
+            linePenOptions={{
+              color: lineColor,
+              width: lineWidth,
+              style: lineStyle,
+              cap: lineCap,
+              layer: lineLayer,
+              angleSnap: lineAngleSnap,
+            }}
+            onAddDrawnLine={(line) => {
+              const id = `line-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`;
+              const maxZ = Math.max(20, ...(layout.drawnLines ?? []).map((l) => l.zIndex));
+              const nextLine: DrawnLine = { ...line, id, zIndex: maxZ + 1 };
+              onUpdateLayout({
+                ...layout,
+                drawnLines: [...(layout.drawnLines ?? []), nextLine],
+              });
+              setSelectedItemId(id);
+            }}
+            onUpdateDrawnLine={(id, u) =>
+              onUpdateLayout({
+                ...layout,
+                drawnLines: (layout.drawnLines ?? []).map((l) => (l.id === id ? { ...l, ...u } : l)),
+              })
+            }
+            onDeleteDrawnLine={(id) => {
+              onUpdateLayout({
+                ...layout,
+                drawnLines: (layout.drawnLines ?? []).filter((l) => l.id !== id),
+              });
+              if (selectedItemId === id) setSelectedItemId(null);
+            }}
             showOrder={showOrder}
             showGuides={showGuides}
             onSelectPanel={setSelectedPanelId}
@@ -2353,6 +2673,128 @@ export function PanelStudio({
                     ))}
                   </div>
                 </div>
+
+                {/* Move & Resize Panel (everything inside moves & scales with it) */}
+                {(() => {
+                  const pBox = panelBounds(selectedPanel, layout.format);
+                  const rx = Math.round(pBox.minX);
+                  const ry = Math.round(pBox.minY);
+                  const rw = Math.round(pBox.width);
+                  const rh = Math.round(pBox.height);
+                  return (
+                    <div
+                      data-testid="panel-transform-inspector"
+                      className="rounded border border-primary/50 bg-primary/5 p-2 space-y-2"
+                    >
+                      <div className="flex items-center justify-between gap-1">
+                        <span className="font-bold text-primary flex items-center gap-1">
+                          <Move className="h-3 w-3" /> Move &amp; Resize Panel
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setTool(tool === "move-panel" ? "select" : "move-panel")}
+                          className={`rounded border px-2 py-0.5 text-[10px] font-bold transition-colors ${
+                            tool === "move-panel"
+                              ? "border-primary bg-primary text-primary-foreground"
+                              : "border-foreground bg-card hover:bg-accent"
+                          }`}
+                        >
+                          {tool === "move-panel" ? "Editing Box" : "Drag / Handles"}
+                        </button>
+                      </div>
+                      <div className="grid grid-cols-4 gap-1 text-[10px]">
+                        <label className="block">
+                          <span className="text-muted-foreground">X</span>
+                          <input
+                            type="number"
+                            aria-label="Panel X"
+                            value={rx}
+                            onChange={(e) =>
+                              handleTransformPanelRect(selectedPanel.id, {
+                                x: Number(e.target.value) || 0,
+                                y: ry,
+                                width: rw,
+                                height: rh,
+                              })
+                            }
+                            className="w-full rounded border border-border bg-background px-1 py-0.5 font-mono"
+                          />
+                        </label>
+                        <label className="block">
+                          <span className="text-muted-foreground">Y</span>
+                          <input
+                            type="number"
+                            aria-label="Panel Y"
+                            value={ry}
+                            onChange={(e) =>
+                              handleTransformPanelRect(selectedPanel.id, {
+                                x: rx,
+                                y: Number(e.target.value) || 0,
+                                width: rw,
+                                height: rh,
+                              })
+                            }
+                            className="w-full rounded border border-border bg-background px-1 py-0.5 font-mono"
+                          />
+                        </label>
+                        <label className="block">
+                          <span className="text-muted-foreground">W</span>
+                          <input
+                            type="number"
+                            min={24}
+                            aria-label="Panel Width"
+                            value={rw}
+                            onChange={(e) =>
+                              handleTransformPanelRect(selectedPanel.id, {
+                                x: rx,
+                                y: ry,
+                                width: Math.max(24, Number(e.target.value) || 24),
+                                height: rh,
+                              })
+                            }
+                            className="w-full rounded border border-border bg-background px-1 py-0.5 font-mono"
+                          />
+                        </label>
+                        <label className="block">
+                          <span className="text-muted-foreground">H</span>
+                          <input
+                            type="number"
+                            min={24}
+                            aria-label="Panel Height"
+                            value={rh}
+                            onChange={(e) =>
+                              handleTransformPanelRect(selectedPanel.id, {
+                                x: rx,
+                                y: ry,
+                                width: rw,
+                                height: Math.max(24, Number(e.target.value) || 24),
+                              })
+                            }
+                            className="w-full rounded border border-border bg-background px-1 py-0.5 font-mono"
+                          />
+                        </label>
+                      </div>
+                      <label className="block text-[10px]">
+                        <span className="block font-semibold text-muted-foreground mb-0.5">
+                          Moved/Resized Panel Layer Preference (Saved)
+                        </span>
+                        <select
+                          aria-label="Moved panel layer preference"
+                          value={panelOverlapPref}
+                          onChange={(e) => {
+                            const next = e.target.value as PanelOverlapPreference;
+                            setPanelOverlapPref(next);
+                            savePanelOverlapPreference(next);
+                          }}
+                          className="w-full rounded border border-border bg-background px-1.5 py-0.5"
+                        >
+                          <option value="float">Float Above Other Panels (Default)</option>
+                          <option value="keep">Keep Current Layer Order</option>
+                        </select>
+                      </label>
+                    </div>
+                  );
+                })()}
 
                 {/* Panel shape flags */}
                 <div className="grid grid-cols-2 gap-1.5 pt-1">
@@ -3172,11 +3614,180 @@ export function PanelStudio({
             </div>
           )}
 
+          {/* Selected Drawn Straight Line Inspector */}
+          {selectedDrawnLine && (() => {
+            const setL = (patch: Partial<DrawnLine>) =>
+              onUpdateLayout({
+                ...layout,
+                drawnLines: (layout.drawnLines ?? []).map((l) =>
+                  l.id === selectedDrawnLine.id ? { ...l, ...patch } : l
+                ),
+              });
+            const parentPanel = layout.panels.find((p) => p.id === selectedDrawnLine.panelId);
+            return (
+              <div className="border-b border-border pb-3 space-y-2.5 text-xs" data-testid="drawn-line-inspector">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-display text-sm">Straight Line</h3>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const copy: DrawnLine = {
+                          ...selectedDrawnLine,
+                          id: `line-${Date.now()}`,
+                          x1: selectedDrawnLine.x1 + 20,
+                          y1: selectedDrawnLine.y1 + 20,
+                          x2: selectedDrawnLine.x2 + 20,
+                          y2: selectedDrawnLine.y2 + 20,
+                        };
+                        onUpdateLayout({
+                          ...layout,
+                          drawnLines: [...(layout.drawnLines ?? []), copy],
+                        });
+                        setSelectedItemId(copy.id);
+                      }}
+                      title="Duplicate line"
+                      className="rounded p-1 hover:text-primary"
+                    >
+                      <Copy className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onUpdateLayout({
+                          ...layout,
+                          drawnLines: (layout.drawnLines ?? []).filter((l) => l.id !== selectedDrawnLine.id),
+                        });
+                        setSelectedItemId(null);
+                      }}
+                      title="Delete line"
+                      className="rounded p-1 text-destructive hover:bg-destructive/10"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between gap-2">
+                  <span>Colour</span>
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="color"
+                      aria-label="Selected line colour"
+                      value={selectedDrawnLine.color || "#000000"}
+                      onChange={(e) => setL({ color: e.target.value, matchPanelBorder: false })}
+                      className="h-6 w-8 cursor-pointer rounded border border-border"
+                    />
+                    {parentPanel && (
+                      <button
+                        type="button"
+                        onClick={() => setL({ color: parentPanel.borderColor, matchPanelBorder: true })}
+                        className="rounded border border-border px-1.5 py-0.5 text-[10px] font-semibold hover:border-foreground"
+                      >
+                        Match Panel Border
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div>
+                  <span className="block mb-1 font-semibold">Line Style</span>
+                  <div className="grid grid-cols-4 gap-1">
+                    {(["solid", "dashed", "dotted", "double"] as const).map((st) => (
+                      <button
+                        key={st}
+                        type="button"
+                        onClick={() => setL({ style: st })}
+                        className={`rounded border py-1 text-[10px] capitalize font-semibold ${
+                          selectedDrawnLine.style === st
+                            ? "bg-foreground text-background border-foreground"
+                            : "border-border hover:border-foreground"
+                        }`}
+                      >
+                        {st}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <span className="block mb-1 font-semibold">Line Ends</span>
+                  <div className="grid grid-cols-4 gap-1">
+                    {([
+                      { id: "none", label: "None" },
+                      { id: "arrow", label: "Arrow →" },
+                      { id: "both", label: "Both ↔" },
+                      { id: "tapered", label: "Taper" },
+                    ] as const).map((cp) => (
+                      <button
+                        key={cp.id}
+                        type="button"
+                        onClick={() => setL({ cap: cp.id })}
+                        className={`rounded border py-1 text-[10px] font-semibold ${
+                          (selectedDrawnLine.cap ?? "none") === cp.id
+                            ? "bg-foreground text-background border-foreground"
+                            : "border-border hover:border-foreground"
+                        }`}
+                      >
+                        {cp.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <label className="block">
+                  <span className="flex justify-between">
+                    <span>Thickness</span>
+                    <span className="font-mono">{selectedDrawnLine.width}px</span>
+                  </span>
+                  <input
+                    type="range"
+                    min={1}
+                    max={18}
+                    step={0.5}
+                    value={selectedDrawnLine.width}
+                    onChange={(e) => setL({ width: +e.target.value })}
+                    className="w-full accent-primary"
+                  />
+                </label>
+
+                <label className="block">
+                  <span className="flex justify-between">
+                    <span>Opacity</span>
+                    <span className="font-mono">{Math.round((selectedDrawnLine.opacity ?? 1) * 100)}%</span>
+                  </span>
+                  <input
+                    type="range"
+                    min={10}
+                    max={100}
+                    value={Math.round((selectedDrawnLine.opacity ?? 1) * 100)}
+                    onChange={(e) => setL({ opacity: +e.target.value / 100 })}
+                    className="w-full accent-primary"
+                  />
+                </label>
+
+                <label className="block">
+                  <span className="block mb-1 font-semibold">Page Layer</span>
+                  <select
+                    aria-label="Drawn line layer"
+                    value={selectedDrawnLine.layer ?? "above"}
+                    onChange={(e) => setL({ layer: e.target.value as "above" | "behind" })}
+                    className="w-full rounded border border-border bg-background px-1.5 py-1"
+                  >
+                    <option value="above">Above Panels</option>
+                    <option value="behind">Behind Panels</option>
+                  </select>
+                </label>
+              </div>
+            );
+          })()}
+
           {!selectedElement &&
             !selectedBalloon &&
             !selectedSFX &&
             !selectedComicMark &&
-            !selectedSpeedLine && (
+            !selectedSpeedLine &&
+            !selectedDrawnLine && (
               <div className="flex flex-col items-center justify-center h-full text-center text-muted-foreground p-4">
                 <Layers className="h-8 w-8 mb-2 opacity-50" />
                 <p className="text-xs font-semibold">Select an Element</p>

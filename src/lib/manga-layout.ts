@@ -1,6 +1,9 @@
 import { insetPanelPoints } from "./manga-grid";
 import type { SpeechBalloon, ComicMark, SpeedLinesEffect, SFXStamp } from "./manga-effects";
 import type { SerializedActorPose } from "./scene-cast";
+import type { DrawnLine, LineCapStyle, LineStyleVariant } from "./drawn-lines";
+
+export type { DrawnLine, LineCapStyle, LineStyleVariant };
 
 export interface Point {
   x: number;
@@ -95,6 +98,27 @@ export interface PageLayout {
   comicMarks?: ComicMark[];
   speedLines?: SpeedLinesEffect[];
   sfxStamps?: SFXStamp[];
+  drawnLines?: DrawnLine[];
+}
+
+export type PanelOverlapPreference = "float" | "keep";
+const PANEL_OVERLAP_PREF_KEY = "koma-panel-overlap-pref";
+
+export function loadPanelOverlapPreference(): PanelOverlapPreference {
+  try {
+    const raw = localStorage.getItem(PANEL_OVERLAP_PREF_KEY);
+    return raw === "keep" ? "keep" : "float";
+  } catch {
+    return "float";
+  }
+}
+
+export function savePanelOverlapPreference(pref: PanelOverlapPreference): void {
+  try {
+    localStorage.setItem(PANEL_OVERLAP_PREF_KEY, pref);
+  } catch {
+    /* ignore quota errors */
+  }
 }
 
 export interface PresetLayoutOption {
@@ -619,6 +643,15 @@ export function swapPanelContents(layout: PageLayout, idA: string, idB: string):
         if (l.panelId === idB) return { ...l, panelId: idA, centerX: l.centerX - dxAB, centerY: l.centerY - dyAB };
         return l;
       }),
+      drawnLines: (layout.drawnLines ?? []).map((d) => {
+        if (d.panelId === idA) {
+          return { ...d, panelId: idB, x1: d.x1 + dxAB, y1: d.y1 + dyAB, x2: d.x2 + dxAB, y2: d.y2 + dyAB };
+        }
+        if (d.panelId === idB) {
+          return { ...d, panelId: idA, x1: d.x1 - dxAB, y1: d.y1 - dyAB, x2: d.x2 - dxAB, y2: d.y2 - dyAB };
+        }
+        return d;
+      }),
     },
     [idA, idB],
   );
@@ -684,4 +717,170 @@ export function syncPanelBoundElements(
   });
 
   return changed ? { ...layout, elements } : layout;
+}
+
+/** Converts a target pixel bounding box into normalized `[0..1]` panel vertices, preserving polygon shape and gutter accuracy. */
+export function panelPointsForTargetRect(
+  panel: PanelPolygon,
+  targetRect: { x: number; y: number; width: number; height: number },
+  format: PageFormat,
+  floating: boolean,
+): Point[] {
+  const pw = Math.max(1, format.width - format.margin * 2);
+  const ph = Math.max(1, format.height - format.margin * 2);
+  const oldBox = panelBounds(panel, format);
+  const oldW = Math.max(1, oldBox.width);
+  const oldH = Math.max(1, oldBox.height);
+
+  // Fractional vertex offsets relative to current panel pixel box
+  const fracs = oldBox.points.map((p) => ({
+    u: (p.x - oldBox.minX) / oldW,
+    v: (p.y - oldBox.minY) / oldH,
+  }));
+
+  const toNormFromRect = (rect: { x: number; y: number; width: number; height: number }) =>
+    fracs.map(({ u, v }) => ({
+      x: (rect.x + u * rect.width - format.margin) / pw,
+      y: (rect.y + v * rect.height - format.margin) / ph,
+    }));
+
+  const guess = toNormFromRect(targetRect);
+  if (floating) return guess;
+
+  // For non-floating panels, compensate once for gutter inset so pixel bounds land accurately
+  const actual = panelBounds({ ...panel, floating: false, points: guess }, format);
+  const adjustedRect = {
+    x: targetRect.x + (targetRect.x - actual.minX),
+    y: targetRect.y + (targetRect.y - actual.minY),
+    width: Math.max(24, targetRect.width * (targetRect.width / Math.max(1, actual.width))),
+    height: Math.max(24, targetRect.height * (targetRect.height / Math.max(1, actual.height))),
+  };
+  return toNormFromRect(adjustedRect);
+}
+
+/** Moves or resizes one selected panel and proportionally moves/scales every item contained inside it. */
+export function transformPanelWithContents(
+  layout: PageLayout,
+  panelId: string,
+  nextNormPoints: Point[],
+  options?: { forceFloating?: boolean },
+): PageLayout {
+  const oldPanel = layout.panels.find((p) => p.id === panelId);
+  if (!oldPanel) return layout;
+
+  const oldBox = panelBounds(oldPanel, layout.format);
+  const nextPanel: PanelPolygon = {
+    ...oldPanel,
+    points: nextNormPoints,
+    ...(options?.forceFloating ? { floating: true } : {}),
+  };
+  const newBox = panelBounds(nextPanel, layout.format);
+
+  const oldW = Math.max(1, oldBox.width);
+  const oldH = Math.max(1, oldBox.height);
+  const sx = newBox.width / oldW;
+  const sy = newBox.height / oldH;
+  const sUniform = (sx + sy) / 2;
+
+  const mapX = (x: number) => newBox.minX + (x - oldBox.minX) * sx;
+  const mapY = (y: number) => newBox.minY + (y - oldBox.minY) * sy;
+
+  return {
+    ...layout,
+    panels: layout.panels.map((p) => (p.id === panelId ? nextPanel : p)),
+    elements: layout.elements.map((el) => {
+      if (el.panelId !== panelId) return el;
+      if (el.fitMode === "fill-panel" && !el.breakout) {
+        return {
+          ...el,
+          x: Math.round(newBox.minX),
+          y: Math.round(newBox.minY),
+          width: Math.max(1, Math.round(newBox.width)),
+          height: Math.max(1, Math.round(newBox.height)),
+        };
+      }
+      return {
+        ...el,
+        x: mapX(el.x),
+        y: mapY(el.y),
+        width: Math.max(4, el.width * sx),
+        height: Math.max(4, el.height * sy),
+      };
+    }),
+    balloons: (layout.balloons ?? []).map((b) => {
+      if (b.panelId !== panelId) return b;
+      return {
+        ...b,
+        x: mapX(b.x),
+        y: mapY(b.y),
+        width: Math.max(24, b.width * sx),
+        height: Math.max(20, b.height * sy),
+        fontSize: Math.max(8, b.fontSize * sUniform),
+        tail: b.tail
+          ? {
+              ...b.tail,
+              x: b.tail.x * sx,
+              y: b.tail.y * sy,
+              curveX: b.tail.curveX !== undefined ? b.tail.curveX * sx : undefined,
+              curveY: b.tail.curveY !== undefined ? b.tail.curveY * sy : undefined,
+            }
+          : undefined,
+        secondaryTail: b.secondaryTail
+          ? {
+              ...b.secondaryTail,
+              x: b.secondaryTail.x * sx,
+              y: b.secondaryTail.y * sy,
+              curveX: b.secondaryTail.curveX !== undefined ? b.secondaryTail.curveX * sx : undefined,
+              curveY: b.secondaryTail.curveY !== undefined ? b.secondaryTail.curveY * sy : undefined,
+            }
+          : undefined,
+        tailX: b.tailX !== undefined ? b.tailX * sx : undefined,
+        tailY: b.tailY !== undefined ? b.tailY * sy : undefined,
+        tailCurveX: b.tailCurveX !== undefined ? b.tailCurveX * sx : undefined,
+        tailCurveY: b.tailCurveY !== undefined ? b.tailCurveY * sy : undefined,
+      };
+    }),
+    comicMarks: (layout.comicMarks ?? []).map((m) =>
+      m.panelId === panelId
+        ? {
+            ...m,
+            x: mapX(m.x),
+            y: mapY(m.y),
+            size: Math.max(8, m.size * sUniform),
+          }
+        : m,
+    ),
+    sfxStamps: (layout.sfxStamps ?? []).map((s) =>
+      s.panelId === panelId
+        ? {
+            ...s,
+            x: mapX(s.x),
+            y: mapY(s.y),
+            fontSize: Math.max(10, s.fontSize * sUniform),
+          }
+        : s,
+    ),
+    speedLines: (layout.speedLines ?? []).map((l) =>
+      l.panelId === panelId
+        ? {
+            ...l,
+            centerX: mapX(l.centerX),
+            centerY: mapY(l.centerY),
+            innerRadius: Math.max(2, l.innerRadius * sUniform),
+            outerRadius: Math.max(12, l.outerRadius * sUniform),
+          }
+        : l,
+    ),
+    drawnLines: (layout.drawnLines ?? []).map((d) =>
+      d.panelId === panelId
+        ? {
+            ...d,
+            x1: mapX(d.x1),
+            y1: mapY(d.y1),
+            x2: mapX(d.x2),
+            y2: mapY(d.y2),
+          }
+        : d,
+    ),
+  };
 }

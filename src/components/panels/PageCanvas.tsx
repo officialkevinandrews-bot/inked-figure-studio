@@ -1,8 +1,25 @@
 import React, { useEffect, useRef, useState } from "react";
-import type { PageLayout, PlacedElement, PanelPolygon, Point } from "@/lib/manga-layout";
-import { PAGE_LAYER_ID, panelBounds } from "@/lib/manga-layout";
+import type {
+  DrawnLine,
+  LineCapStyle,
+  LineStyleVariant,
+  PageLayout,
+  PanelOverlapPreference,
+  PanelPolygon,
+  PlacedElement,
+  Point,
+} from "@/lib/manga-layout";
+import { PAGE_LAYER_ID, panelBounds, panelPointsForTargetRect } from "@/lib/manga-layout";
 import { findSharedDividers, moveDivider, readingOrder, centroid, type SharedDivider } from "@/lib/manga-grid";
 import { buildPanelSvgPath, computeSnapPosition, type SnapGuide } from "@/lib/panel-geometry";
+import { computeResizedBox } from "@/lib/transform-box";
+import {
+  arrowHeadPolygon,
+  lineDashArray,
+  lineSegmentsForStyle,
+  snapLineAngle,
+  taperedNibPolygon,
+} from "@/lib/drawn-lines";
 import { fadeGeometry, toneTile } from "@/lib/screentone";
 import { PanelTransformer } from "./PanelTransformer";
 import { PageZoomContext } from "./zoom-context";
@@ -10,7 +27,16 @@ import { SpeechBalloonRenderer } from "./SpeechBalloonRenderer";
 import { ComicMarkRenderer, SpeedLinesRenderer, SFXStampRenderer } from "./EffectsRenderers";
 import type { SpeechBalloon, ComicMark, SpeedLinesEffect, SFXStamp } from "@/lib/manga-effects";
 
-export type CanvasTool = "select" | "dividers" | "draw" | "knife" | "corners";
+export type CanvasTool = "select" | "move-panel" | "dividers" | "draw" | "knife" | "corners" | "line";
+
+export interface LinePenOptions {
+  color: string;
+  width: number;
+  style: LineStyleVariant;
+  cap: LineCapStyle;
+  layer: "above" | "behind";
+  angleSnap: boolean;
+}
 
 interface PageCanvasProps {
   layout: PageLayout;
@@ -35,6 +61,16 @@ interface PageCanvasProps {
   onMoveVertex?: (from: Point, to: Point) => void;
   onMoveDivider?: (nextPanels: PanelPolygon[]) => void;
   onDrawPanel?: (rect: { x0: number; y0: number; x1: number; y1: number }) => void;
+  onTransformPanel?: (
+    panelId: string,
+    nextNormPoints: Point[],
+    options?: { forceFloating?: boolean },
+  ) => void;
+  panelOverlapPref?: PanelOverlapPreference;
+  onAddDrawnLine?: (line: Omit<DrawnLine, "id" | "zIndex">) => void;
+  onUpdateDrawnLine?: (id: string, updated: Partial<DrawnLine>) => void;
+  onDeleteDrawnLine?: (id: string) => void;
+  linePenOptions?: LinePenOptions;
   showOrder?: "rtl" | "ltr" | null;
   showGuides?: boolean;
   seamless?: boolean;
@@ -107,6 +143,11 @@ export function PageCanvas({
   onMoveVertex,
   onMoveDivider,
   onDrawPanel,
+  onTransformPanel,
+  panelOverlapPref = "float",
+  onAddDrawnLine,
+  onUpdateDrawnLine,
+  linePenOptions,
   showOrder = null,
   showGuides = false,
   seamless = false,
@@ -116,11 +157,38 @@ export function PageCanvas({
   const pageRef = useRef<HTMLDivElement>(null);
   const [knife, setKnife] = useState<{ a: Point; b: Point } | null>(null);
   const [drawBox, setDrawBox] = useState<{ a: Point; b: Point } | null>(null);
+  const [pendingLine, setPendingLine] = useState<{ a: Point; b: Point; dragged: boolean } | null>(null);
   const [hoveredDivId, setHoveredDivId] = useState<string | null>(null);
   const dragDivider = useRef<{ divider: SharedDivider; basePanels: PanelPolygon[]; startNorm: Point } | null>(null);
   const dragVertex = useRef<Point | null>(null);
+  const dragPanelRef = useRef<{
+    panelId: string;
+    basePanel: PanelPolygon;
+    startRect: { x: number; y: number; width: number; height: number };
+    startPtr: Point;
+    mode: "move" | string;
+  } | null>(null);
+  const dragLineRef = useRef<{
+    id: string;
+    mode: "start" | "end" | "body";
+    startPtr: Point;
+    orig: { x1: number; y1: number; x2: number; y2: number };
+  } | null>(null);
   const pointerDownPanelRef = useRef<string | null>(null);
   const [snapGuides, setSnapGuides] = useState<SnapGuide[]>([]);
+
+  useEffect(() => {
+    setPendingLine(null);
+  }, [tool]);
+
+  useEffect(() => {
+    if (!pendingLine) return;
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setPendingLine(null);
+    };
+    window.addEventListener("keydown", onEsc);
+    return () => window.removeEventListener("keydown", onEsc);
+  }, [pendingLine]);
 
   useEffect(() => {
     if (snapGuides.length === 0) return;
@@ -251,7 +319,7 @@ export function PageCanvas({
             strokeWidth={isSelected ? 2 : 0}
             className="cursor-pointer"
             data-panel-id={p.id}
-            style={{ pointerEvents: tool === "select" ? "all" : "none" }}
+            style={{ pointerEvents: tool === "select" || tool === "move-panel" ? "all" : "none" }}
           onPointerDown={() => {
             pointerDownPanelRef.current = p.id;
           }}
@@ -309,6 +377,114 @@ export function PageCanvas({
     );
   };
 
+  const renderSvgDrawnLine = (line: DrawnLine, isPreview = false) => {
+    const isSel = !isPreview && selectedItemId === line.id;
+    const dash = lineDashArray(line.style, line.width)?.join(",");
+    const segs = lineSegmentsForStyle(line);
+    const arrowPts = (pts: Point[]) => pts.map((pt) => `${pt.x},${pt.y}`).join(" ");
+    return (
+      <g
+        key={line.id}
+        opacity={line.opacity ?? 1}
+        data-drawn-line-id={isPreview ? undefined : line.id}
+      >
+        {isSel && (
+          <line
+            x1={line.x1}
+            y1={line.y1}
+            x2={line.x2}
+            y2={line.y2}
+            stroke="#2563eb"
+            strokeOpacity={0.35}
+            strokeWidth={Math.max(8, line.width + 6)}
+            strokeLinecap="round"
+            style={{ pointerEvents: "none" }}
+          />
+        )}
+        {line.cap === "tapered" && line.style === "solid" ? (
+          <polygon
+            points={arrowPts(taperedNibPolygon(line))}
+            fill={line.color || "#000000"}
+            style={{ pointerEvents: "none" }}
+          />
+        ) : (
+          segs.map((seg, i) => (
+            <line
+              key={i}
+              x1={seg.x1}
+              y1={seg.y1}
+              x2={seg.x2}
+              y2={seg.y2}
+              stroke={line.color || "#000000"}
+              strokeWidth={line.width}
+              strokeDasharray={dash}
+              strokeLinecap={line.style === "dotted" ? "round" : "butt"}
+              style={{ pointerEvents: "none" }}
+            />
+          ))
+        )}
+        {(line.cap === "arrow" || line.cap === "both") && (
+          <polygon
+            points={arrowPts(arrowHeadPolygon(line.x2, line.y2, line.x1, line.y1, line.width))}
+            fill={line.color || "#000000"}
+            style={{ pointerEvents: "none" }}
+          />
+        )}
+        {line.cap === "both" && (
+          <polygon
+            points={arrowPts(arrowHeadPolygon(line.x1, line.y1, line.x2, line.y2, line.width))}
+            fill={line.color || "#000000"}
+            style={{ pointerEvents: "none" }}
+          />
+        )}
+        {!isPreview && tool === "select" && (
+          <line
+            x1={line.x1}
+            y1={line.y1}
+            x2={line.x2}
+            y2={line.y2}
+            stroke="transparent"
+            strokeWidth={Math.max(14, line.width + 10)}
+            style={{ pointerEvents: "stroke", cursor: "move" }}
+            onClick={(e) => e.stopPropagation()}
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              if (line.panelId !== PAGE_LAYER_ID) onSelectPanel(line.panelId);
+              onSelectItem(line.id);
+              (e.currentTarget as Element).setPointerCapture(e.pointerId);
+              dragLineRef.current = {
+                id: line.id,
+                mode: "body",
+                startPtr: toPage(e),
+                orig: { x1: line.x1, y1: line.y1, x2: line.x2, y2: line.y2 },
+              };
+            }}
+            onPointerMove={(e) => {
+              const st = dragLineRef.current;
+              if (!st || st.id !== line.id || st.mode !== "body") return;
+              const cur = toPage(e);
+              const dx = cur.x - st.startPtr.x;
+              const dy = cur.y - st.startPtr.y;
+              onUpdateDrawnLine?.(line.id, {
+                x1: st.orig.x1 + dx,
+                y1: st.orig.y1 + dy,
+                x2: st.orig.x2 + dx,
+                y2: st.orig.y2 + dy,
+              });
+            }}
+            onPointerUp={() => {
+              dragLineRef.current = null;
+            }}
+          />
+        )}
+      </g>
+    );
+  };
+
+  const behindLines = (layout.drawnLines ?? []).filter((l) => l.layer === "behind").sort((a, b) => a.zIndex - b.zIndex);
+  const aboveLines = (layout.drawnLines ?? []).filter((l) => l.layer !== "behind").sort((a, b) => a.zIndex - b.zIndex);
+  const selLine = aboveLines.concat(behindLines).find((l) => l.id === selectedItemId) ?? null;
+
   const base = ordered.filter((p) => !p.floating);
   const floats = ordered.filter((p) => p.floating);
   const order = showOrder ? readingOrder(layout.panels, showOrder === "rtl") : [];
@@ -358,6 +534,12 @@ export function PageCanvas({
 
           {behindPageEls.map(renderPageLayerElement)}
 
+          {behindLines.length > 0 && (
+            <svg style={{ position: "absolute", inset: 0, width, height, pointerEvents: "none", zIndex: 1, overflow: "visible" }}>
+              {behindLines.map((l) => renderSvgDrawnLine(l))}
+            </svg>
+          )}
+
           {base.map(renderPanelGroup)}
 
           {layout.panels.length === 0 && (
@@ -386,6 +568,63 @@ export function PageCanvas({
           {floats.map(renderPanelGroup)}
 
           {abovePageEls.map(renderPageLayerElement)}
+
+          {(aboveLines.length > 0 || (tool === "select" && selLine)) && (
+            <svg
+              data-testid="drawn-lines-layer"
+              style={{ position: "absolute", inset: 0, width, height, pointerEvents: "none", zIndex: 83, overflow: "visible" }}
+            >
+              {aboveLines.map((l) => renderSvgDrawnLine(l))}
+              {tool === "select" && selLine && (
+                <>
+                  {(["start", "end"] as const).map((end) => {
+                    const cx = end === "start" ? selLine.x1 : selLine.x2;
+                    const cy = end === "start" ? selLine.y1 : selLine.y2;
+                    return (
+                      <circle
+                        key={end}
+                        cx={cx}
+                        cy={cy}
+                        r={6.5}
+                        fill="#ffffff"
+                        stroke="#2563eb"
+                        strokeWidth={2.5}
+                        data-testid={`line-handle-${end}`}
+                        style={{ pointerEvents: "all", cursor: "crosshair", touchAction: "none" }}
+                        onClick={(e) => e.stopPropagation()}
+                        onPointerDown={(e) => {
+                          e.stopPropagation();
+                          (e.currentTarget as Element).setPointerCapture(e.pointerId);
+                          dragLineRef.current = {
+                            id: selLine.id,
+                            mode: end,
+                            startPtr: toPage(e),
+                            orig: { x1: selLine.x1, y1: selLine.y1, x2: selLine.x2, y2: selLine.y2 },
+                          };
+                        }}
+                        onPointerMove={(e) => {
+                          const st = dragLineRef.current;
+                          if (!st || st.id !== selLine.id || st.mode !== end) return;
+                          let pt = toPage(e);
+                          if (e.shiftKey) {
+                            const anchor = end === "start" ? { x: st.orig.x2, y: st.orig.y2 } : { x: st.orig.x1, y: st.orig.y1 };
+                            pt = snapLineAngle(anchor, pt);
+                          }
+                          onUpdateDrawnLine?.(
+                            selLine.id,
+                            end === "start" ? { x1: pt.x, y1: pt.y } : { x2: pt.x, y2: pt.y },
+                          );
+                        }}
+                        onPointerUp={() => {
+                          dragLineRef.current = null;
+                        }}
+                      />
+                    );
+                  })}
+                </>
+              )}
+            </svg>
+          )}
 
           <div style={{ position: "absolute", top: 0, left: 0, width, height, pointerEvents: "none" }}>
             {breakoutElements.map((el) => (
@@ -577,6 +816,232 @@ export function PageCanvas({
               })}
             </svg>
           )}
+
+          {/* Selected Panel Move & 8-Handle Resize Box */}
+          {tool === "move-panel" && selPanel && onTransformPanel && (() => {
+            const box = bounds.get(selPanel.id);
+            if (!box) return null;
+            const forceFloat = panelOverlapPref === "float";
+            const PANEL_HANDLES: { id: string; label: string; style: React.CSSProperties; cursor: string }[] = [
+              { id: "nw", label: "Resize panel top-left corner", style: { left: -6, top: -6 }, cursor: "nwse-resize" },
+              { id: "n", label: "Resize panel top edge", style: { left: "50%", top: -6, transform: "translateX(-50%)" }, cursor: "ns-resize" },
+              { id: "ne", label: "Resize panel top-right corner", style: { right: -6, top: -6 }, cursor: "nesw-resize" },
+              { id: "e", label: "Resize panel right edge", style: { right: -6, top: "50%", transform: "translateY(-50%)" }, cursor: "ew-resize" },
+              { id: "se", label: "Resize panel bottom-right corner", style: { right: -6, bottom: -6 }, cursor: "nwse-resize" },
+              { id: "s", label: "Resize panel bottom edge", style: { left: "50%", bottom: -6, transform: "translateX(-50%)" }, cursor: "ns-resize" },
+              { id: "sw", label: "Resize panel bottom-left corner", style: { left: -6, bottom: -6 }, cursor: "nesw-resize" },
+              { id: "w", label: "Resize panel left edge", style: { left: -6, top: "50%", transform: "translateY(-50%)" }, cursor: "ew-resize" },
+            ];
+            return (
+              <div
+                data-testid="panel-move-box"
+                style={{
+                  position: "absolute",
+                  left: box.minX,
+                  top: box.minY,
+                  width: box.width,
+                  height: box.height,
+                  zIndex: 87,
+                  touchAction: "none",
+                }}
+                className="cursor-move border-2 border-dashed border-primary bg-primary/5"
+                onClick={(e) => e.stopPropagation()}
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+                  dragPanelRef.current = {
+                    panelId: selPanel.id,
+                    basePanel: selPanel,
+                    startRect: { x: box.minX, y: box.minY, width: box.width, height: box.height },
+                    startPtr: toPage(e),
+                    mode: "move",
+                  };
+                }}
+                onPointerMove={(e) => {
+                  const st = dragPanelRef.current;
+                  if (!st || st.panelId !== selPanel.id || st.mode !== "move") return;
+                  const cur = toPage(e);
+                  let targetX = st.startRect.x + (cur.x - st.startPtr.x);
+                  let targetY = st.startRect.y + (cur.y - st.startPtr.y);
+                  if (!e.altKey) {
+                    const otherPanels = Array.from(bounds.entries())
+                      .filter(([pid]) => pid !== selPanel.id)
+                      .map(([, b2]) => ({ x: b2.minX, y: b2.minY, width: b2.width, height: b2.height }));
+                    const snapped = computeSnapPosition(
+                      { x: targetX, y: targetY, width: st.startRect.width, height: st.startRect.height },
+                      [{ minX: margin, minY: margin, width: pw, height: ph }],
+                      otherPanels,
+                    );
+                    targetX = snapped.x;
+                    targetY = snapped.y;
+                    setSnapGuides(snapped.guides);
+                  } else {
+                    setSnapGuides([]);
+                  }
+                  const targetFloat = forceFloat || Boolean(selPanel.floating);
+                  const nextPts = panelPointsForTargetRect(
+                    selPanel,
+                    { x: targetX, y: targetY, width: st.startRect.width, height: st.startRect.height },
+                    layout.format,
+                    targetFloat,
+                  );
+                  onTransformPanel(selPanel.id, nextPts, { forceFloating: forceFloat });
+                }}
+                onPointerUp={() => {
+                  dragPanelRef.current = null;
+                  setSnapGuides([]);
+                }}
+              >
+                <span className="pointer-events-none absolute -top-5 left-0 rounded bg-primary px-1.5 py-0.5 text-[10px] font-bold text-primary-foreground shadow">
+                  Drag to Move · Handles to Resize ({Math.round(box.width)}×{Math.round(box.height)})
+                </span>
+                {PANEL_HANDLES.map((h) => (
+                  <button
+                    key={h.id}
+                    type="button"
+                    aria-label={h.label}
+                    data-testid={`panel-resize-${h.id}`}
+                    style={{ position: "absolute", width: 12, height: 12, cursor: h.cursor, touchAction: "none", ...h.style }}
+                    className="rounded-sm border-2 border-foreground bg-white shadow hover:bg-primary hover:border-white"
+                    onClick={(e) => e.stopPropagation()}
+                    onPointerDown={(e) => {
+                      e.stopPropagation();
+                      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+                      dragPanelRef.current = {
+                        panelId: selPanel.id,
+                        basePanel: selPanel,
+                        startRect: { x: box.minX, y: box.minY, width: box.width, height: box.height },
+                        startPtr: toPage(e),
+                        mode: h.id,
+                      };
+                    }}
+                    onPointerMove={(e) => {
+                      const st = dragPanelRef.current;
+                      if (!st || st.panelId !== selPanel.id || st.mode !== h.id) return;
+                      const cur = toPage(e);
+                      const nextBox = computeResizedBox(
+                        st.startRect,
+                        h.id,
+                        cur.x - st.startPtr.x,
+                        cur.y - st.startPtr.y,
+                        e.shiftKey,
+                      );
+                      const targetFloat = forceFloat || Boolean(selPanel.floating);
+                      const nextPts = panelPointsForTargetRect(
+                        selPanel,
+                        {
+                          x: nextBox.x,
+                          y: nextBox.y,
+                          width: Math.max(24, nextBox.width),
+                          height: Math.max(24, nextBox.height),
+                        },
+                        layout.format,
+                        targetFloat,
+                      );
+                      onTransformPanel(selPanel.id, nextPts, { forceFloating: forceFloat });
+                    }}
+                    onPointerUp={() => {
+                      dragPanelRef.current = null;
+                      setSnapGuides([]);
+                    }}
+                  />
+                ))}
+              </div>
+            );
+          })()}
+
+          {/* Straight-Line Pen Tool Overlay (click-start->click-end OR drag) */}
+          {tool === "line" && (() => {
+            const opts = linePenOptions ?? {
+              color: selPanel?.borderColor || "#000000",
+              width: 3,
+              style: "solid" as const,
+              cap: "none" as const,
+              layer: "above" as const,
+              angleSnap: false,
+            };
+            const commitLine = (a: Point, b: Point) => {
+              if (Math.hypot(b.x - a.x, b.y - a.y) < 4) return;
+              onAddDrawnLine?.({
+                panelId: selPanel ? selPanel.id : PAGE_LAYER_ID,
+                x1: a.x,
+                y1: a.y,
+                x2: b.x,
+                y2: b.y,
+                color: opts.color || selPanel?.borderColor || "#000000",
+                matchPanelBorder: Boolean(
+                  selPanel && (!opts.color || opts.color.toLowerCase() === selPanel.borderColor.toLowerCase()),
+                ),
+                width: opts.width,
+                style: opts.style,
+                cap: opts.cap,
+                opacity: 1,
+                layer: opts.layer,
+              });
+            };
+            return (
+              <svg
+                data-testid="line-pen-overlay"
+                style={{ position: "absolute", inset: 0, width, height, cursor: "crosshair", touchAction: "none", zIndex: 89 }}
+                onClick={(e) => e.stopPropagation()}
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  const p = toPage(e);
+                  if (!pendingLine) {
+                    (e.currentTarget as Element).setPointerCapture(e.pointerId);
+                    setPendingLine({ a: p, b: p, dragged: false });
+                  } else {
+                    const endPt = (e.shiftKey || opts.angleSnap) ? snapLineAngle(pendingLine.a, p) : p;
+                    commitLine(pendingLine.a, endPt);
+                    setPendingLine(null);
+                  }
+                }}
+                onPointerMove={(e) => {
+                  if (!pendingLine) return;
+                  const raw = toPage(e);
+                  const moved = pendingLine.dragged || Math.hypot(raw.x - pendingLine.a.x, raw.y - pendingLine.a.y) > 8;
+                  const b = (e.shiftKey || opts.angleSnap) ? snapLineAngle(pendingLine.a, raw) : raw;
+                  setPendingLine({ a: pendingLine.a, b, dragged: moved });
+                }}
+                onPointerUp={(e) => {
+                  if (!pendingLine) return;
+                  const raw = toPage(e);
+                  const len = Math.hypot(raw.x - pendingLine.a.x, raw.y - pendingLine.a.y);
+                  if (pendingLine.dragged && len >= 8) {
+                    const endPt = (e.shiftKey || opts.angleSnap) ? snapLineAngle(pendingLine.a, raw) : raw;
+                    commitLine(pendingLine.a, endPt);
+                    setPendingLine(null);
+                  }
+                }}
+              >
+                {pendingLine &&
+                  renderSvgDrawnLine(
+                    {
+                      id: "preview-line",
+                      panelId: selPanel ? selPanel.id : PAGE_LAYER_ID,
+                      x1: pendingLine.a.x,
+                      y1: pendingLine.a.y,
+                      x2: pendingLine.b.x,
+                      y2: pendingLine.b.y,
+                      color: opts.color || selPanel?.borderColor || "#000000",
+                      width: opts.width,
+                      style: opts.style,
+                      cap: opts.cap,
+                      opacity: 0.85,
+                      layer: "above",
+                      zIndex: 99,
+                    },
+                    true,
+                  )}
+                {pendingLine && (
+                  <>
+                    <circle cx={pendingLine.a.x} cy={pendingLine.a.y} r={4.5} fill="#2563eb" stroke="#fff" strokeWidth={1.5} />
+                    <circle cx={pendingLine.b.x} cy={pendingLine.b.y} r={4.5} fill="#e11d2e" stroke="#fff" strokeWidth={1.5} />
+                  </>
+                )}
+              </svg>
+            );
+          })()}
 
           {/* Freehand Draw Custom Panel overlay */}
           {tool === "draw" && (

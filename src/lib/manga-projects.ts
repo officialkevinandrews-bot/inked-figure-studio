@@ -64,6 +64,7 @@ function clonePages(pages: PageLayout[]): PageLayout[] {
     comicMarks: (page.comicMarks ?? []).map((m) => ({ ...m })),
     speedLines: (page.speedLines ?? []).map((l) => ({ ...l })),
     sfxStamps: (page.sfxStamps ?? []).map((s) => ({ ...s })),
+    drawnLines: (page.drawnLines ?? []).map((d) => ({ ...d })),
   }));
 }
 

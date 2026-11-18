@@ -1,4 +1,11 @@
 import { PAGE_LAYER_ID, panelBounds, type PageLayout, type PlacedElement } from "./manga-layout";
+import {
+  arrowHeadPolygon,
+  lineDashArray,
+  lineSegmentsForStyle,
+  taperedNibPolygon,
+  type DrawnLine,
+} from "./drawn-lines";
 import { toneDataUrl, fadeGeometry, type Screentone } from "./screentone";
 import { fontStack, ensureFontsLoaded } from "./manga-fonts";
 import {
@@ -159,11 +166,64 @@ export async function renderPageToCanvas(
   const pageKind = (el: PlacedElement) =>
     el.pageLayer?.kind ?? (el.type === "background" ? "behind" : "above");
 
-  // 1b. Page-level images behind all panels
+  const drawStraightLine = (line: DrawnLine) => {
+    ctx.save();
+    ctx.globalAlpha = line.opacity ?? 1;
+    ctx.strokeStyle = line.color || "#000000";
+    ctx.fillStyle = line.color || "#000000";
+    ctx.lineWidth = line.width;
+    ctx.lineCap = line.style === "dotted" ? "round" : "butt";
+
+    if (line.cap === "tapered" && line.style === "solid") {
+      const nib = taperedNibPolygon(line);
+      if (nib.length >= 3) {
+        ctx.beginPath();
+        ctx.moveTo(nib[0].x, nib[0].y);
+        for (let i = 1; i < nib.length; i++) ctx.lineTo(nib[i].x, nib[i].y);
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.restore();
+      return;
+    }
+
+    const dash = lineDashArray(line.style, line.width);
+    if (dash) ctx.setLineDash(dash);
+    for (const seg of lineSegmentsForStyle(line)) {
+      ctx.beginPath();
+      ctx.moveTo(seg.x1, seg.y1);
+      ctx.lineTo(seg.x2, seg.y2);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+
+    const fillArrow = (pts: { x: number; y: number }[]) => {
+      if (pts.length < 3) return;
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+      ctx.closePath();
+      ctx.fill();
+    };
+    if (line.cap === "arrow" || line.cap === "both") {
+      fillArrow(arrowHeadPolygon(line.x2, line.y2, line.x1, line.y1, line.width));
+    }
+    if (line.cap === "both") {
+      fillArrow(arrowHeadPolygon(line.x1, line.y1, line.x2, line.y2, line.width));
+    }
+    ctx.restore();
+  };
+
+  // 1b. Page-level images & straight lines behind all panels
   pageElements
     .filter((el) => pageKind(el) === "behind")
     .sort((a, b) => a.zIndex - b.zIndex)
     .forEach(drawElementImage);
+
+  (layout.drawnLines ?? [])
+    .filter((l) => l.layer === "behind")
+    .sort((a, b) => a.zIndex - b.zIndex)
+    .forEach(drawStraightLine);
 
   // 2. Draw Panel Backgrounds & Inside Elements (plus panel-relative free page images)
   const orderedPanels = [...layout.panels].sort((a, b) => Number(!!a.floating) - Number(!!b.floating));
@@ -264,6 +324,11 @@ export async function renderPageToCanvas(
     .filter((el) => el.panelId !== PAGE_LAYER_ID && el.breakout)
     .sort((a, b) => a.zIndex - b.zIndex)
     .forEach(drawElementImage);
+
+  (layout.drawnLines ?? [])
+    .filter((l) => l.layer !== "behind")
+    .sort((a, b) => a.zIndex - b.zIndex)
+    .forEach(drawStraightLine);
 
   // 5. Speech Balloons & Narration Caption Boxes
   for (const b of layout.balloons ?? []) {

@@ -2,7 +2,10 @@ import React, { useMemo, useRef, useState } from "react";
 import { GripHorizontal, Minus, Plus, PlusCircle, Scissors } from "lucide-react";
 import {
   applyManualElementPatch,
+  transformPanelWithContents,
+  type DrawnLine,
   type PageLayout,
+  type PanelOverlapPreference,
   type PanelPolygon,
   type PlacedElement,
   type Point,
@@ -16,7 +19,7 @@ import {
   createWebtoonSpacerPage,
   getWebtoonSeams,
 } from "@/lib/webtoon";
-import { PageCanvas, type CanvasTool } from "./PageCanvas";
+import { PageCanvas, type CanvasTool, type LinePenOptions } from "./PageCanvas";
 
 interface WebtoonCanvasProps {
   pages: PageLayout[];
@@ -38,6 +41,8 @@ interface WebtoonCanvasProps {
   onMoveVertex?: (pageIndex: number, from: Point, to: Point) => void;
   onMoveDivider?: (pageIndex: number, nextPanels: PanelPolygon[]) => void;
   onDrawPanel?: (pageIndex: number, rect: { x0: number; y0: number; x1: number; y1: number }) => void;
+  panelOverlapPref?: PanelOverlapPreference;
+  linePenOptions?: LinePenOptions;
   onRePoseIn3D?: (source3d: NonNullable<PlacedElement["source3d"]>) => void;
 }
 
@@ -65,6 +70,8 @@ export function WebtoonCanvas({
   onMoveVertex,
   onMoveDivider,
   onDrawPanel,
+  panelOverlapPref = "float",
+  linePenOptions,
   onRePoseIn3D,
 }: WebtoonCanvasProps) {
   const dragResizeRef = useRef<{ pageIndex: number; startY: number; lastDy: number } | null>(null);
@@ -215,6 +222,33 @@ export function WebtoonCanvas({
                   patchPage(idx, (cur) => ({
                     ...cur,
                     sfxStamps: (cur.sfxStamps ?? []).filter((s) => s.id !== id),
+                  }));
+                  if (selectedItemId === id) onSelectItem(null);
+                }}
+                onTransformPanel={(panelId, nextPts, opts) =>
+                  patchPage(idx, (cur) => transformPanelWithContents(cur, panelId, nextPts, opts))
+                }
+                panelOverlapPref={panelOverlapPref}
+                linePenOptions={linePenOptions}
+                onAddDrawnLine={(line) => {
+                  const id = `line-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`;
+                  patchPage(idx, (cur) => {
+                    const maxZ = Math.max(20, ...(cur.drawnLines ?? []).map((l) => l.zIndex));
+                    const nextLine: DrawnLine = { ...line, id, zIndex: maxZ + 1 };
+                    return { ...cur, drawnLines: [...(cur.drawnLines ?? []), nextLine] };
+                  });
+                  onSelectItem(id);
+                }}
+                onUpdateDrawnLine={(id, u) =>
+                  patchPage(idx, (cur) => ({
+                    ...cur,
+                    drawnLines: (cur.drawnLines ?? []).map((l) => (l.id === id ? { ...l, ...u } : l)),
+                  }))
+                }
+                onDeleteDrawnLine={(id) => {
+                  patchPage(idx, (cur) => ({
+                    ...cur,
+                    drawnLines: (cur.drawnLines ?? []).filter((l) => l.id !== id),
                   }));
                   if (selectedItemId === id) onSelectItem(null);
                 }}

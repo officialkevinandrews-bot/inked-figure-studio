@@ -513,4 +513,92 @@ test.describe("Inked Figure Studio End-to-End Regression", () => {
     expect(consoleErrors).toEqual([]);
     expect(pageErrors).toEqual([]);
   });
+
+  test("Panel Move/Resize (scaling all contents + permanent layer pref) & Straight-Line Pen (border match + dotted/arrows + free draw)", async ({
+    page,
+  }) => {
+    const consoleErrors: string[] = [];
+    const pageErrors: string[] = [];
+    page.on("console", (msg) => {
+      if (msg.type() === "error") consoleErrors.push(msg.text());
+    });
+    page.on("pageerror", (err) => pageErrors.push(String(err)));
+
+    await page.goto("/");
+    await expect(page.locator("[data-scene-ready]")).toBeVisible();
+    await page.getByRole("button", { name: /Manga Panels/ }).click();
+    await expect(page.locator("#manga-page-container")).toBeVisible();
+
+    // 1. Set Panel 1 border colour to crimson (#e11d2e) and add a speech balloon inside Panel 1
+    await page.getByRole("button", { name: "Border #e11d2e" }).click();
+    await page.getByRole("button", { name: /💬 SFX/i }).click();
+    await page.getByRole("button", { name: /Dialogue/i }).click();
+    const balloon = page.locator("#manga-page-container").getByText("Speech...");
+    await expect(balloon).toBeVisible();
+    const balloonBefore = await balloon.boundingBox();
+    expect(balloonBefore).not.toBeNull();
+
+    // 2. Move/Size Panel tool: drag corner handle & panel body -> Panel floats and balloon scales + moves with it
+    await page.getByTitle("Panels, Knife Cut & Grid Layouts").click();
+    await page.getByRole("button", { name: /Move\/Size/ }).click();
+    const moveBox = page.getByTestId("panel-move-box");
+    await expect(moveBox).toBeVisible();
+    const seHandle = page.getByTestId("panel-resize-se");
+    await expect(seHandle).toBeVisible();
+
+    const widthBefore = Number(await page.getByLabel("Panel Width").inputValue());
+    const seBox = (await seHandle.boundingBox())!;
+    await page.mouse.move(seBox.x + seBox.width / 2, seBox.y + seBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(seBox.x + seBox.width / 2 + 60, seBox.y + seBox.height / 2 + 50, { steps: 5 });
+    await page.mouse.up();
+
+    const widthAfter = Number(await page.getByLabel("Panel Width").inputValue());
+    expect(widthAfter).toBeGreaterThan(widthBefore + 20);
+    await expect(page.getByLabel("Floating inset")).toBeChecked();
+
+    const balloonAfter = await balloon.boundingBox();
+    if (balloonBefore && balloonAfter) {
+      expect(balloonAfter.width).toBeGreaterThan(balloonBefore.width + 5);
+    }
+
+    // Verify permanent preference option can be toggled & persisted
+    const prefSelect = page.getByLabel("Moved panel layer preference");
+    await prefSelect.selectOption("keep");
+    await expect(prefSelect).toHaveValue("keep");
+    await prefSelect.selectOption("float");
+
+    // 3. Straight-Line Pen: draw inside Panel 1 (matches #e11d2e border + dotted + arrow), then deselect to draw freely anywhere
+    await page.getByRole("button", { name: /Line Pen/ }).click();
+    const lineOpts = page.getByTestId("line-pen-options");
+    await expect(lineOpts).toBeVisible();
+    await lineOpts.getByRole("button", { name: "dotted", exact: true }).click();
+    await lineOpts.getByRole("button", { name: "Arrow →" }).click();
+
+    const penOverlay = page.getByTestId("line-pen-overlay");
+    const penBox = (await penOverlay.boundingBox())!;
+    // Click start -> click end inside panel
+    await page.mouse.click(penBox.x + 80, penBox.y + 80);
+    await page.mouse.click(penBox.x + 260, penBox.y + 180);
+
+    const linesLayer = page.getByTestId("drawn-lines-layer");
+    await expect(linesLayer.locator("g[data-drawn-line-id]")).toHaveCount(1);
+    await expect(linesLayer.locator('line[stroke="#e11d2e"]')).toHaveCount(1);
+
+    // Deselect panel and draw a 2nd straight line across the page freely
+    await lineOpts.getByRole("button", { name: "Deselect Panel to Draw Anywhere" }).click();
+    await expect(lineOpts).toContainText("Whole Page");
+    await page.mouse.click(penBox.x + 120, penBox.y + 320);
+    await page.mouse.click(penBox.x + 360, penBox.y + 320);
+    await expect(linesLayer.locator("g[data-drawn-line-id]")).toHaveCount(2);
+
+    // Switch to Select (V) and confirm endpoint handles show on selected line
+    await page.getByRole("button", { name: /Select \(V\)/ }).click();
+    await expect(page.getByTestId("drawn-line-inspector")).toBeVisible();
+    await expect(page.getByTestId("line-handle-start")).toBeVisible();
+    await expect(page.getByTestId("line-handle-end")).toBeVisible();
+
+    expect(consoleErrors).toEqual([]);
+    expect(pageErrors).toEqual([]);
+  });
 });
