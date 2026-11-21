@@ -57,6 +57,17 @@ test.describe("Mandatory Google / Allowlist Auth Gate & Public Landing Page", ()
     await expect(page.getByTestId("signin-modal")).toBeVisible();
     await expect(page.getByTestId("google-signin-btn")).toBeVisible();
     await expect(page.getByTestId("email-auth-submit-btn")).toBeVisible();
+
+    // Ensure direct binary download links (.apk / .zip) never appear on the public landing page
+    await expect(page.locator('a[href$=".apk"], a[href$=".zip"]')).toHaveCount(0);
+
+    // Landscape phone viewport: ensure Sign-In modal remains inside viewport and scrollable
+    await page.setViewportSize({ width: 844, height: 390 });
+    await page.waitForTimeout(150);
+    const modalBox = await page.getByTestId("signin-modal").boundingBox();
+    expect(modalBox).not.toBeNull();
+    expect(modalBox!.height).toBeLessThanOrEqual(390);
+    expect(modalBox!.y).toBeGreaterThanOrEqual(0);
     expect(errors).toEqual([]);
   });
 });

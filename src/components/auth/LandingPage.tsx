@@ -544,7 +544,7 @@ export function LandingPage({
             aria-modal="true"
             aria-label="Sign in to MangakaDesk"
             data-testid="signin-modal"
-            className="relative w-full max-w-md rounded-sm border-2 border-foreground bg-card p-6 shadow-2xl"
+            className="relative max-h-[90dvh] w-full max-w-md overflow-y-auto rounded-sm border-2 border-foreground bg-card p-6 shadow-2xl"
           >
             <button
               type="button"

@@ -1,0 +1,71 @@
+plugins {
+    id("com.android.application")
+}
+
+def localProps = new Properties()
+def localPropsFile = rootProject.file("local.properties")
+if (localPropsFile.exists()) {
+    localPropsFile.withInputStream { localProps.load(it) }
+}
+
+def readSecret = { String key ->
+    System.getenv(key) ?: localProps.getProperty(key)
+}
+
+android {
+    namespace = "com.mangakadesk.app"
+    compileSdk = 35
+
+    defaultConfig {
+        applicationId = "com.mangakadesk.app"
+        minSdk = 24
+        targetSdk = 35
+        versionCode = 1
+        versionName = "1.0.0"
+    }
+
+    signingConfigs {
+        release {
+            def ksPath = readSecret("MANGAKADESK_KEYSTORE")
+            def ksPass = readSecret("MANGAKADESK_KEYSTORE_PASSWORD")
+            def alias = readSecret("MANGAKADESK_KEY_ALIAS") ?: "mangakadesk"
+            def keyPass = readSecret("MANGAKADESK_KEY_PASSWORD") ?: ksPass
+            if (ksPath) {
+                storeFile = file(ksPath)
+                storePassword = ksPass
+                keyAlias = alias
+                keyPassword = keyPass
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+            signingConfig signingConfigs.release
+        }
+        debug {
+            applicationIdSuffix ".debug"
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation("com.google.androidbrowserhelper:androidbrowserhelper:2.5.0")
+    implementation("androidx.browser:browser:1.8.0") {
+        version {
+            strictly("1.8.0")
+        }
+    }
+    implementation("androidx.core:core:1.15.0")
+}

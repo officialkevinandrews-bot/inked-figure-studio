@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name" translatable="false">MangakaDesk</string>
+    <string name="host_name" translatable="false">inked-figure-studio.lovable.app</string>
+    <string name="launch_url" translatable="false">https://inked-figure-studio.lovable.app/</string>
+    <string name="asset_statements" translatable="false">
+        [{
+            \"relation\": [\"delegate_permission/common.handle_all_urls\"],
+            \"target\": {
+                \"namespace\": \"android_app\",
+                \"package_name\": \"com.mangakadesk.app\",
+                \"sha256_cert_fingerprints\": [\"52:01:9E:75:EC:17:9D:0D:5F:8C:1C:69:0C:5C:EF:BA:E0:4B:02:3D:60:82:4B:CE:11:FC:4E:F6:DA:CC:8B:17\"]
+            }
+        }]
+    </string>
+</resources>

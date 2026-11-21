@@ -8,12 +8,14 @@ import {
   LogOut,
   Plus,
   RefreshCw,
+  Smartphone,
   Trash2,
   Users,
 } from "lucide-react";
 import { CORE_ALLOWED_EMAILS } from "@/lib/allowlist";
 import { downloadFullAccountBackup } from "@/lib/cloud-sync";
 import { useOptionalAuth } from "./AuthProvider";
+import { DownloadAppsModal } from "./DownloadAppsModal";
 
 interface AccountMenuProps {
   compact?: boolean;
@@ -27,6 +29,7 @@ export function AccountMenu({ compact = false }: AccountMenuProps) {
   const [allowlistMsg, setAllowlistMsg] = useState<string | null>(null);
   const [allowlistBusy, setAllowlistBusy] = useState(false);
   const [backupBusy, setBackupBusy] = useState(false);
+  const [downloadsOpen, setDownloadsOpen] = useState(false);
 
   if (!auth?.user) return null;
   const {
@@ -220,6 +223,19 @@ export function AccountMenu({ compact = false }: AccountMenuProps) {
             <div className="mt-2.5 space-y-1.5">
               <button
                 type="button"
+                data-testid="account-download-apps-btn"
+                onClick={() => {
+                  setOpen(false);
+                  setDownloadsOpen(true);
+                }}
+                className="flex w-full items-center justify-center gap-1.5 rounded-sm border border-foreground/70 bg-primary/10 px-2.5 py-1.5 font-semibold text-foreground hover:border-foreground hover:bg-primary/20"
+              >
+                <Smartphone className="h-3.5 w-3.5 text-primary" />
+                <span>Download Apps (Android &amp; Windows)</span>
+              </button>
+
+              <button
+                type="button"
                 data-testid="account-download-backup-btn"
                 disabled={backupBusy}
                 onClick={async () => {
@@ -268,6 +284,7 @@ export function AccountMenu({ compact = false }: AccountMenuProps) {
           </div>
         </>
       )}
+      <DownloadAppsModal open={downloadsOpen} onClose={() => setDownloadsOpen(false)} />
     </div>
   );
 }
