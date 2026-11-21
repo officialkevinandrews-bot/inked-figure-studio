@@ -27,10 +27,10 @@ export const Route = createFileRoute("/")({
   ssr: false,
   head: () => ({
     meta: [
-      { title: "Inked Manga Studio — Panels, Characters & 3D Posing" },
-      { name: "description", content: "Create manga pages with custom panels, speech balloons, tones, and 3D character posing." },
-      { property: "og:title", content: "Inked Manga Studio — Panels, Characters & 3D Posing" },
-      { property: "og:description", content: "Create manga pages with custom panels, speech balloons, tones, and 3D character posing." },
+      { title: "MangakaDesk — Manga Panels, Webtoons & Page Layout Studio" },
+      { name: "description", content: "Create manga pages with custom panel grids, speech balloons, SFX, screentones, and webtoon scroll." },
+      { property: "og:title", content: "MangakaDesk — Manga Panels, Webtoons & Page Layout Studio" },
+      { property: "og:description", content: "Create manga pages with custom panel grids, speech balloons, SFX, screentones, and webtoon scroll." },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
     ],

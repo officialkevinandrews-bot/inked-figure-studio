@@ -1410,7 +1410,7 @@ export function PanelStudio({
       {/* Top Bar */}
       <header className="relative flex flex-wrap items-center gap-1.5 sm:gap-2.5 border-b-2 border-foreground px-2 sm:px-4 py-1.5 sm:py-2 bg-card safe-pt shrink-0">
         <h1 className="font-display text-base sm:text-lg tracking-wide shrink-0">
-          MANGA<span className="text-primary">STUDIO</span>
+          MANGAKA<span className="text-primary">DESK</span>
         </h1>
 
         <nav aria-label="Workspace views" className="flex items-center gap-1 text-xs sm:text-sm overflow-x-auto max-w-full">

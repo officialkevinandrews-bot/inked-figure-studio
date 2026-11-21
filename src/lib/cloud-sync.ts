@@ -1328,7 +1328,7 @@ export async function downloadFullAccountBackup(
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `inked-figure-studio-${slug || "account"}-backup-${dateStr}.json`;
+  a.download = `mangakadesk-${slug || "account"}-backup-${dateStr}.json`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 5000);
 }

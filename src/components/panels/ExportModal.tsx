@@ -106,7 +106,7 @@ export function ExportModal({
           <div className="flex items-center gap-2">
             <Download className="h-5 w-5 text-primary" />
             <h2 className="font-display text-lg tracking-wide">
-              EXPORT <span className="text-primary">MANGA STUDIO</span>
+              EXPORT <span className="text-primary">MANGAKADESK</span>
             </h2>
           </div>
           <button
