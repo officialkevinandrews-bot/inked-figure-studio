@@ -1,6 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { AuthGate } from "@/components/auth/AuthGate";
 import { AuthProvider, useAuth } from "@/components/auth/AuthProvider";
+import { FeedbackModal } from "@/components/feedback/FeedbackModal";
+import { FeedbackProvider } from "@/components/feedback/FeedbackProvider";
 import { Studio } from "@/components/studio/Studio";
 
 function AuthenticatedStudio() {
@@ -12,7 +14,10 @@ function StudioEntry() {
   return (
     <AuthProvider>
       <AuthGate>
-        <AuthenticatedStudio />
+        <FeedbackProvider>
+          <AuthenticatedStudio />
+          <FeedbackModal />
+        </FeedbackProvider>
       </AuthGate>
     </AuthProvider>
   );
@@ -22,10 +27,10 @@ export const Route = createFileRoute("/")({
   ssr: false,
   head: () => ({
     meta: [
-      { title: "Koma Studio — 3D Manga Posing" },
-      { name: "description", content: "Pose Mixamo 3D characters with a manga pose library and cel-shaded ink rendering." },
-      { property: "og:title", content: "Koma Studio — 3D Manga Posing" },
-      { property: "og:description", content: "Pose Mixamo 3D characters with a manga pose library and cel-shaded ink rendering." },
+      { title: "Inked Manga Studio — Panels, Characters & 3D Posing" },
+      { name: "description", content: "Create manga pages with custom panels, speech balloons, tones, and 3D character posing." },
+      { property: "og:title", content: "Inked Manga Studio — Panels, Characters & 3D Posing" },
+      { property: "og:description", content: "Create manga pages with custom panels, speech balloons, tones, and 3D character posing." },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
     ],

@@ -1,5 +1,6 @@
 import { FacePanel } from "./FacePanel";
 import { AccountMenu } from "@/components/auth/AccountMenu";
+import { FeedbackButton, useOptionalFeedback } from "@/components/feedback/FeedbackProvider";
 import { buildFullAccountBackup, markProjectDeletedForCloudSync } from "@/lib/cloud-sync";
 import { saveCustomTemplates, loadCustomTemplates } from "@/lib/custom-templates";
 import { getActiveStorageUser, userLsSet } from "@/lib/user-storage";
@@ -342,7 +343,14 @@ export function Studio() {
   useEffect(() => {
     if (outfitModelRef.current === modelName && modelName && !charRef.current) saveOutfit(modelName, outfit);
   }, [outfit, modelName]);
-  const [activeTab, setActiveTab] = useState<"create" | "pose" | "panels">("create");
+  const [activeTab, setActiveTab] = useState<"create" | "pose" | "panels">("panels");
+  const [hasMounted3d, setHasMounted3d] = useState(false);
+  const preservePoseOnInitRef = useRef(false);
+  useEffect(() => {
+    if (activeTab !== "panels") {
+      setHasMounted3d(true);
+    }
+  }, [activeTab]);
   const [chapterHist, setChapterHist] = useState<HistoryState<{ pages: PageLayout[]; activePageIndex: number }>>(() =>
     createHistory({ pages: createDefaultPages(), activePageIndex: 0 }),
   );
@@ -639,7 +647,13 @@ export function Studio() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const load = useCallback(async (url: string, ext: string, name: string, fallbackUrl?: string) => {
+  const load = useCallback(async (
+    url: string,
+    ext: string,
+    name: string,
+    fallbackUrl?: string,
+    opts?: { preservePose?: boolean },
+  ) => {
     setLoading(true);
     setError("");
     try {
@@ -652,7 +666,10 @@ export function Studio() {
       setModelName(name);
       setModelType(char.type);
       setSelected(null);
-      setPoseHist(resetHistory({ pose: {}, hipsDrop: 0 }));
+      if (!opts?.preservePose && !preservePoseOnInitRef.current) {
+        setPoseHist(resetHistory({ pose: {}, hipsDrop: 0 }));
+      }
+      preservePoseOnInitRef.current = false;
       setActivePose(null);
       return char;
     } catch (e) {
@@ -664,13 +681,16 @@ export function Studio() {
     }
   }, []);
 
-  // Default demo model
+  // Default demo model (loaded lazily on first entry into 3D Character or 3D Pose tabs)
   const loadedModelKey = useRef<string>("");
   useEffect(() => {
+    if (!hasMounted3d || loadedModelKey.current) return;
     loadedModelKey.current = DUMMY_MODEL;
     const xbot = builtinModel(DUMMY_MODEL);
-    load(xbot?.url ?? "/models/xbot.glb", xbot?.ext ?? "glb", xbot?.name ?? "X Bot (demo)", xbot?.fallbackUrl);
-  }, [load]);
+    load(xbot?.url ?? "/models/xbot.glb", xbot?.ext ?? "glb", xbot?.name ?? "X Bot (demo)", xbot?.fallbackUrl, {
+      preservePose: preservePoseOnInitRef.current,
+    });
+  }, [hasMounted3d, load]);
 
   // ---------- Characters & Persistent Base Model Library ----------
   const [characters, setCharacters] = useState<Character[]>([]);
@@ -768,11 +788,31 @@ export function Studio() {
     if (activeTab === "pose" && activeChar && leftTab === "outfit") setLeftTab("poses");
   }, [activeTab, leftTab, activeChar]);
 
-  const goTab = (t: "create" | "pose" | "panels") => {
+  const goTab = useCallback((t: "create" | "pose" | "panels") => {
     // Returning to the creator restores the character's saved master look (pose-only tweaks are dropped).
     if (t === "create" && activeTab !== "create" && activeChar) showCharacter(activeChar);
     setActiveTab(t);
-  };
+  }, [activeTab, activeChar, showCharacter]);
+
+  const feedback = useOptionalFeedback();
+  useEffect(() => {
+    if (!feedback) return;
+    const area =
+      activeTab === "panels"
+        ? "Manga Panels"
+        : activeTab === "create"
+        ? "Create Character"
+        : "3D Pose Studio";
+    feedback.setActiveArea(area);
+    feedback.registerCaptureHandler(async () => {
+      if (activeTab === "panels") {
+        const { exportPageAsImage } = await import("@/lib/export");
+        return exportPageAsImage(currentPageLayout, { scale: 1, format: "jpeg" });
+      }
+      return viewportRef.current?.captureSnapshot({ pixelRatio: 1 })?.dataUrl ?? null;
+    });
+    return () => feedback.registerCaptureHandler(null);
+  }, [activeTab, currentPageLayout, feedback]);
 
   const createCharacter = () => {
     const curKey = loadedModelKey.current || DUMMY_MODEL;
@@ -1621,8 +1661,12 @@ export function Studio() {
       <PanelStudio
         layout={currentPageLayout}
         onUpdateLayout={handleUpdateCurrentPage}
-        onOpen3dStudio={() => setActiveTab("pose")}
+        onOpenCreateCharacter={() => goTab("create")}
+        onOpen3dStudio={() => goTab("pose")}
         onRePoseIn3D={(source3d) => {
+          if (!loadedModelKey.current) {
+            preservePoseOnInitRef.current = true;
+          }
           if (source3d.cast && source3d.cast.length > 0) {
             const targetActiveId = source3d.activeActorId ?? source3d.cast[0].id;
             const primarySpec =
@@ -1703,22 +1747,24 @@ export function Studio() {
       {/* Top Bar */}
       <header className="flex flex-wrap items-center gap-x-2 gap-y-1.5 border-b-2 border-foreground px-2.5 sm:px-4 py-1.5 sm:py-2 bg-card safe-pt shrink-0">
         <h1 className="font-display text-base sm:text-xl tracking-wide shrink-0">
-          INKED<span className="text-primary">FIGURE</span>
+          MANGA<span className="text-primary">STUDIO</span>
         </h1>
 
-        <nav className="flex items-center gap-1 text-xs sm:text-sm overflow-x-auto max-w-full">
-          {([["create", "Create Character"], ["pose", "3D Pose Studio"]] as const).map(([t, label]) => (
-            <button key={t} onClick={() => goTab(t)} aria-pressed={activeTab === t}
-              className={`whitespace-nowrap rounded-sm px-2 sm:px-3 py-1 font-semibold transition-colors ${activeTab === t ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground"}`}>
-              {label}
-            </button>
-          ))}
+        <nav aria-label="Workspace views" className="flex items-center gap-1 text-xs sm:text-sm overflow-x-auto max-w-full">
           <button
+            type="button"
             onClick={() => goTab("panels")}
+            aria-pressed={activeTab === "panels"}
             className="whitespace-nowrap rounded-sm px-2 sm:px-3 py-1 font-semibold text-muted-foreground hover:text-foreground transition-colors"
           >
             Manga Panels {currentPageLayout.elements.length > 0 && `(${currentPageLayout.elements.length})`}
           </button>
+          {([["create", "Create Character"], ["pose", "3D Pose Studio"]] as const).map(([t, label]) => (
+            <button key={t} type="button" onClick={() => goTab(t)} aria-pressed={activeTab === t}
+              className={`whitespace-nowrap rounded-sm px-2 sm:px-3 py-1 font-semibold transition-colors ${activeTab === t ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground"}`}>
+              {label}
+            </button>
+          ))}
         </nav>
 
         {activeTab === "pose" && (
@@ -1773,6 +1819,7 @@ export function Studio() {
             hidden
             onChange={(e) => onFiles(e.target.files)}
           />
+          <FeedbackButton compact area={activeTab === "create" ? "Create Character" : "3D Pose Studio"} />
           <AccountMenu />
         </div>
       </header>
@@ -2621,46 +2668,48 @@ export function Studio() {
 
           <div
             className="relative flex-1 m-1.5 sm:m-4 border-[2px] sm:border-[3px] border-foreground bg-card shadow-ink overflow-hidden"
-            data-scene-ready={rig ? "" : undefined}
+            data-scene-ready={hasMounted3d && rig ? "" : undefined}
           >
-            <Viewport
-              ref={viewportRef}
-              model={model}
-              rig={rig}
-              selected={selected}
-              onSelect={setSelected}
-              onBoneDrag={onBoneDrag}
-              ikMode={ikMode}
-              orbitOnly={device.isCompact && touchOrbitOnly}
-              onIkDrag={onIkDrag}
-              cameraLocked={cameraLocked}
-              settings={settings}
-              cameraPose={cameraPose}
-              propsList={propsList}
-              selectedPropId={selectedPropId}
-              onSelectProp={setSelectedPropId}
-              customPropObjects={customPropObjects}
-              face={activeTab === "create" ? { ...face, expression: "Neutral", overrides: {}, fx: [] } : face}
-              facePack={activeFacePack}
-              faceFitRequest={faceFitRequest}
-              outfit={outfit}
-              wardrobeAssets={wardrobeAssets}
-              primaryStageTransform={
-                activeTab === "create"
-                  ? { position: [0, 0, 0], rotationY: 0 }
-                  : { position: activeActorMeta.position, rotationY: activeActorMeta.rotationY }
-              }
-              primaryVisible={activeTab === "create" ? true : activeActorMeta.visible}
-              coActors={activeTab === "create" ? [] : coActors}
-              onSelectActor={switchActiveActor}
-              onFaceFit={(fit: Partial<FaceCalibration>) =>
-                setFace((f) => {
-                  const nextCalib = { ...f.calib, ...fit };
-                  saveModelCalibration(activeActorMeta.modelKey, nextCalib);
-                  return { ...f, fitted: true, calib: nextCalib };
-                })
-              }
-            />
+            {hasMounted3d && (
+              <Viewport
+                ref={viewportRef}
+                model={model}
+                rig={rig}
+                selected={selected}
+                onSelect={setSelected}
+                onBoneDrag={onBoneDrag}
+                ikMode={ikMode}
+                orbitOnly={device.isCompact && touchOrbitOnly}
+                onIkDrag={onIkDrag}
+                cameraLocked={cameraLocked}
+                settings={settings}
+                cameraPose={cameraPose}
+                propsList={propsList}
+                selectedPropId={selectedPropId}
+                onSelectProp={setSelectedPropId}
+                customPropObjects={customPropObjects}
+                face={activeTab === "create" ? { ...face, expression: "Neutral", overrides: {}, fx: [] } : face}
+                facePack={activeFacePack}
+                faceFitRequest={faceFitRequest}
+                outfit={outfit}
+                wardrobeAssets={wardrobeAssets}
+                primaryStageTransform={
+                  activeTab === "create"
+                    ? { position: [0, 0, 0], rotationY: 0 }
+                    : { position: activeActorMeta.position, rotationY: activeActorMeta.rotationY }
+                }
+                primaryVisible={activeTab === "create" ? true : activeActorMeta.visible}
+                coActors={activeTab === "create" ? [] : coActors}
+                onSelectActor={switchActiveActor}
+                onFaceFit={(fit: Partial<FaceCalibration>) =>
+                  setFace((f) => {
+                    const nextCalib = { ...f.calib, ...fit };
+                    saveModelCalibration(activeActorMeta.modelKey, nextCalib);
+                    return { ...f, fitted: true, calib: nextCalib };
+                  })
+                }
+              />
+            )}
           </div>
 
           {extractOpen && (

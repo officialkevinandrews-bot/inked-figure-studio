@@ -59,11 +59,20 @@ test.describe("Inked Figure Studio End-to-End Regression", () => {
     page.on("pageerror", (err) => pageErrors.push(String(err)));
 
     await page.goto("/");
-    await expect(page.locator("[data-scene-ready]")).toBeVisible();
-    await expect(page.locator("canvas")).toBeVisible();
+    await expect(page.locator("#manga-page-container")).toBeVisible();
+
+    // Verify exact navigation tab ordering: Manga Panels -> Create Character -> 3D Pose Studio
+    const navButtons = await page.getByRole("navigation", { name: "Workspace views" }).locator("button").allInnerTexts();
+    expect(navButtons.map((t) => t.replace(/\s+/g, " ").trim())).toEqual([
+      "Manga Panels",
+      "Create Character",
+      "3D Pose Studio",
+    ]);
 
     // Enter 3D Pose Studio workspace and select Poses tab
-    await page.getByRole("button", { name: "3D Pose Studio" }).click();
+    await page.getByRole("button", { name: /3D Pose/ }).click();
+    await expect(page.locator("[data-scene-ready]")).toBeVisible();
+    await expect(page.locator("canvas")).toBeVisible();
     await page.getByRole("button", { name: /🥋 Poses/ }).click();
 
     // 1. Hand Presets & Undo

@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { AccountMenu } from "@/components/auth/AccountMenu";
+import { FeedbackButton } from "@/components/feedback/FeedbackProvider";
 import {
   PAGE_LAYER_ID,
   applyManualElementPatch,
@@ -92,7 +93,6 @@ import {
   RotateCw,
   Sparkles,
   Layers,
-  ArrowLeft,
   MessageSquare,
   Zap,
   Smile,
@@ -127,6 +127,7 @@ import {
 export interface PanelStudioProps {
   layout: PageLayout;
   onUpdateLayout: (updated: PageLayout) => void;
+  onOpenCreateCharacter?: () => void;
   onOpen3dStudio: () => void;
   onRePoseIn3D?: (source3d: NonNullable<PlacedElement["source3d"]>) => void;
   allPages?: PageLayout[];
@@ -163,6 +164,7 @@ type LeftTrayTab = "panels" | "backgrounds" | "characters" | "balloons";
 export function PanelStudio({
   layout,
   onUpdateLayout,
+  onOpenCreateCharacter,
   onOpen3dStudio,
   onRePoseIn3D,
   allPages,
@@ -1407,19 +1409,41 @@ export function PanelStudio({
     <div className="flex h-dvh flex-col bg-background text-foreground select-none overflow-hidden">
       {/* Top Bar */}
       <header className="relative flex flex-wrap items-center gap-1.5 sm:gap-2.5 border-b-2 border-foreground px-2 sm:px-4 py-1.5 sm:py-2 bg-card safe-pt shrink-0">
-        <button
-          onClick={onOpen3dStudio}
-          aria-label="Back to 3D Pose Studio"
-          className="flex items-center gap-1 rounded-sm border-2 border-foreground bg-primary px-2 sm:px-3 py-1 font-semibold text-primary-foreground shadow-ink text-xs transition-transform hover:-translate-y-0.5 shrink-0"
-        >
-          <ArrowLeft className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
-          <span className="hidden md:inline">Back to 3D Pose Studio</span>
-          <span className="md:hidden">3D</span>
-        </button>
-
-        <h1 className="font-display text-lg tracking-wide hidden xl:block shrink-0">
+        <h1 className="font-display text-base sm:text-lg tracking-wide shrink-0">
           MANGA<span className="text-primary">STUDIO</span>
         </h1>
+
+        <nav aria-label="Workspace views" className="flex items-center gap-1 text-xs sm:text-sm overflow-x-auto max-w-full">
+          <button
+            type="button"
+            aria-pressed={true}
+            className="whitespace-nowrap rounded-sm bg-foreground text-background px-2 sm:px-2.5 py-1 font-semibold transition-colors"
+          >
+            <span className="hidden sm:inline">Manga Panels</span>
+            <span className="sm:hidden">Panels</span>
+            {layout.elements.length > 0 && ` (${layout.elements.length})`}
+          </button>
+          {onOpenCreateCharacter && (
+            <button
+              type="button"
+              onClick={onOpenCreateCharacter}
+              aria-pressed={false}
+              className="whitespace-nowrap rounded-sm px-2 sm:px-2.5 py-1 font-semibold text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <span className="hidden sm:inline">Create Character</span>
+              <span className="sm:hidden">Character</span>
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onOpen3dStudio}
+            aria-pressed={false}
+            className="whitespace-nowrap rounded-sm px-2 sm:px-2.5 py-1 font-semibold text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <span className="hidden sm:inline">3D Pose Studio</span>
+            <span className="sm:hidden">3D Pose</span>
+          </button>
+        </nav>
 
         {/* Manga Series & Chapter Library Switcher (Manga Panels only) */}
         {library && activeProject && activeChapter && (
@@ -1724,6 +1748,7 @@ export function PanelStudio({
             <span className="hidden sm:inline">Export Chapter</span>
             <span className="sm:hidden">Export</span>
           </button>
+          <FeedbackButton compact area="Manga Panels" />
           <AccountMenu compact />
         </div>
       </header>

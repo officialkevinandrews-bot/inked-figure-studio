@@ -107,6 +107,26 @@ service cloud.firestore {
     //      - size: int (optional, 0..960000)
     //      - updatedAt: number (optional, >= 0)
     //
+    // 6. Collection: /feedback/{itemId}
+    //    Document ID: {itemId} (<= 128 chars)
+    //    Shared across all allowlisted team members (`isAllowlisted()`).
+    //    Fields:
+    //      - id: string (required, must equal itemId, immutable)
+    //      - type: string (required, 'bug' | 'feature' | 'feedback')
+    //      - status: string (required, 'open' | 'in-progress' | 'done')
+    //      - priority: string (required, 'low' | 'medium' | 'high')
+    //      - area: string (required, 1..64 chars)
+    //      - title: string (required, 1..160 chars)
+    //      - description: string (required, <= 4000 chars)
+    //      - authorUid: string (required, 1..128 chars, == request.auth.uid on create, immutable)
+    //      - authorEmail: string (required, <= 320 chars, immutable)
+    //      - authorName: string | null (optional, <= 120 chars)
+    //      - deviceInfo: string | null (optional, <= 256 chars)
+    //      - screenshotDataUrl: string | null (optional, <= 650000 chars, data:image/(jpeg|jpg|png|webp);base64,...)
+    //      - replies: list (required, <= 100 items)
+    //      - createdAt: number (required, >= 0, immutable)
+    //      - updatedAt: number (required, >= 0)
+    //
     // ===============================================================
 
     // ===============================================================
@@ -119,11 +139,6 @@ service cloud.firestore {
              request.auth.uid is string &&
              request.auth.uid.size() > 0 &&
              request.auth.uid.size() <= 128;
-    }
-
-    // Alias for consistency with Firebase Rules conventions.
-    function isAuthenticated() {
-      return isSignedIn();
     }
 
     // Check if the authenticated caller owns the target userId namespace.
@@ -451,6 +466,54 @@ service cloud.firestore {
              isValidOptionalNullableString(data, 'updatedBy', 0, 320);
     }
 
+    function isValidFeedbackItem(itemId, data) {
+      let allowed = [
+        'id', 'type', 'status', 'priority', 'area', 'title', 'description',
+        'authorUid', 'authorEmail', 'authorName', 'deviceInfo',
+        'screenshotDataUrl', 'replies', 'createdAt', 'updatedAt'
+      ];
+      let required = [
+        'id', 'type', 'status', 'priority', 'area', 'title', 'description',
+        'authorUid', 'authorEmail', 'replies', 'createdAt', 'updatedAt'
+      ];
+      return itemId is string &&
+             itemId.size() > 0 &&
+             itemId.size() <= 128 &&
+             hasOnlyAllowedFields(data, allowed) &&
+             hasRequiredFields(data, required) &&
+             data.id is string &&
+             data.id == itemId &&
+             data.type in ['bug', 'feature', 'feedback'] &&
+             data.status in ['open', 'in-progress', 'done'] &&
+             data.priority in ['low', 'medium', 'high'] &&
+             data.area is string &&
+             data.area.size() >= 1 &&
+             data.area.size() <= 64 &&
+             data.title is string &&
+             data.title.size() >= 1 &&
+             data.title.size() <= 160 &&
+             data.description is string &&
+             data.description.size() <= 4000 &&
+             data.authorUid is string &&
+             data.authorUid.size() > 0 &&
+             data.authorUid.size() <= 128 &&
+             data.authorEmail is string &&
+             data.authorEmail.size() <= 320 &&
+             isValidOptionalNullableString(data, 'authorName', 0, 120) &&
+             isValidOptionalNullableString(data, 'deviceInfo', 0, 256) &&
+             (!('screenshotDataUrl' in data) ||
+              data.screenshotDataUrl == null ||
+              (data.screenshotDataUrl is string &&
+               data.screenshotDataUrl.size() <= 650000 &&
+               data.screenshotDataUrl.matches('^data:image/(jpeg|jpg|png|webp);base64,.*'))) &&
+             data.replies is list &&
+             data.replies.size() <= 100 &&
+             data.createdAt is number &&
+             data.createdAt >= 0 &&
+             data.updatedAt is number &&
+             data.updatedAt >= 0;
+    }
+
     // ===============================================================
     // Default Deny Root Rule
     // ===============================================================
@@ -475,6 +538,22 @@ service cloud.firestore {
       allow create, update: if isAllowlisted() &&
                                isValidAllowlistDoc(request.resource.data);
       allow delete: if false;
+    }
+
+    // ===============================================================
+    // Shared Team Feedback Collection
+    // ===============================================================
+
+    match /feedback/{itemId} {
+      allow read: if isAllowlisted();
+      allow create: if isAllowlisted() &&
+                       isValidFeedbackItem(itemId, request.resource.data) &&
+                       request.resource.data.authorUid == request.auth.uid;
+      allow update: if isAllowlisted() &&
+                       isValidFeedbackItem(itemId, request.resource.data) &&
+                       areImmutableFieldsUnchanged(['id', 'authorUid', 'authorEmail', 'createdAt']);
+      allow delete: if isAllowlisted() &&
+                       (resource.data.authorUid == request.auth.uid || isSeedAllowlisted());
     }
 
     // ===============================================================
