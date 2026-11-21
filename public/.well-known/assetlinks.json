@@ -1,0 +1,10 @@
+﻿[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.mangakadesk.app",
+      "sha256_cert_fingerprints": ["52:01:9E:75:EC:17:9D:0D:5F:8C:1C:69:0C:5C:EF:BA:E0:4B:02:3D:60:82:4B:CE:11:FC:4E:F6:DA:CC:8B:17"]
+    }
+  }
+]

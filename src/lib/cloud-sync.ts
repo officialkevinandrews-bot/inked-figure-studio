@@ -144,16 +144,23 @@ let pendingRemoteSnapshot: {
 } | null = null;
 
 const statusSubscribers = new Set<(status: CloudSyncStatus) => void>();
+let statusFlushScheduled = false;
 
 function notifyStatus(patch: Partial<CloudSyncStatus>): void {
   currentStatus = { ...currentStatus, ...patch };
-  for (const fn of statusSubscribers) {
-    try {
-      fn(currentStatus);
-    } catch {
-      /* ignore subscriber error */
+  if (statusFlushScheduled) return;
+  statusFlushScheduled = true;
+  queueMicrotask(() => {
+    statusFlushScheduled = false;
+    const snap = currentStatus;
+    for (const fn of statusSubscribers) {
+      try {
+        fn(snap);
+      } catch {
+        /* ignore subscriber error */
+      }
     }
-  }
+  });
 }
 
 export function getCloudSyncStatus(): CloudSyncStatus {

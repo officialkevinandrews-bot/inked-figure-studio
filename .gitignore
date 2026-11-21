@@ -32,3 +32,14 @@ test-results/
 *.njsproj
 *.sln
 *.sw?
+
+# Mobile & Desktop packaging
+*.keystore
+*.jks
+release-artifacts/
+android-twa/.gradle/
+android-twa/build/
+android-twa/app/build/
+android-twa/local.properties
+desktop/node_modules/
+desktop/dist/

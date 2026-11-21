@@ -102,15 +102,16 @@ export function ExportModal({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-2 sm:p-4">
       <div className="flex h-auto max-h-[92dvh] w-full max-w-2xl flex-col rounded-lg border-2 border-foreground bg-card shadow-2xl overflow-hidden">
         {/* Header */}
-        <div className="flex items-center justify-between border-b-2 border-foreground bg-muted px-5 py-3">
+        <div className="flex items-center justify-between border-b-2 border-foreground bg-muted px-4 sm:px-5 py-2.5 sm:py-3 shrink-0">
           <div className="flex items-center gap-2">
             <Download className="h-5 w-5 text-primary" />
-            <h2 className="font-display text-lg tracking-wide">
+            <h2 className="font-display text-base sm:text-lg tracking-wide">
               EXPORT <span className="text-primary">MANGAKADESK</span>
             </h2>
           </div>
           <button
             onClick={onClose}
+            aria-label="Close Export Modal"
             className="rounded p-1 text-muted-foreground hover:bg-background hover:text-foreground"
           >
             <X className="h-5 w-5" />
@@ -118,7 +119,7 @@ export function ExportModal({
         </div>
 
         {/* Export Tabs */}
-        <div className="flex border-b border-border bg-card text-xs font-semibold">
+        <div className="flex border-b border-border bg-card text-xs font-semibold shrink-0">
           <button
             onClick={() => setTab("image")}
             className={`flex flex-1 items-center justify-center gap-1.5 py-2.5 transition-colors ${
@@ -156,7 +157,7 @@ export function ExportModal({
         </div>
 
         {/* Tab Content */}
-        <div className="p-6 space-y-5 text-xs">
+        <div className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-6 space-y-4 sm:space-y-5 text-xs">
           {tab === "image" && (
             <div className="space-y-4">
               <div>

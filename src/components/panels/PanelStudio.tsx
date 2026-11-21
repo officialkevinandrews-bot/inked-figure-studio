@@ -1490,8 +1490,8 @@ export function PanelStudio({
           </div>
         )}
 
-        {/* Format Selector (inline on md+, also reachable inside More menu on phones) */}
-        <div className="hidden sm:flex items-center gap-1.5 text-xs shrink-0">
+        {/* Format Selector (hidden on ultra-short phone landscape; always reachable inside More menu on phones/tablets) */}
+        <div className="hidden sm:flex [@media(max-height:480px)]:hidden items-center gap-1.5 text-xs shrink-0">
           <span className="font-semibold text-muted-foreground hidden lg:inline">Paper:</span>
           <select
             aria-label="Paper format"
@@ -1581,7 +1581,7 @@ export function PanelStudio({
             onClick={fitToScreen}
             title="Auto-Fit Page to Screen (no cutoffs)"
             aria-label="Fit Screen"
-            className="hidden sm:flex rounded-sm border-2 border-foreground bg-accent px-2 py-1 font-semibold text-xs shadow-ink hover:bg-accent/80 items-center gap-1"
+            className="hidden sm:flex [@media(max-height:480px)]:hidden rounded-sm border-2 border-foreground bg-accent px-2 py-1 font-semibold text-xs shadow-ink hover:bg-accent/80 items-center gap-1"
           >
             <Maximize2 className="h-3.5 w-3.5" />
             <span className="hidden xl:inline">Fit Screen</span>
@@ -1589,7 +1589,7 @@ export function PanelStudio({
           <button
             onClick={() => setZoom(1.0)}
             title="100% Actual Size"
-            className={`hidden md:inline-block rounded-sm border px-2 py-1 text-xs font-semibold ${
+            className={`hidden md:inline-block [@media(max-height:480px)]:hidden rounded-sm border px-2 py-1 text-xs font-semibold ${
               zoom === 1.0 ? "border-foreground bg-foreground text-background" : "border-border hover:border-foreground"
             }`}
           >
@@ -1598,17 +1598,17 @@ export function PanelStudio({
           <button
             onClick={() => setZoom((z) => Math.max(0.25, Math.round((z - 0.1) * 10) / 10))}
             aria-label="Zoom out"
-            className="hidden sm:inline-block rounded-sm border border-border p-1 hover:border-foreground"
+            className="hidden sm:inline-block [@media(max-height:480px)]:hidden rounded-sm border border-border p-1 hover:border-foreground"
           >
             <ZoomOut className="h-4 w-4" />
           </button>
-          <span className="hidden sm:inline-block w-10 text-center tabular-nums font-mono font-semibold">
+          <span className="hidden sm:inline-block [@media(max-height:480px)]:hidden w-10 text-center tabular-nums font-mono font-semibold">
             {Math.round(zoom * 100)}%
           </span>
           <button
             onClick={() => setZoom((z) => Math.min(1.5, Math.round((z + 0.1) * 10) / 10))}
             aria-label="Zoom in"
-            className="hidden sm:inline-block rounded-sm border border-border p-1 hover:border-foreground"
+            className="hidden sm:inline-block [@media(max-height:480px)]:hidden rounded-sm border border-border p-1 hover:border-foreground"
           >
             <ZoomIn className="h-4 w-4" />
           </button>

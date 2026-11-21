@@ -84,6 +84,10 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { name: "viewport", content: "width=device-width, initial-scale=1, viewport-fit=cover" },
       { title: "MangakaDesk" },
       { name: "description", content: "All-in-one manga panels, webtoon layout, and chapter creation studio" },
+      { name: "theme-color", content: "#111111" },
+      { name: "mobile-web-app-capable", content: "yes" },
+      { name: "apple-mobile-web-app-capable", content: "yes" },
+      { name: "apple-mobile-web-app-title", content: "MangakaDesk" },
       { name: "author", content: "Lovable" },
       { property: "og:title", content: "MangakaDesk" },
       { property: "og:description", content: "All-in-one manga panels, webtoon layout, and chapter creation studio" },
@@ -100,6 +104,8 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { rel: "stylesheet", href: "https://fonts.googleapis.com/css2?family=Dela+Gothic+One&family=Zen+Kaku+Gothic+New:wght@400;700&display=swap" },
       { rel: "stylesheet", href: GOOGLE_FONTS_HREF },
       { rel: "icon", href: "/favicon.ico", type: "image/x-icon" },
+      { rel: "manifest", href: "/manifest.webmanifest" },
+      { rel: "apple-touch-icon", href: "/icons/apple-touch-icon.png" },
     ],
   }),
   shellComponent: RootShell,
@@ -124,6 +130,16 @@ function RootShell({ children }: { children: ReactNode }) {
 
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
+
+  useEffect(() => {
+    if (
+      typeof window !== "undefined" &&
+      import.meta.env.PROD &&
+      "serviceWorker" in navigator
+    ) {
+      void navigator.serviceWorker.register("/sw.js").catch(() => {});
+    }
+  }, []);
 
   return (
     <QueryClientProvider client={queryClient}>

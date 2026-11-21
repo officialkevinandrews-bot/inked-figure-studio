@@ -119,7 +119,7 @@ export function AccountMenu({ compact = false }: AccountMenuProps) {
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} aria-hidden="true" />
           <div
             data-testid="account-menu-popover"
-            className="absolute right-0 top-full z-50 mt-1.5 w-76 max-w-[92vw] rounded-sm border-2 border-foreground bg-card p-3 text-xs shadow-ink"
+            className="absolute right-0 top-full z-50 mt-1.5 w-76 max-w-[92vw] max-h-[78dvh] overflow-y-auto rounded-sm border-2 border-foreground bg-card p-3 text-xs shadow-ink"
           >
             <div className="border-b border-border pb-2">
               <div className="font-bold truncate">{user.displayName || "Signed In"}</div>
