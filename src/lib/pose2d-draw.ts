@@ -11,6 +11,7 @@ import {
   type RenderMode2D,
 } from "./character2d-types";
 import {
+  extractProfileForearmForPose2D,
   preloadCharacter2DImages,
   renderCharacter2DSync,
   resolveEffectiveAnchors,
@@ -88,7 +89,8 @@ function makeCharRigCacheKey(
 ): string {
   const expr = actor.expressionOverride ?? char.face.expression;
   const fx = (actor.fxOverride ?? char.face.fx).join(",");
-  return `${char.id}|${char.updatedAt}|${angle}|${mode}|${expr}|${fx}`;
+  const depth = char.shadingDepth ?? "cel";
+  return `${char.id}|${char.updatedAt}|${angle}|${mode}|${depth}|${char.headShapeId ?? ""}|${char.hair.style}|${char.clothes.top}|${char.clothes.bottom}|${char.clothes.footwear}|${expr}|${fx}`;
 }
 
 function isProfileAngle(angle: Angle2D): boolean {
@@ -142,6 +144,7 @@ function inpaintProfileArmStrip(
   torsoCanvas: HTMLCanvasElement,
   anchors: BodyAngleAnchors,
   mode: RenderMode2D,
+  maxY?: number,
 ) {
   const ctx = torsoCanvas.getContext("2d");
   if (!ctx) return;
@@ -152,7 +155,7 @@ function inpaintProfileArmStrip(
 
   const armPts = anchors.armLeft;
   const yStart = Math.max(0, Math.round(anchors.shoulderY + 18));
-  const yEnd = Math.min(h - 1, Math.round(anchors.hemY + 4));
+  const yEnd = Math.min(h - 1, Math.round(maxY ?? anchors.hemY + 4));
   const halfArm = Math.max(13, Math.round(anchors.armWidth * 0.44));
 
   for (let y = yStart; y <= yEnd; y++) {
@@ -336,8 +339,29 @@ export function buildCharacterRigSlices(
   const mctx = master.getContext("2d")!;
   renderCharacter2DSync(mctx, effectiveChar, baseModel, customParts, imageMap, headPack);
 
-  const a = resolveEffectiveAnchors(baseModel, effectiveChar, actor.angle, headPack);
   const profile = isProfileAngle(actor.angle);
+  const usesIllustratedBodyCutout =
+    effectiveChar.clothes.top !== "none" || effectiveChar.clothes.bottom !== "none";
+  const bodyNoArmMaster =
+    profile && usesIllustratedBodyCutout
+      ? (() => {
+          const c = document.createElement("canvas");
+          c.width = CHAR2D_W;
+          c.height = CHAR2D_H;
+          renderCharacter2DSync(
+            c.getContext("2d")!,
+            effectiveChar,
+            baseModel,
+            customParts,
+            imageMap,
+            headPack,
+            { skipProfileForegroundArm: true },
+          );
+          return c;
+        })()
+      : null;
+
+  const a = resolveEffectiveAnchors(baseModel, effectiveChar, actor.angle, headPack);
 
   const shL = a.armLeft[0];
   const elL = a.armLeft[1];
@@ -364,14 +388,17 @@ export function buildCharacterRigSlices(
   const topStyle = effectiveChar.clothes.top;
   const bottomStyle = effectiveChar.clothes.bottom;
   const topPad =
-    topStyle === "hoodie" || topStyle === "zip_jacket" || topStyle === "blazer"
+    topStyle === "zip_hoodie_tee" ||
+    topStyle === "hoodie" ||
+    topStyle === "zip_jacket" ||
+    topStyle === "blazer"
       ? 11
       : topStyle === "none"
         ? 2
         : 7;
   const topWiden = topStyle === "none" ? 1 : 4.5;
   const legWiden =
-    bottomStyle === "cargo" ? 9 : bottomStyle === "shorts" ? 6 : bottomStyle === "none" ? 1.5 : 5;
+    bottomStyle === "cargo" ? 10 : bottomStyle === "shorts" ? 6 : bottomStyle === "none" ? 1.5 : 5;
 
   // Exact tangent hinge radii matching drawSleeve / drawBottoms2D garment width + stroke so ink outlines stay 100% intact with zero tabs
   const shoulderR = Math.max(20, a.armWidth * (profile ? 0.58 : 0.66) + topWiden);
@@ -412,6 +439,18 @@ export function buildCharacterRigSlices(
   const hTipL = handTip(elL, wrL);
   const hTipR = handTip(elR, wrR);
 
+  const profileForearmCutout =
+    profile && usesIllustratedBodyCutout
+      ? extractProfileForearmForPose2D(
+          effectiveChar,
+          baseModel,
+          actor.angle,
+          mode,
+          imageMap,
+          headPack,
+        )
+      : null;
+
   const sliceArm = (side: "left" | "right", dimFar: number) => {
     const sh = side === "left" ? shL : shR;
     const el = side === "left" ? elL : elR;
@@ -419,7 +458,26 @@ export function buildCharacterRigSlices(
     const tip = side === "left" ? hTipL : hTipR;
 
     const armMaster = profile
-      ? master
+      ? profileForearmCutout
+        ? (() => {
+            const c = document.createElement("canvas");
+            c.width = CHAR2D_W;
+            c.height = CHAR2D_H;
+            const cx = c.getContext("2d")!;
+            cx.save();
+            cx.beginPath();
+            cx.rect(Math.max(0, sh.x - 36), Math.max(0, sh.y - 38), 86, el.y - sh.y + 42);
+            cx.clip();
+            cx.drawImage(master, 0, 0);
+            cx.restore();
+            cx.drawImage(
+              profileForearmCutout.canvas,
+              profileForearmCutout.x,
+              profileForearmCutout.y,
+            );
+            return c;
+          })()
+        : master
       : (() => {
           const c = document.createElement("canvas");
           c.width = CHAR2D_W;
@@ -433,45 +491,49 @@ export function buildCharacterRigSlices(
           return c;
         })();
 
+    const profArmShiftX = profile && profileForearmCutout ? (actor.angle === 90 ? 12 : -12) : 0;
     const maxUpR = Math.max(shoulderR, elbowR);
     const upperArm = sliceRegion(
       armMaster,
       sh,
       {
-        x: Math.min(sh.x, el.x) - maxUpR - 4,
+        x: Math.min(sh.x, el.x) - maxUpR - 6,
         y: Math.min(sh.y, el.y) - maxUpR - 6,
-        w: Math.abs(el.x - sh.x) + (maxUpR + 4) * 2,
+        w: Math.abs(el.x - sh.x) + (maxUpR + 6) * 2 + 12,
         h: Math.abs(el.y - sh.y) + (maxUpR + 6) * 2,
       },
-      (ctx) => traceCapsulePath(ctx, sh, el, shoulderR, elbowR, 0, 0),
+      (ctx) => traceCapsulePath(ctx, sh, el, shoulderR, elbowR + 4, 0, 0),
       { dimDarken: dimFar },
     );
 
-    const maxFoR = Math.max(elbowR, wristR);
+    const maxFoR = Math.max(elbowR, wristR) + (profileForearmCutout ? 8 : 0);
+    const elBox = { x: el.x + profArmShiftX, y: el.y };
+    const wrBox = { x: wr.x + profArmShiftX, y: wr.y };
+    const tipBox = { x: tip.x + profArmShiftX, y: tip.y };
     const forearm = sliceRegion(
       armMaster,
       el,
       {
-        x: Math.min(el.x, wr.x) - maxFoR - 2,
-        y: Math.min(el.y, wr.y) - maxFoR - 2,
-        w: Math.abs(wr.x - el.x) + (maxFoR + 2) * 2,
-        h: Math.abs(wr.y - el.y) + (maxFoR + 2) * 2,
+        x: Math.min(elBox.x, wrBox.x) - maxFoR - 2,
+        y: Math.min(elBox.y, wrBox.y) - maxFoR - 2,
+        w: Math.abs(wrBox.x - elBox.x) + (maxFoR + 2) * 2,
+        h: Math.abs(wrBox.y - elBox.y) + (maxFoR + 2) * 2,
       },
-      (ctx) => traceCapsulePath(ctx, el, wr, elbowR, wristR, 0, 0),
+      (ctx) => traceCapsulePath(ctx, elBox, wrBox, elbowR + 4, wristR + 4, 0, 0),
       { dimDarken: dimFar },
     );
 
-    const handR = Math.max(wristR, 18);
+    const handR = Math.max(wristR, 18) + (profileForearmCutout ? 8 : 0);
     const hand = sliceRegion(
       armMaster,
       wr,
       {
-        x: Math.min(wr.x, tip.x) - handR - 4,
-        y: Math.min(wr.y, tip.y) - handR - 4,
-        w: Math.abs(tip.x - wr.x) + (handR + 4) * 2,
-        h: Math.abs(tip.y - wr.y) + (handR + 20) * 2,
+        x: Math.min(wrBox.x, tipBox.x) - handR - 4,
+        y: Math.min(wrBox.y, tipBox.y) - handR - 4,
+        w: Math.abs(tipBox.x - wrBox.x) + (handR + 4) * 2,
+        h: Math.abs(tipBox.y - wrBox.y) + (handR + 20) * 2,
       },
-      (ctx) => traceCapsulePath(ctx, wr, tip, wristR, handR, 0, 16),
+      (ctx) => traceCapsulePath(ctx, wrBox, tipBox, wristR + 4, handR, 0, 16),
       { dimDarken: dimFar },
     );
 
@@ -488,7 +550,7 @@ export function buildCharacterRigSlices(
   const finalArmR = profile ? (actor.angle === 90 ? baseArmDim : baseArmBright) : rightArmSlices;
 
   // 3. Torso & Pelvis base canvas (head trimmed + outer arms removed strictly outside clothing outline)
-  const bodyCleaned = cloneCanvas(master);
+  const bodyCleaned = cloneCanvas(bodyNoArmMaster ?? master);
   {
     const bctx = bodyCleaned.getContext("2d")!;
     bctx.save();
@@ -538,8 +600,13 @@ export function buildCharacterRigSlices(
     }
     bctx.restore();
 
-    if (profile) {
-      inpaintProfileArmStrip(bodyCleaned, a, mode);
+    if (profile && (!bodyNoArmMaster || effectiveChar.clothes.top === "none")) {
+      inpaintProfileArmStrip(
+        bodyCleaned,
+        a,
+        mode,
+        effectiveChar.clothes.bottom !== "none" ? 472 : undefined,
+      );
     }
   }
 
@@ -597,7 +664,7 @@ export function buildCharacterRigSlices(
     const toe = side === "left" ? toeL : toeR;
 
     const legMaster = profile
-      ? master
+      ? (bodyNoArmMaster ?? master)
       : (() => {
           const c = document.createElement("canvas");
           c.width = CHAR2D_W;

@@ -9,7 +9,11 @@ import {
   stepAngle2D,
 } from "./character2d-types";
 import { BUILTIN_MODEL_MALE_ATHLETIC_V1, MODEL1_ANCHORS } from "./character2d-model1";
-import { BUILTIN_HEAD_PACKS_2D, DEFAULT_HEAD_SHAPE_ID, resolveHeadPack2D } from "./character2d-heads";
+import {
+  BUILTIN_HEAD_PACKS_2D,
+  DEFAULT_HEAD_SHAPE_ID,
+  resolveHeadPack2D,
+} from "./character2d-heads";
 import { resolveEffectiveAnchors } from "./character2d-draw";
 import {
   BASE_MODELS_2D_STORAGE_KEY,
@@ -27,6 +31,14 @@ import {
   upsertCharacter2D,
 } from "./character2d-store";
 import { LEGACY_EXACT_KEYS, setActiveStorageUser } from "./user-storage";
+import {
+  MODEL1_ART_TEMPLATES_2D,
+  resolveIllustratedBottomPack2D,
+  resolveIllustratedFacePack2D,
+  resolveIllustratedFootwearPack2D,
+  resolveIllustratedHairPack2D,
+  resolveIllustratedTopPack2D,
+} from "./character2d-catalog";
 
 describe("2D Character Creator Studio data model & Model #1", () => {
   beforeEach(() => {
@@ -136,10 +148,14 @@ describe("2D Character Creator Studio data model & Model #1", () => {
 
     const baseChar = createDefaultCharacter2D("Head Tester");
     const classicA = resolveEffectiveAnchors(BUILTIN_MODEL_MALE_ATHLETIC_V1, baseChar, 0);
-    const squareA = resolveEffectiveAnchors(BUILTIN_MODEL_MALE_ATHLETIC_V1, {
-      ...baseChar,
-      headShapeId: "strong-square",
-    }, 0);
+    const squareA = resolveEffectiveAnchors(
+      BUILTIN_MODEL_MALE_ATHLETIC_V1,
+      {
+        ...baseChar,
+        headShapeId: "strong-square",
+      },
+      0,
+    );
     expect(squareA.neckR - squareA.neckL).toBeGreaterThan(classicA.neckR - classicA.neckL);
 
     // Cross-body fit transforms head/face positions relative to collarbone pivot
@@ -166,7 +182,42 @@ describe("2D Character Creator Studio data model & Model #1", () => {
     saveCustomHeads2D([customHead]);
     expect(loadCustomHeads2D()).toHaveLength(1);
     expect(resolveHeadPack2D(undefined, loadCustomHeads2D()).id).toBe("classic-oval");
-    expect(resolveHeadPack2D("custom-head-test", loadCustomHeads2D()).name).toBe("Custom Test Head");
+    expect(resolveHeadPack2D("custom-head-test", loadCustomHeads2D()).name).toBe(
+      "Custom Test Head",
+    );
     expect(resolveHeadPack2D("unknown-head-id", loadCustomHeads2D()).id).toBe("classic-oval");
+  });
+
+  it("registers illustrated Set 1 defaults, resolves legacy IDs cleanly, and exposes Model #1 art templates", () => {
+    const def = createDefaultCharacter2D("Set 1 Tester");
+    expect(def.shadingDepth).toBe("cel");
+    expect(def.hair.style).toBe("spiky");
+    expect(def.clothes.top).toBe("zip_hoodie_tee");
+    expect(def.clothes.bottom).toBe("cargo");
+    expect(def.clothes.footwear).toBe("sneakers");
+    expect(def.face.eyeStyle).toBe("sharp");
+    expect(def.face.browStyle).toBe("sharp");
+    expect(def.face.noseStyle).toBe("sharp");
+    expect(def.face.mouthStyle).toBe("sharp");
+
+    expect(resolveIllustratedHairPack2D("none")).toBeNull();
+    expect(resolveIllustratedTopPack2D("none")).toBeNull();
+    expect(resolveIllustratedBottomPack2D("none")).toBeNull();
+    expect(resolveIllustratedFootwearPack2D("none")).toBeNull();
+    expect(resolveIllustratedFacePack2D("none")).toBeNull();
+
+    // Legacy procedural IDs resolve gracefully to illustrated Set 1 packs
+    expect(resolveIllustratedHairPack2D("messy")?.id).toBe("spiky");
+    expect(resolveIllustratedTopPack2D("hoodie")?.id).toBe("zip_hoodie_tee");
+    expect(resolveIllustratedTopPack2D("tshirt")?.id).toBe("zip_hoodie_tee");
+    expect(resolveIllustratedBottomPack2D("jeans")?.id).toBe("cargo");
+    expect(resolveIllustratedFootwearPack2D("boots")?.id).toBe("sneakers");
+    expect(resolveIllustratedFacePack2D("round")?.id).toBe("sharp");
+
+    expect(MODEL1_ART_TEMPLATES_2D).toHaveLength(3);
+    for (const tpl of MODEL1_ART_TEMPLATES_2D) {
+      expect(tpl.href.startsWith("/characters/templates/")).toBe(true);
+      expect(tpl.href.endsWith(".png")).toBe(true);
+    }
   });
 });

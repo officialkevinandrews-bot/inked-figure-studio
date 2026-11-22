@@ -8,12 +8,9 @@ import {
   type HeadAngleAnchors2D,
   type HeadPack2D,
   type RenderMode2D,
+  type ShadingDepth2D,
 } from "./character2d-types";
-import {
-  OVERLAY_HEAD_CROP_Y0,
-  OVERLAY_HEAD_H,
-  OVERLAY_HEAD_W,
-} from "./character2d-heads";
+import { OVERLAY_HEAD_CROP_Y0, OVERLAY_HEAD_H, OVERLAY_HEAD_W } from "./character2d-heads";
 import { defaultAnchorsForAngle } from "./character2d-model1";
 
 /**
@@ -153,7 +150,8 @@ export function sliceTurnaroundSheet(
   removeWhiteBg = true,
 ): { frames: Record<Angle2D, string>; anchors: Record<Angle2D, BodyAngleAnchors> } {
   const w = source instanceof HTMLImageElement ? source.naturalWidth || source.width : source.width;
-  const h = source instanceof HTMLImageElement ? source.naturalHeight || source.height : source.height;
+  const h =
+    source instanceof HTMLImageElement ? source.naturalHeight || source.height : source.height;
   if (!w || !h) throw new Error("Image has zero dimensions.");
 
   const srcCanvas = document.createElement("canvas");
@@ -258,7 +256,8 @@ export function prepareSinglePartImage(
   removeWhiteBg = true,
 ): string {
   const w = source instanceof HTMLImageElement ? source.naturalWidth || source.width : source.width;
-  const h = source instanceof HTMLImageElement ? source.naturalHeight || source.height : source.height;
+  const h =
+    source instanceof HTMLImageElement ? source.naturalHeight || source.height : source.height;
   if (!w || !h) return "";
 
   const canvas = document.createElement("canvas");
@@ -458,14 +457,308 @@ export function applySkinToneCanvas(
   return out;
 }
 
-/** Applies RGB multiply-tinting in Color Mode or pure lineart extraction in Manga Mode for uploaded custom parts. */
+/**
+ * Crisp pure-lineart extractor tuned for neutral white/cool-gray illustrated clothes & hair.
+ * Keeps opaque interior white `#FFFFFF` and razor-sharp `#000000` ink outlines, seams, and folds,
+ * stripping gray cel-shading fills cleanly for Manga Ink Mode.
+ */
+export function extractIllustratedMangaLineartCanvas(
+  source: HTMLImageElement | HTMLCanvasElement,
+  targetW?: number,
+  targetH?: number,
+): HTMLCanvasElement {
+  const sw =
+    source instanceof HTMLImageElement ? source.naturalWidth || source.width : source.width;
+  const sh =
+    source instanceof HTMLImageElement ? source.naturalHeight || source.height : source.height;
+  const w = targetW ?? (sw || 1);
+  const h = targetH ?? (sh || 1);
+  const out = document.createElement("canvas");
+  out.width = w;
+  out.height = h;
+  const ctx = out.getContext("2d");
+  if (!ctx || !sw || !sh) return out;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(source, 0, 0, w, h);
+
+  const img = ctx.getImageData(0, 0, w, h);
+  const d = img.data;
+  const len = w * h;
+  const lum = new Float32Array(len);
+  const alpha = new Uint8Array(len);
+
+  for (let p = 0; p < len; p++) {
+    const i = p * 4;
+    alpha[p] = d[i + 3] ?? 0;
+    lum[p] = 0.299 * (d[i] ?? 255) + 0.587 * (d[i + 1] ?? 255) + 0.114 * (d[i + 2] ?? 255);
+  }
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const p = y * w + x;
+      const a = alpha[p]!;
+      const i = p * 4;
+      if (a < 22) {
+        d[i + 3] = 0;
+        continue;
+      }
+
+      let nearTransparent = false;
+      for (let dy = -2; dy <= 2 && !nearTransparent; dy++) {
+        const ny = y + dy;
+        if (ny < 0 || ny >= h) {
+          nearTransparent = true;
+          break;
+        }
+        for (let dx = -2; dx <= 2; dx++) {
+          const nx = x + dx;
+          if (nx < 0 || nx >= w || alpha[ny * w + nx]! < 35) {
+            nearTransparent = true;
+            break;
+          }
+        }
+      }
+
+      let localMax = lum[p]!;
+      const y0 = Math.max(0, y - 2);
+      const y1 = Math.min(h - 1, y + 2);
+      const x0 = Math.max(0, x - 2);
+      const x1 = Math.min(w - 1, x + 2);
+      for (let ny = y0; ny <= y1; ny++) {
+        for (let nx = x0; nx <= x1; nx++) {
+          const np = ny * w + nx;
+          if (alpha[np]! > 40 && lum[np]! > localMax) localMax = lum[np]!;
+        }
+      }
+
+      const l = lum[p]!;
+      const contrast = localMax - l;
+      let inkStrength = 0;
+      if (nearTransparent && l < 214) {
+        inkStrength = Math.max(0, Math.min(1, (214 - l) / 56));
+      } else if (l < 142) {
+        inkStrength = Math.max(0, Math.min(1, (152 - l) / 56));
+      } else if (l < 180 && contrast >= 28) {
+        inkStrength = Math.max(0, Math.min(1, (contrast - 24) / 36));
+      }
+
+      const shade = Math.round(255 * (1 - inkStrength));
+      d[i] = shade;
+      d[i + 1] = shade;
+      d[i + 2] = shade;
+      d[i + 3] = a > 110 ? 255 : Math.min(255, Math.round(a * 1.4));
+    }
+  }
+
+  ctx.putImageData(img, 0, 0);
+  return out;
+}
+
+/**
+ * 3-Stop Anime Cel-Shading RGB Recolor Engine with optional 2-zone accent mask & shading depth.
+ * Keeps dark ink lines crisp while mapping neutral white/gray base fills & cel shadows cleanly to any RGB color.
+ */
+export function recolorIllustratedPartCanvas(
+  baseImg: HTMLImageElement | HTMLCanvasElement,
+  primaryHex: string,
+  opts: {
+    accentMaskImg?: HTMLImageElement | HTMLCanvasElement | null;
+    accentHex?: string | null;
+    shadingDepth?: ShadingDepth2D;
+    renderMode: RenderMode2D;
+    targetW?: number;
+    targetH?: number;
+  },
+): HTMLCanvasElement {
+  const sw =
+    baseImg instanceof HTMLImageElement ? baseImg.naturalWidth || baseImg.width : baseImg.width;
+  const sh =
+    baseImg instanceof HTMLImageElement ? baseImg.naturalHeight || baseImg.height : baseImg.height;
+  const w = opts.targetW ?? (sw || 1);
+  const h = opts.targetH ?? (sh || 1);
+  if (!sw || !sh) {
+    const empty = document.createElement("canvas");
+    empty.width = 1;
+    empty.height = 1;
+    return empty;
+  }
+
+  if (opts.renderMode === "manga") {
+    return extractIllustratedMangaLineartCanvas(baseImg, w, h);
+  }
+
+  const out = document.createElement("canvas");
+  out.width = w;
+  out.height = h;
+  const ctx = out.getContext("2d")!;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(baseImg, 0, 0, w, h);
+
+  const img = ctx.getImageData(0, 0, w, h);
+  const d = img.data;
+
+  let maskData: Uint8ClampedArray | null = null;
+  if (opts.accentMaskImg && opts.accentHex) {
+    const mc = document.createElement("canvas");
+    mc.width = w;
+    mc.height = h;
+    const mctx = mc.getContext("2d")!;
+    mctx.drawImage(opts.accentMaskImg, 0, 0, w, h);
+    maskData = mctx.getImageData(0, 0, w, h).data;
+  }
+
+  const [pr, pg, pb] = parseHexRgb(primaryHex);
+  const [ar, ag, ab] = parseHexRgb(opts.accentHex ?? primaryHex);
+  const depth = opts.shadingDepth ?? "cel";
+
+  for (let p = 0; p < w * h; p++) {
+    const i = p * 4;
+    const a = d[i + 3] ?? 0;
+    if (a < 8) continue;
+
+    const r = d[i] ?? 255;
+    const g = d[i + 1] ?? 255;
+    const b = d[i + 2] ?? 255;
+    const l = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+
+    const m = maskData ? (maskData[i + 3] ?? 0) / 255 : 0;
+    const tr = pr + (ar - pr) * m;
+    const tg = pg + (ag - pg) * m;
+    const tb = pb + (ab - pb) * m;
+
+    // 1. Preserve dark ink outlines cleanly without muddying pastel/bright RGBs
+    const inkBlend = Math.max(0, Math.min(1, (l - 0.25) / 0.19));
+    const inkR = Math.min(26, Math.round(tr * 0.11 + 8));
+    const inkG = Math.min(28, Math.round(tg * 0.11 + 9));
+    const inkB = Math.min(36, Math.round(tb * 0.12 + 12));
+
+    // 2. Remap mid/lit luminance with selectable Shading Depth & cool anime shadow shift
+    const tTone = Math.max(0, Math.min(1, (l - 0.42) / 0.54));
+    const shadeFactor =
+      depth === "flat"
+        ? 0.9 + 0.1 * tTone
+        : depth === "dramatic"
+          ? 0.44 + 0.56 * Math.pow(tTone, 1.15)
+          : 0.64 + 0.36 * Math.pow(tTone, 0.94);
+
+    const coolBoost = (1 - tTone) * (depth === "flat" ? 4 : 13);
+    const hiLift = l > 0.96 ? ((l - 0.96) / 0.04) * 16 : 0;
+    const fillR = Math.min(255, tr * shadeFactor + hiLift);
+    const fillG = Math.min(255, tg * (shadeFactor * 0.99) + hiLift);
+    const fillB = Math.min(255, tb * Math.min(1.04, shadeFactor * 1.02) + coolBoost + hiLift);
+
+    d[i] = Math.round(inkR + (fillR - inkR) * inkBlend);
+    d[i + 1] = Math.round(inkG + (fillG - inkG) * inkBlend);
+    d[i + 2] = Math.round(inkB + (fillB - inkB) * inkBlend);
+  }
+
+  ctx.putImageData(img, 0, 0);
+  return out;
+}
+
+/** Renders a grayscale iris luminance sprite into a 3-stop luminous anime iris at any RGB color. */
+export function recolorIrisCanvas(
+  irisImg: HTMLImageElement | HTMLCanvasElement,
+  eyeColorHex: string,
+  renderMode: RenderMode2D,
+): HTMLCanvasElement {
+  const w =
+    irisImg instanceof HTMLImageElement ? irisImg.naturalWidth || irisImg.width : irisImg.width;
+  const h =
+    irisImg instanceof HTMLImageElement ? irisImg.naturalHeight || irisImg.height : irisImg.height;
+  const out = document.createElement("canvas");
+  out.width = w || 1;
+  out.height = h || 1;
+  if (!w || !h) return out;
+  const ctx = out.getContext("2d")!;
+  ctx.drawImage(irisImg, 0, 0, w, h);
+
+  const img = ctx.getImageData(0, 0, w, h);
+  const d = img.data;
+  const [er, eg, eb] = parseHexRgb(eyeColorHex);
+
+  for (let i = 0; i < d.length; i += 4) {
+    const a = d[i + 3] ?? 0;
+    if (a < 10) continue;
+    if (renderMode === "manga") {
+      // Manga Mode keeps eyes white inside with crisp black rim
+      const l =
+        (0.299 * (d[i] ?? 255) + 0.587 * (d[i + 1] ?? 255) + 0.114 * (d[i + 2] ?? 255)) / 255;
+      const val = l < 0.48 ? 24 : 255;
+      d[i] = val;
+      d[i + 1] = val;
+      d[i + 2] = val;
+      continue;
+    }
+
+    const l = (0.299 * (d[i] ?? 180) + 0.587 * (d[i + 1] ?? 180) + 0.114 * (d[i + 2] ?? 180)) / 255;
+    if (l < 0.56) {
+      const k = 0.42 + (l / 0.56) * 0.48;
+      d[i] = Math.round(er * k);
+      d[i + 1] = Math.round(eg * k);
+      d[i + 2] = Math.round(eb * k);
+    } else if (l < 0.78) {
+      const k = 0.9 + ((l - 0.56) / 0.22) * 0.22;
+      d[i] = Math.min(255, Math.round(er * k));
+      d[i + 1] = Math.min(255, Math.round(eg * k));
+      d[i + 2] = Math.min(255, Math.round(eb * k));
+    } else {
+      const mix = ((l - 0.78) / 0.22) * 0.55;
+      d[i] = Math.min(255, Math.round(er + (255 - er) * mix));
+      d[i + 1] = Math.min(255, Math.round(eg + (255 - eg) * mix));
+      d[i + 2] = Math.min(255, Math.round(eb + (255 - eb) * mix));
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return out;
+}
+
+/** Tints extracted ink strokes (eyebrows, nose, mouth) to an exact RGB ink or pure black in Manga Mode. */
+export function recolorTintedInkCanvas(
+  strokeImg: HTMLImageElement | HTMLCanvasElement,
+  hexColor: string,
+  renderMode: RenderMode2D,
+): HTMLCanvasElement {
+  const w =
+    strokeImg instanceof HTMLImageElement
+      ? strokeImg.naturalWidth || strokeImg.width
+      : strokeImg.width;
+  const h =
+    strokeImg instanceof HTMLImageElement
+      ? strokeImg.naturalHeight || strokeImg.height
+      : strokeImg.height;
+  const out = document.createElement("canvas");
+  out.width = w || 1;
+  out.height = h || 1;
+  if (!w || !h) return out;
+  const ctx = out.getContext("2d")!;
+  ctx.drawImage(strokeImg, 0, 0, w, h);
+
+  const img = ctx.getImageData(0, 0, w, h);
+  const d = img.data;
+  const [tr, tg, tb] = renderMode === "manga" ? [0, 0, 0] : parseHexRgb(hexColor);
+  for (let i = 0; i < d.length; i += 4) {
+    if ((d[i + 3] ?? 0) < 8) continue;
+    d[i] = tr;
+    d[i + 1] = tg;
+    d[i + 2] = tb;
+  }
+  ctx.putImageData(img, 0, 0);
+  return out;
+}
+
+/** Applies 3-stop Anime Cel-Shading RGB tint in Color Mode or pure lineart extraction in Manga Mode for uploaded custom parts. */
 export function tintCustomPartCanvas(
   source: HTMLImageElement | HTMLCanvasElement,
   tintHex: string | null,
   renderMode: RenderMode2D,
+  shadingDepth: ShadingDepth2D = "cel",
 ): HTMLCanvasElement {
   const w = source instanceof HTMLImageElement ? source.naturalWidth || source.width : source.width;
-  const h = source instanceof HTMLImageElement ? source.naturalHeight || source.height : source.height;
+  const h =
+    source instanceof HTMLImageElement ? source.naturalHeight || source.height : source.height;
   if (!w || !h) {
     const empty = document.createElement("canvas");
     empty.width = 1;
@@ -474,27 +767,18 @@ export function tintCustomPartCanvas(
   }
 
   if (renderMode === "manga") {
-    return extractMangaLineartCanvas(source, w, h);
+    return extractIllustratedMangaLineartCanvas(source, w, h);
   }
 
-  const out = document.createElement("canvas");
-  out.width = w;
-  out.height = h;
-  const ctx = out.getContext("2d")!;
-  ctx.drawImage(source, 0, 0, w, h);
-  if (!tintHex) return out;
-
-  const [tr, tg, tb] = parseHexRgb(tintHex);
-  const img = ctx.getImageData(0, 0, w, h);
-  const d = img.data;
-  for (let i = 0; i < d.length; i += 4) {
-    if ((d[i + 3] ?? 0) < 8) continue;
-    d[i] = Math.round(((d[i] ?? 0) * tr) / 255);
-    d[i + 1] = Math.round(((d[i + 1] ?? 0) * tg) / 255);
-    d[i + 2] = Math.round(((d[i + 2] ?? 0) * tb) / 255);
+  if (!tintHex) {
+    const out = document.createElement("canvas");
+    out.width = w;
+    out.height = h;
+    out.getContext("2d")!.drawImage(source, 0, 0, w, h);
+    return out;
   }
-  ctx.putImageData(img, 0, 0);
-  return out;
+
+  return recolorIllustratedPartCanvas(source, tintHex, { shadingDepth, renderMode });
 }
 
 function encodeCanvasPreferWebp(canvas: HTMLCanvasElement, quality = 0.94): string {
@@ -703,7 +987,11 @@ export function measureHeadAnchorsFromCanvas(
   const headH = Math.max(88, chinY - headTopY);
   const browL: number[] = [];
   const browR: number[] = [];
-  for (let wy = Math.round(headTopY + headH * 0.28); wy <= Math.round(headTopY + headH * 0.44); wy++) {
+  for (
+    let wy = Math.round(headTopY + headH * 0.28);
+    wy <= Math.round(headTopY + headH * 0.44);
+    wy++
+  ) {
     const ly = wy - offsetY;
     if (ly < 0 || ly >= h) continue;
     const sp = scanRowSpan(d, w, ly, xMin, xMax, centerX);
@@ -737,7 +1025,8 @@ export function measureHeadAnchorsFromCanvas(
     neckY: 230,
     neckL,
     neckR,
-    neckAttachX: space === "overlay-220x280" ? Math.round(neckCx - offsetX) : Math.round(neckCx - cropX0),
+    neckAttachX:
+      space === "overlay-220x280" ? Math.round(neckCx - offsetX) : Math.round(neckCx - cropX0),
     neckAttachY: 230 - OVERLAY_HEAD_CROP_Y0,
   };
 }
@@ -818,7 +1107,17 @@ function buildHeadThumbDataUrl(overlayCanvas: HTMLCanvasElement, a: HeadAngleAnc
   const topY = Math.max(0, a.headCy - a.headRy - 14 - OVERLAY_HEAD_CROP_Y0);
   const win = Math.max(140, Math.round(a.headRy * 2 + 52));
   const sx = Math.max(0, Math.round(a.neckAttachX - win / 2));
-  ctx.drawImage(overlayCanvas, sx, topY, Math.min(OVERLAY_HEAD_W - sx, win), Math.min(OVERLAY_HEAD_H - topY, win), 0, 0, 128, 128);
+  ctx.drawImage(
+    overlayCanvas,
+    sx,
+    topY,
+    Math.min(OVERLAY_HEAD_W - sx, win),
+    Math.min(OVERLAY_HEAD_H - topY, win),
+    0,
+    0,
+    128,
+    128,
+  );
   return encodeCanvasPreferWebp(thumb, 0.94);
 }
 
@@ -838,7 +1137,8 @@ export function sliceHeadTurnaroundSheet(
   anchors: Record<Angle2D, HeadAngleAnchors2D>;
 } {
   const w = source instanceof HTMLImageElement ? source.naturalWidth || source.width : source.width;
-  const h = source instanceof HTMLImageElement ? source.naturalHeight || source.height : source.height;
+  const h =
+    source instanceof HTMLImageElement ? source.naturalHeight || source.height : source.height;
   if (!w || !h) throw new Error("Image has zero dimensions.");
 
   const srcCanvas = document.createElement("canvas");
@@ -849,7 +1149,8 @@ export function sliceHeadTurnaroundSheet(
   sctx.drawImage(source, 0, 0);
 
   const raw = sctx.getImageData(0, 0, w, h);
-  let segs = mode === "single" ? [[0, w - 1] as [number, number]] : detectHorizontalSegments(raw.data, w, h);
+  let segs =
+    mode === "single" ? [[0, w - 1] as [number, number]] : detectHorizontalSegments(raw.data, w, h);
   const expected = mode === "sheet-8" ? 8 : mode === "sheet-5" ? 5 : 1;
   if (segs.length !== expected) {
     segs = Array.from({ length: expected }, (_, i) => [
@@ -859,7 +1160,13 @@ export function sliceHeadTurnaroundSheet(
   }
 
   // Inspect first segment content aspect ratio to distinguish full-body vs head+neck-only uploads
-  const cleanCrops: Array<{ canvas: HTMLCanvasElement; ax0: number; ax1: number; ay0: number; ay1: number }> = [];
+  const cleanCrops: Array<{
+    canvas: HTMLCanvasElement;
+    ax0: number;
+    ax1: number;
+    ay0: number;
+    ay1: number;
+  }> = [];
   for (let i = 0; i < expected; i++) {
     const [rx0, rx1] = segs[i]!;
     const cx0 = Math.max(0, rx0 - 4);
@@ -898,7 +1205,11 @@ export function sliceHeadTurnaroundSheet(
   const isFullBodySheet = mode !== "single" && firstH / firstW > 2.2;
 
   const targetAngles: readonly Angle2D[] =
-    mode === "sheet-8" ? ANGLES_2D : mode === "sheet-5" ? ([0, 45, 90, 135, 180] as const) : ([0] as const);
+    mode === "sheet-8"
+      ? ANGLES_2D
+      : mode === "sheet-5"
+        ? ([0, 45, 90, 135, 180] as const)
+        : ([0] as const);
 
   const overlayCanvases = {} as Record<Angle2D, HTMLCanvasElement>;
   const bodyCanvases = {} as Record<Angle2D, HTMLCanvasElement>;
@@ -977,7 +1288,11 @@ export function sliceHeadTurnaroundSheet(
   if (mode === "sheet-5") {
     for (const [srcAng, mirAng] of MIRROR_PAIRS_2D) {
       overlayCanvases[mirAng] = mirrorCanvasHorizontally(overlayCanvases[srcAng]);
-      anchors[mirAng] = measureHeadAnchorsFromCanvas(overlayCanvases[mirAng], mirAng, "overlay-220x280");
+      anchors[mirAng] = measureHeadAnchorsFromCanvas(
+        overlayCanvases[mirAng],
+        mirAng,
+        "overlay-220x280",
+      );
       if (isFullBodySheet && bodyCanvases[srcAng]) {
         bodyCanvases[mirAng] = mirrorCanvasHorizontally(bodyCanvases[srcAng]);
       }

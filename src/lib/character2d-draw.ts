@@ -20,14 +20,25 @@ import {
   type NoseStyle2D,
   type RenderMode2D,
 } from "./character2d-types";
+import { OVERLAY_HEAD_H, OVERLAY_HEAD_W, resolveHeadPack2D } from "./character2d-heads";
+import type { ShadingDepth2D } from "./character2d-types";
 import {
-  OVERLAY_HEAD_H,
-  OVERLAY_HEAD_W,
-  resolveHeadPack2D,
-} from "./character2d-heads";
+  resolveIllustratedBottomPack2D,
+  resolveIllustratedFacePack2D,
+  resolveIllustratedFootwearPack2D,
+  resolveIllustratedHairPack2D,
+  resolveIllustratedTopPack2D,
+  type IllustratedClothingPack2D,
+  type IllustratedFacePack2D,
+  type IllustratedHairPack2D,
+} from "./character2d-catalog";
 import {
   applySkinToneCanvas,
+  extractIllustratedMangaLineartCanvas,
   extractMangaLineartCanvas,
+  recolorIllustratedPartCanvas,
+  recolorIrisCanvas,
+  recolorTintedInkCanvas,
   tintCustomPartCanvas,
 } from "./character2d-slicer";
 import { loadImageElement2D } from "./character2d-store";
@@ -116,13 +127,7 @@ function getProcessedCompositedBaseSprite(
   ctx.imageSmoothingQuality = "high";
   const dx = targetNeckCx - headAnchors.neckAttachX * fitScale;
   const dy = targetNeckY - headAnchors.neckAttachY * fitScale;
-  ctx.drawImage(
-    headOverlayImg,
-    dx,
-    dy,
-    OVERLAY_HEAD_W * fitScale,
-    OVERLAY_HEAD_H * fitScale,
-  );
+  ctx.drawImage(headOverlayImg, dx, dy, OVERLAY_HEAD_W * fitScale, OVERLAY_HEAD_H * fitScale);
   ctx.restore();
 
   const processed =
@@ -153,11 +158,71 @@ function getProcessedPartSprite(
   srcKey: string,
   mode: RenderMode2D,
   tintHex: string | null,
+  shadingDepth: ShadingDepth2D = "cel",
 ): HTMLCanvasElement {
-  const key = `part|${srcKey}|${mode}|${tintHex ?? "orig"}`;
+  const key = `part|${srcKey}|${mode}|${shadingDepth}|${tintHex ?? "orig"}`;
   const hit = PROCESSED_SPRITE_CACHE.get(key);
   if (hit) return hit;
-  return putProcessedCache(key, tintCustomPartCanvas(img, tintHex, mode));
+  return putProcessedCache(key, tintCustomPartCanvas(img, tintHex, mode, shadingDepth));
+}
+
+function getRecoloredIllustratedPart(
+  baseImg: HTMLImageElement,
+  srcKey: string,
+  primaryHex: string,
+  mode: RenderMode2D,
+  shadingDepth: ShadingDepth2D,
+  accentMaskImg?: HTMLImageElement | null,
+  accentKey?: string,
+  accentHex?: string | null,
+  targetW?: number,
+  targetH?: number,
+): HTMLCanvasElement {
+  const key = `ill|${srcKey}|${accentKey ?? "nomask"}|${mode}|${shadingDepth}|${primaryHex}|${accentHex ?? "noacc"}|${targetW ?? 0}x${targetH ?? 0}`;
+  const hit = PROCESSED_SPRITE_CACHE.get(key);
+  if (hit) return hit;
+  return putProcessedCache(
+    key,
+    recolorIllustratedPartCanvas(baseImg, primaryHex, {
+      accentMaskImg,
+      accentHex,
+      shadingDepth,
+      renderMode: mode,
+      targetW,
+      targetH,
+    }),
+  );
+}
+
+function getRecoloredIrisSprite(
+  irisImg: HTMLImageElement,
+  srcKey: string,
+  eyeColorHex: string,
+  mode: RenderMode2D,
+): HTMLCanvasElement {
+  const key = `iris|${srcKey}|${mode}|${eyeColorHex}`;
+  const hit = PROCESSED_SPRITE_CACHE.get(key);
+  if (hit) return hit;
+  return putProcessedCache(key, recolorIrisCanvas(irisImg, eyeColorHex, mode));
+}
+
+function getRecoloredInkSprite(
+  strokeImg: HTMLImageElement,
+  srcKey: string,
+  hexColor: string,
+  mode: RenderMode2D,
+): HTMLCanvasElement {
+  const key = `ink|${srcKey}|${mode}|${hexColor}`;
+  const hit = PROCESSED_SPRITE_CACHE.get(key);
+  if (hit) return hit;
+  return putProcessedCache(key, recolorTintedInkCanvas(strokeImg, hexColor, mode));
+}
+
+function getMangaLineSprite(img: HTMLImageElement, srcKey: string): HTMLCanvasElement {
+  const key = `ill-manga|${srcKey}`;
+  const hit = PROCESSED_SPRITE_CACHE.get(key);
+  if (hit) return hit;
+  return putProcessedCache(key, extractIllustratedMangaLineartCanvas(img));
 }
 
 function parseRgb(hex: string): [number, number, number] {
@@ -177,9 +242,7 @@ function parseRgb(hex: string): [number, number, number] {
 function shadeHex(hex: string, amount: number): string {
   const [r, g, b] = parseRgb(hex);
   const mix = (v: number) =>
-    amount >= 0
-      ? Math.round(v + (255 - v) * amount)
-      : Math.round(v * (1 + amount));
+    amount >= 0 ? Math.round(v + (255 - v) * amount) : Math.round(v * (1 + amount));
   return `rgb(${Math.max(0, Math.min(255, mix(r)))},${Math.max(0, Math.min(255, mix(g)))},${Math.max(0, Math.min(255, mix(b)))})`;
 }
 
@@ -277,11 +340,7 @@ function strokeLine(ctx: C, pts: [number, number][], mode: RenderMode2D, width =
   ctx.restore();
 }
 
-function traceTaperedTube(
-  ctx: C,
-  pts: BodyPoint2D[],
-  radii: number[],
-) {
+function traceTaperedTube(ctx: C, pts: BodyPoint2D[], radii: number[]) {
   const leftSide: BodyPoint2D[] = [];
   const rightSide: BodyPoint2D[] = [];
 
@@ -454,7 +513,11 @@ function drawShoeUnit(
     },
     baseCol,
     mode,
-    { strokeWidth: 2.1, shadowSide: dir > 0 ? "left" : "right", bounds: { x: x0, y: collarY, w, h: soleBot - collarY } },
+    {
+      strokeWidth: 2.1,
+      shadowSide: dir > 0 ? "left" : "right",
+      bounds: { x: x0, y: collarY, w, h: soleBot - collarY },
+    },
   );
 
   // Sleek midsole & toe cap
@@ -467,11 +530,27 @@ function drawShoeUnit(
   );
 
   if (style === "sneakers") {
-    strokeLine(ctx, [[x0 + 3, soleTop - 6], [x1 - 3, soleTop - 6]], mode, 1.4);
+    strokeLine(
+      ctx,
+      [
+        [x0 + 3, soleTop - 6],
+        [x1 - 3, soleTop - 6],
+      ],
+      mode,
+      1.4,
+    );
     if (!prof) {
       for (let i = 0; i < 3; i++) {
         const ly = ankle.y + 8 + i * 8;
-        strokeLine(ctx, [[midX - 5, ly], [midX + 5, ly]], mode, 1.5);
+        strokeLine(
+          ctx,
+          [
+            [midX - 5, ly],
+            [midX + 5, ly],
+          ],
+          mode,
+          1.5,
+        );
       }
     }
   } else {
@@ -485,8 +564,24 @@ function drawShoeUnit(
       mode,
       { strokeWidth: 1.8, bounds: { x: ankle.x - 20, y: collarY, w: 40, h: 14 } },
     );
-    strokeLine(ctx, [[ankle.x - 14, collarY + 30], [ankle.x + 14, collarY + 30]], mode, 1.7);
-    strokeLine(ctx, [[ankle.x - 14, collarY + 48], [ankle.x + 14, collarY + 48]], mode, 1.7);
+    strokeLine(
+      ctx,
+      [
+        [ankle.x - 14, collarY + 30],
+        [ankle.x + 14, collarY + 30],
+      ],
+      mode,
+      1.7,
+    );
+    strokeLine(
+      ctx,
+      [
+        [ankle.x - 14, collarY + 48],
+        [ankle.x + 14, collarY + 48],
+      ],
+      mode,
+      1.7,
+    );
   }
 }
 
@@ -504,7 +599,19 @@ function drawFootwear2D(
   const dir = facingDir(angle);
 
   if (isProfile(angle)) {
-    drawShoeUnit(ctx, a.legLeft[2], a.legLeft[3], fw, angle, col, acc, mode, a.calfWidth + 8, 0, true);
+    drawShoeUnit(
+      ctx,
+      a.legLeft[2],
+      a.legLeft[3],
+      fw,
+      angle,
+      col,
+      acc,
+      mode,
+      a.calfWidth + 8,
+      0,
+      true,
+    );
     return;
   }
 
@@ -562,40 +669,45 @@ function drawBottoms2D(
     const pts = style === "shorts" ? [hipPt, hemPt] : [hipPt, kneePt, calfPt, hemPt];
     const radii = style === "shorts" ? [r0 + 3, r1 + 3] : [r0, r1, rCalf, r2];
 
-    drawCelShape(
-      ctx,
-      () => traceTaperedTube(ctx, pts, radii),
-      col,
-      mode,
-      {
-        strokeWidth: 2.3,
-        shadowSide: dir > 0 ? "left" : "right",
-        bounds: { x: hipPt.x - r0, y: hipPt.y, w: r0 * 2, h: hemPt.y - hipPt.y },
-      },
-    );
+    drawCelShape(ctx, () => traceTaperedTube(ctx, pts, radii), col, mode, {
+      strokeWidth: 2.3,
+      shadowSide: dir > 0 ? "left" : "right",
+      bounds: { x: hipPt.x - r0, y: hipPt.y, w: r0 * 2, h: hemPt.y - hipPt.y },
+    });
 
     if (style !== "shorts") {
-      strokeLine(ctx, [[kneePt.x - r1 * 0.45, kneePt.y - 4], [kneePt.x + r1 * 0.35, kneePt.y + 3]], mode, 1.4);
+      strokeLine(
+        ctx,
+        [
+          [kneePt.x - r1 * 0.45, kneePt.y - 4],
+          [kneePt.x + r1 * 0.35, kneePt.y + 3],
+        ],
+        mode,
+        1.4,
+      );
     }
     if (style === "cargo") {
       const midX = (hipPt.x + kneePt.x) / 2;
       const midY = (hipPt.y + kneePt.y) / 2 - 4;
       const pw = Math.max(22, r1 * 1.12);
-      drawCelShape(
+      drawCelShape(ctx, () => ctx.roundRect(midX - pw / 2, midY - 18, pw, 38, 3), col, mode, {
+        strokeWidth: 1.8,
+        shadowSide: "bottom",
+        bounds: { x: midX - pw / 2, y: midY - 18, w: pw, h: 38 },
+      });
+      strokeLine(
         ctx,
-        () => ctx.roundRect(midX - pw / 2, midY - 18, pw, 38, 3),
-        col,
+        [
+          [midX - pw / 2 + 2, midY - 8],
+          [midX + pw / 2 - 2, midY - 8],
+        ],
         mode,
-        { strokeWidth: 1.8, shadowSide: "bottom", bounds: { x: midX - pw / 2, y: midY - 18, w: pw, h: 38 } },
+        1.5,
       );
-      strokeLine(ctx, [[midX - pw / 2 + 2, midY - 8], [midX + pw / 2 - 2, midY - 8]], mode, 1.5);
-      drawCelShape(
-        ctx,
-        () => ctx.roundRect(hemPt.x - r2, hemPt.y - 12, r2 * 2, 13, 2),
-        acc,
-        mode,
-        { strokeWidth: 1.7, bounds: { x: hemPt.x - r2, y: hemPt.y - 12, w: r2 * 2, h: 13 } },
-      );
+      drawCelShape(ctx, () => ctx.roundRect(hemPt.x - r2, hemPt.y - 12, r2 * 2, 13, 2), acc, mode, {
+        strokeWidth: 1.7,
+        bounds: { x: hemPt.x - r2, y: hemPt.y - 12, w: r2 * 2, h: 13 },
+      });
     }
     if (style === "shorts") {
       drawCelShape(
@@ -603,7 +715,10 @@ function drawBottoms2D(
         () => ctx.roundRect(hemPt.x - r1 - 3, hemPt.y - 10, (r1 + 3) * 2, 10, 2),
         acc,
         mode,
-        { strokeWidth: 1.7, bounds: { x: hemPt.x - r1 - 3, y: hemPt.y - 10, w: (r1 + 3) * 2, h: 10 } },
+        {
+          strokeWidth: 1.7,
+          bounds: { x: hemPt.x - r1 - 3, y: hemPt.y - 10, w: (r1 + 3) * 2, h: 10 },
+        },
       );
     }
   };
@@ -645,20 +760,73 @@ function drawBottoms2D(
     () => ctx.roundRect(pelvisL + 2, waistTop, pelvisR - pelvisL - 4, 15, 2),
     style === "shorts" ? acc : col,
     mode,
-    { strokeWidth: 2, shadowSide: "bottom", bounds: { x: pelvisL + 2, y: waistTop, w: pelvisR - pelvisL - 4, h: 15 } },
+    {
+      strokeWidth: 2,
+      shadowSide: "bottom",
+      bounds: { x: pelvisL + 2, y: waistTop, w: pelvisR - pelvisL - 4, h: 15 },
+    },
   );
 
   if (style === "jeans" && !prof) {
     if (back) {
       const pw = (pelvisR - pelvisL) * 0.25;
       const py = waistTop + 24;
-      strokeLine(ctx, [[pelvisL + 16, py], [pelvisL + 16 + pw, py], [pelvisL + 16 + pw, py + 24], [pelvisL + 16 + pw / 2, py + 31], [pelvisL + 16, py + 24], [pelvisL + 16, py]], mode, 1.6);
-      strokeLine(ctx, [[pelvisR - 16 - pw, py], [pelvisR - 16, py], [pelvisR - 16, py + 24], [pelvisR - 16 - pw / 2, py + 31], [pelvisR - 16 - pw, py + 24], [pelvisR - 16 - pw, py]], mode, 1.6);
+      strokeLine(
+        ctx,
+        [
+          [pelvisL + 16, py],
+          [pelvisL + 16 + pw, py],
+          [pelvisL + 16 + pw, py + 24],
+          [pelvisL + 16 + pw / 2, py + 31],
+          [pelvisL + 16, py + 24],
+          [pelvisL + 16, py],
+        ],
+        mode,
+        1.6,
+      );
+      strokeLine(
+        ctx,
+        [
+          [pelvisR - 16 - pw, py],
+          [pelvisR - 16, py],
+          [pelvisR - 16, py + 24],
+          [pelvisR - 16 - pw / 2, py + 31],
+          [pelvisR - 16 - pw, py + 24],
+          [pelvisR - 16 - pw, py],
+        ],
+        mode,
+        1.6,
+      );
     } else {
       const flyX = hipMidX + dir * 10;
-      strokeLine(ctx, [[flyX, waistTop + 15], [flyX, waistTop + 44], [flyX - 5 * (dir || 1), waistTop + 50]], mode, 1.7);
-      strokeLine(ctx, [[pelvisL + 6, waistTop + 17], [pelvisL + 16, waistTop + 40]], mode, 1.6);
-      strokeLine(ctx, [[pelvisR - 6, waistTop + 17], [pelvisR - 16, waistTop + 40]], mode, 1.6);
+      strokeLine(
+        ctx,
+        [
+          [flyX, waistTop + 15],
+          [flyX, waistTop + 44],
+          [flyX - 5 * (dir || 1), waistTop + 50],
+        ],
+        mode,
+        1.7,
+      );
+      strokeLine(
+        ctx,
+        [
+          [pelvisL + 6, waistTop + 17],
+          [pelvisL + 16, waistTop + 40],
+        ],
+        mode,
+        1.6,
+      );
+      strokeLine(
+        ctx,
+        [
+          [pelvisR - 6, waistTop + 17],
+          [pelvisR - 16, waistTop + 40],
+        ],
+        mode,
+        1.6,
+      );
       ctx.save();
       ctx.fillStyle = mode === "manga" ? "#ffffff" : acc;
       ctx.strokeStyle = inkOf(mode);
@@ -735,8 +903,6 @@ function drawSleeve(
     },
   );
 
-
-
   if (lengthFrac >= 0.65) {
     strokeLine(
       ctx,
@@ -797,12 +963,56 @@ function drawTop2D(
   // Draw far-side sleeve first on 3/4 views
   if (!prof) {
     if (dir > 0) {
-      drawSleeve(ctx, a.armRight, a.armWidth, sleeveFrac, sleeveCol, style === "hoodie" ? col : acc, hasCuff, mode, dir, deltoidTopY);
+      drawSleeve(
+        ctx,
+        a.armRight,
+        a.armWidth,
+        sleeveFrac,
+        sleeveCol,
+        style === "hoodie" ? col : acc,
+        hasCuff,
+        mode,
+        dir,
+        deltoidTopY,
+      );
     } else if (dir < 0) {
-      drawSleeve(ctx, a.armLeft, a.armWidth, sleeveFrac, sleeveCol, style === "hoodie" ? col : acc, hasCuff, mode, dir, deltoidTopY);
+      drawSleeve(
+        ctx,
+        a.armLeft,
+        a.armWidth,
+        sleeveFrac,
+        sleeveCol,
+        style === "hoodie" ? col : acc,
+        hasCuff,
+        mode,
+        dir,
+        deltoidTopY,
+      );
     } else {
-      drawSleeve(ctx, a.armLeft, a.armWidth, sleeveFrac, sleeveCol, style === "hoodie" ? col : acc, hasCuff, mode, dir, deltoidTopY);
-      drawSleeve(ctx, a.armRight, a.armWidth, sleeveFrac, sleeveCol, style === "hoodie" ? col : acc, hasCuff, mode, dir, deltoidTopY);
+      drawSleeve(
+        ctx,
+        a.armLeft,
+        a.armWidth,
+        sleeveFrac,
+        sleeveCol,
+        style === "hoodie" ? col : acc,
+        hasCuff,
+        mode,
+        dir,
+        deltoidTopY,
+      );
+      drawSleeve(
+        ctx,
+        a.armRight,
+        a.armWidth,
+        sleeveFrac,
+        sleeveCol,
+        style === "hoodie" ? col : acc,
+        hasCuff,
+        mode,
+        dir,
+        deltoidTopY,
+      );
     }
   }
 
@@ -828,7 +1038,11 @@ function drawTop2D(
       },
       col,
       mode,
-      { strokeWidth: 2.3, shadowSide: "bottom", bounds: { x: a.neckL - 28, y: collarTopY - 14, w: 128, h: 92 } },
+      {
+        strokeWidth: 2.3,
+        shadowSide: "bottom",
+        bounds: { x: a.neckL - 28, y: collarTopY - 14, w: 128, h: 92 },
+      },
     );
   }
 
@@ -848,7 +1062,12 @@ function drawTop2D(
       ctx.lineTo(chestR, a.chestY);
       ctx.quadraticCurveTo(shR + 5, deltoidTopY + 14, shR, deltoidTopY);
       ctx.quadraticCurveTo((a.neckR + shR) / 2, collarTopY + 2, a.neckR + 5, collarTopY);
-      ctx.quadraticCurveTo((a.neckL + a.neckR) / 2 + dir * 6, back ? collarTopY + 6 : collarTopY + 26, a.neckL - 5, collarTopY);
+      ctx.quadraticCurveTo(
+        (a.neckL + a.neckR) / 2 + dir * 6,
+        back ? collarTopY + 6 : collarTopY + 26,
+        a.neckL - 5,
+        collarTopY,
+      );
       ctx.closePath();
     },
     col,
@@ -870,12 +1089,32 @@ function drawTop2D(
         },
         col,
         mode,
-        { strokeWidth: 2.1, shadowSide: "bottom", bounds: { x: a.neckL - 12, y: collarTopY, w: 72, h: 28 } },
+        {
+          strokeWidth: 2.1,
+          shadowSide: "bottom",
+          bounds: { x: a.neckL - 12, y: collarTopY, w: 72, h: 28 },
+        },
       );
       if (!prof) {
         const stringX = topMidX + dir * 12;
-        strokeLine(ctx, [[stringX - 9, collarTopY + 22], [stringX - 11, a.chestY + 22]], mode, 2.2);
-        strokeLine(ctx, [[stringX + 9, collarTopY + 22], [stringX + 11, a.chestY + 18]], mode, 2.2);
+        strokeLine(
+          ctx,
+          [
+            [stringX - 9, collarTopY + 22],
+            [stringX - 11, a.chestY + 22],
+          ],
+          mode,
+          2.2,
+        );
+        strokeLine(
+          ctx,
+          [
+            [stringX + 9, collarTopY + 22],
+            [stringX + 11, a.chestY + 18],
+          ],
+          mode,
+          2.2,
+        );
         const pW = (waistR - waistL) * 0.62;
         const pCx = topMidX + dir * 10;
         drawCelShape(
@@ -889,19 +1128,29 @@ function drawTop2D(
           },
           col,
           mode,
-          { strokeWidth: 1.9, shadowSide: "bottom", bounds: { x: pCx - pW * 0.5, y: a.waistY + 6, w: pW, h: 60 } },
+          {
+            strokeWidth: 1.9,
+            shadowSide: "bottom",
+            bounds: { x: pCx - pW * 0.5, y: a.waistY + 6, w: pW, h: 60 },
+          },
         );
       }
     } else {
-      strokeLine(ctx, [[topMidX, collarTopY + 4], [topMidX, a.shoulderY + 24]], mode, 1.8);
+      strokeLine(
+        ctx,
+        [
+          [topMidX, collarTopY + 4],
+          [topMidX, a.shoulderY + 24],
+        ],
+        mode,
+        1.8,
+      );
     }
-    drawCelShape(
-      ctx,
-      () => ctx.roundRect(hemL + 1, hemY - 15, hemR - hemL - 2, 16, 2),
-      col,
-      mode,
-      { strokeWidth: 2, shadowSide: "bottom", bounds: { x: hemL, y: hemY - 15, w: hemR - hemL, h: 16 } },
-    );
+    drawCelShape(ctx, () => ctx.roundRect(hemL + 1, hemY - 15, hemR - hemL - 2, 16, 2), col, mode, {
+      strokeWidth: 2,
+      shadowSide: "bottom",
+      bounds: { x: hemL, y: hemY - 15, w: hemR - hemL, h: 16 },
+    });
   } else if (style === "zip_jacket" || style === "blazer") {
     const centerFrontX = topMidX + dir * (prof ? 38 : 14);
     if (!back && !prof) {
@@ -916,12 +1165,34 @@ function drawTop2D(
         },
         acc,
         mode,
-        { strokeWidth: 1.9, shadowSide: "right", bounds: { x: centerFrontX - 24, y: collarTopY + 6, w: 48, h: hemY - collarTopY } },
+        {
+          strokeWidth: 1.9,
+          shadowSide: "right",
+          bounds: { x: centerFrontX - 24, y: collarTopY + 6, w: 48, h: hemY - collarTopY },
+        },
       );
 
       if (style === "blazer") {
-        strokeLine(ctx, [[a.neckL + 2, collarTopY + 8], [centerFrontX - 18, a.chestY + 6], [centerFrontX - 6, a.chestY + 42]], mode, 2);
-        strokeLine(ctx, [[a.neckR - 2, collarTopY + 8], [centerFrontX + 18, a.chestY + 6], [centerFrontX + 6, a.chestY + 42]], mode, 2);
+        strokeLine(
+          ctx,
+          [
+            [a.neckL + 2, collarTopY + 8],
+            [centerFrontX - 18, a.chestY + 6],
+            [centerFrontX - 6, a.chestY + 42],
+          ],
+          mode,
+          2,
+        );
+        strokeLine(
+          ctx,
+          [
+            [a.neckR - 2, collarTopY + 8],
+            [centerFrontX + 18, a.chestY + 6],
+            [centerFrontX + 6, a.chestY + 42],
+          ],
+          mode,
+          2,
+        );
         drawCelShape(
           ctx,
           () => {
@@ -943,13 +1214,45 @@ function drawTop2D(
         ctx.fill();
         ctx.restore();
       } else {
-        strokeLine(ctx, [[centerFrontX - 12, collarTopY + 6], [centerFrontX - 12, hemY]], mode, 1.9);
-        strokeLine(ctx, [[centerFrontX + 12, collarTopY + 6], [centerFrontX + 12, hemY]], mode, 1.9);
+        strokeLine(
+          ctx,
+          [
+            [centerFrontX - 12, collarTopY + 6],
+            [centerFrontX - 12, hemY],
+          ],
+          mode,
+          1.9,
+        );
+        strokeLine(
+          ctx,
+          [
+            [centerFrontX + 12, collarTopY + 6],
+            [centerFrontX + 12, hemY],
+          ],
+          mode,
+          1.9,
+        );
       }
     } else if (back) {
-      strokeLine(ctx, [[chestL + 8, a.shoulderY + 20], [chestR - 8, a.shoulderY + 20]], mode, 1.6);
+      strokeLine(
+        ctx,
+        [
+          [chestL + 8, a.shoulderY + 20],
+          [chestR - 8, a.shoulderY + 20],
+        ],
+        mode,
+        1.6,
+      );
       if (style === "blazer") {
-        strokeLine(ctx, [[topMidX, a.hipY - 8], [topMidX, hemY]], mode, 1.8);
+        strokeLine(
+          ctx,
+          [
+            [topMidX, a.hipY - 8],
+            [topMidX, hemY],
+          ],
+          mode,
+          1.8,
+        );
       }
     }
   } else {
@@ -965,16 +1268,57 @@ function drawTop2D(
         2.3,
       );
     }
-    strokeLine(ctx, [[chestL + 22, a.chestY + 38], [topMidX + dir * 8, a.chestY + 46]], mode, 1.5);
+    strokeLine(
+      ctx,
+      [
+        [chestL + 22, a.chestY + 38],
+        [topMidX + dir * 8, a.chestY + 46],
+      ],
+      mode,
+      1.5,
+    );
   }
 
   // Near/profile sleeve drawn AFTER torso so it drapes cleanly over torso side
   if (prof) {
-    drawSleeve(ctx, a.armLeft, a.armWidth, sleeveFrac, sleeveCol, style === "hoodie" ? col : acc, hasCuff, mode, dir, deltoidTopY);
+    drawSleeve(
+      ctx,
+      a.armLeft,
+      a.armWidth,
+      sleeveFrac,
+      sleeveCol,
+      style === "hoodie" ? col : acc,
+      hasCuff,
+      mode,
+      dir,
+      deltoidTopY,
+    );
   } else if (dir > 0) {
-    drawSleeve(ctx, a.armLeft, a.armWidth, sleeveFrac, sleeveCol, style === "hoodie" ? col : acc, hasCuff, mode, dir, deltoidTopY);
+    drawSleeve(
+      ctx,
+      a.armLeft,
+      a.armWidth,
+      sleeveFrac,
+      sleeveCol,
+      style === "hoodie" ? col : acc,
+      hasCuff,
+      mode,
+      dir,
+      deltoidTopY,
+    );
   } else if (dir < 0) {
-    drawSleeve(ctx, a.armRight, a.armWidth, sleeveFrac, sleeveCol, style === "hoodie" ? col : acc, hasCuff, mode, dir, deltoidTopY);
+    drawSleeve(
+      ctx,
+      a.armRight,
+      a.armWidth,
+      sleeveFrac,
+      sleeveCol,
+      style === "hoodie" ? col : acc,
+      hasCuff,
+      mode,
+      dir,
+      deltoidTopY,
+    );
   }
 }
 
@@ -991,6 +1335,7 @@ function drawAnimeEye2D(
 ) {
   const ink = inkOf(mode);
   const wByStyle: Record<EyeStyle2D, number> = {
+    none: 0,
     sharp: 18,
     round: 16,
     almond: 19,
@@ -999,6 +1344,7 @@ function drawAnimeEye2D(
     stoic: 18,
   };
   const hByStyle: Record<EyeStyle2D, number> = {
+    none: 0,
     sharp: 11,
     round: 14,
     almond: 10,
@@ -1049,11 +1395,7 @@ function drawAnimeEye2D(
   const topLift = eh * 0.68 * openFactor;
   const botDrop = eh * 0.48 * (eyeMode === "shock" ? 1.15 : 1);
   const slant =
-    eyeStyle === "sharp" || eyeStyle === "intense"
-      ? -2.2
-      : eyeStyle === "gentle"
-        ? 1.5
-        : 0;
+    eyeStyle === "sharp" || eyeStyle === "intense" ? -2.2 : eyeStyle === "gentle" ? 1.5 : 0;
   const leftX = -ew * 0.5;
   const rightX = ew * 0.5;
   const outerX = outwardSign >= 0 ? rightX : leftX;
@@ -1151,6 +1493,7 @@ function drawAnimeBrow2D(
 ) {
   const bw = 18 * scaleX;
   const wByStyle: Record<BrowStyle2D, number> = {
+    none: 0,
     thin: 1.8,
     bold: 3.4,
     sharp: 2.5,
@@ -1192,7 +1535,7 @@ function drawAnimeNose2D(
   if (prof) {
     // Seamless side-profile anime nose bridge without inner vertical border bar
     const tipDist = noseStyle === "button" ? 5 : noseStyle === "tall" ? 9 : 7;
-    const fillSkin = mode === "manga" ? "#ffffff" : skinTone ?? "#f8cfb3";
+    const fillSkin = mode === "manga" ? "#ffffff" : (skinTone ?? "#f8cfb3");
     ctx.beginPath();
     ctx.moveTo(cx - dir * 5, cy - 12);
     ctx.lineTo(cx + dir * tipDist, cy + 1);
@@ -1310,7 +1653,15 @@ function drawAnimeMouth2D(
       ctx.roundRect(-hw, -4, w, 9, 3);
       ctx.fill();
       ctx.stroke();
-      strokeLine(ctx, [[-hw + 2, 0.5], [hw - 2, 0.5]], mode, 1.3);
+      strokeLine(
+        ctx,
+        [
+          [-hw + 2, 0.5],
+          [hw - 2, 0.5],
+        ],
+        mode,
+        1.3,
+      );
       break;
     case "smile":
       ctx.beginPath();
@@ -1381,26 +1732,164 @@ function drawFace2D(
 
   if (prof) {
     const edgeEyeX = dir * 13;
-    drawAnimeEye2D(ctx, edgeEyeX, eyeDy, char.face.eyeStyle, preset.eyeMode, 0.54, dir, char.face.eyeColor, mode);
-    drawAnimeBrow2D(ctx, edgeEyeX, eyeDy - 12, char.face.browStyle, preset.browTilt, 0.6, dir, char.face.browColor, mode);
-    drawAnimeNose2D(ctx, dir * (a.headRx - 18), noseDy, char.face.noseStyle, angle, char.skinTone, mode);
-    drawAnimeMouth2D(ctx, dir * (a.headRx - 22), mouthDy, char.face.mouthStyle, preset.mouthPose, 0.48, char.face.mouthColor, dir, mode);
+    drawAnimeEye2D(
+      ctx,
+      edgeEyeX,
+      eyeDy,
+      char.face.eyeStyle,
+      preset.eyeMode,
+      0.54,
+      dir,
+      char.face.eyeColor,
+      mode,
+    );
+    drawAnimeBrow2D(
+      ctx,
+      edgeEyeX,
+      eyeDy - 12,
+      char.face.browStyle,
+      preset.browTilt,
+      0.6,
+      dir,
+      char.face.browColor,
+      mode,
+    );
+    drawAnimeNose2D(
+      ctx,
+      dir * (a.headRx - 18),
+      noseDy,
+      char.face.noseStyle,
+      angle,
+      char.skinTone,
+      mode,
+    );
+    drawAnimeMouth2D(
+      ctx,
+      dir * (a.headRx - 22),
+      mouthDy,
+      char.face.mouthStyle,
+      preset.mouthPose,
+      0.48,
+      char.face.mouthColor,
+      dir,
+      mode,
+    );
   } else if (dir !== 0) {
     const nearEyeX = -dir * 16;
     const farEyeX = dir * 13;
-    drawAnimeEye2D(ctx, nearEyeX, eyeDy, char.face.eyeStyle, preset.eyeMode, 0.94, -dir, char.face.eyeColor, mode);
-    drawAnimeEye2D(ctx, farEyeX, eyeDy, char.face.eyeStyle, preset.eyeMode, 0.7, dir, char.face.eyeColor, mode);
-    drawAnimeBrow2D(ctx, nearEyeX, eyeDy - 12, char.face.browStyle, preset.browTilt, 0.92, -dir, char.face.browColor, mode);
-    drawAnimeBrow2D(ctx, farEyeX, eyeDy - 12, char.face.browStyle, preset.browTilt, 0.72, dir, char.face.browColor, mode);
+    drawAnimeEye2D(
+      ctx,
+      nearEyeX,
+      eyeDy,
+      char.face.eyeStyle,
+      preset.eyeMode,
+      0.94,
+      -dir,
+      char.face.eyeColor,
+      mode,
+    );
+    drawAnimeEye2D(
+      ctx,
+      farEyeX,
+      eyeDy,
+      char.face.eyeStyle,
+      preset.eyeMode,
+      0.7,
+      dir,
+      char.face.eyeColor,
+      mode,
+    );
+    drawAnimeBrow2D(
+      ctx,
+      nearEyeX,
+      eyeDy - 12,
+      char.face.browStyle,
+      preset.browTilt,
+      0.92,
+      -dir,
+      char.face.browColor,
+      mode,
+    );
+    drawAnimeBrow2D(
+      ctx,
+      farEyeX,
+      eyeDy - 12,
+      char.face.browStyle,
+      preset.browTilt,
+      0.72,
+      dir,
+      char.face.browColor,
+      mode,
+    );
     drawAnimeNose2D(ctx, dir * 3, noseDy, char.face.noseStyle, angle, char.skinTone, mode);
-    drawAnimeMouth2D(ctx, dir * 2, mouthDy, char.face.mouthStyle, preset.mouthPose, 0.82, char.face.mouthColor, dir, mode);
+    drawAnimeMouth2D(
+      ctx,
+      dir * 2,
+      mouthDy,
+      char.face.mouthStyle,
+      preset.mouthPose,
+      0.82,
+      char.face.mouthColor,
+      dir,
+      mode,
+    );
   } else {
-    drawAnimeEye2D(ctx, -18, eyeDy, char.face.eyeStyle, preset.eyeMode, 1, -1, char.face.eyeColor, mode);
-    drawAnimeEye2D(ctx, 18, eyeDy, char.face.eyeStyle, preset.eyeMode, 1, 1, char.face.eyeColor, mode);
-    drawAnimeBrow2D(ctx, -18, eyeDy - 12, char.face.browStyle, preset.browTilt, 1, -1, char.face.browColor, mode);
-    drawAnimeBrow2D(ctx, 18, eyeDy - 12, char.face.browStyle, preset.browTilt, 1, 1, char.face.browColor, mode);
+    drawAnimeEye2D(
+      ctx,
+      -18,
+      eyeDy,
+      char.face.eyeStyle,
+      preset.eyeMode,
+      1,
+      -1,
+      char.face.eyeColor,
+      mode,
+    );
+    drawAnimeEye2D(
+      ctx,
+      18,
+      eyeDy,
+      char.face.eyeStyle,
+      preset.eyeMode,
+      1,
+      1,
+      char.face.eyeColor,
+      mode,
+    );
+    drawAnimeBrow2D(
+      ctx,
+      -18,
+      eyeDy - 12,
+      char.face.browStyle,
+      preset.browTilt,
+      1,
+      -1,
+      char.face.browColor,
+      mode,
+    );
+    drawAnimeBrow2D(
+      ctx,
+      18,
+      eyeDy - 12,
+      char.face.browStyle,
+      preset.browTilt,
+      1,
+      1,
+      char.face.browColor,
+      mode,
+    );
     drawAnimeNose2D(ctx, 0, noseDy, char.face.noseStyle, angle, char.skinTone, mode);
-    drawAnimeMouth2D(ctx, 0, mouthDy, char.face.mouthStyle, preset.mouthPose, 1, char.face.mouthColor, 0, mode);
+    drawAnimeMouth2D(
+      ctx,
+      0,
+      mouthDy,
+      char.face.mouthStyle,
+      preset.mouthPose,
+      1,
+      char.face.mouthColor,
+      0,
+      mode,
+    );
   }
 
   for (const fx of char.face.fx) {
@@ -1437,7 +1926,12 @@ function drawFace2D(
       ctx.lineWidth = 1.9;
       const ax = prof ? -dir * 14 : -26;
       const ay = -24;
-      for (const [dx, dy] of [[1, 1], [-1, 1], [1, -1], [-1, -1]] as const) {
+      for (const [dx, dy] of [
+        [1, 1],
+        [-1, 1],
+        [1, -1],
+        [-1, -1],
+      ] as const) {
         ctx.beginPath();
         ctx.moveTo(ax + dx * 2, ay + dy * 6);
         ctx.quadraticCurveTo(ax + dx * 2, ay + dy * 2, ax + dx * 6, ay + dy * 2);
@@ -1507,7 +2001,11 @@ function drawHairBack2D(
       },
       col,
       mode,
-      { strokeWidth: 2.3, shadowSide: "bottom", bounds: { x: cx - rx - 16, y: cy - ry - 10, w: rx * 2 + 32, h: 260 } },
+      {
+        strokeWidth: 2.3,
+        shadowSide: "bottom",
+        bounds: { x: cx - rx - 16, y: cy - ry - 10, w: rx * 2 + 32, h: 260 },
+      },
     );
     return;
   }
@@ -1526,7 +2024,11 @@ function drawHairBack2D(
           },
           col,
           mode,
-          { strokeWidth: 2.1, shadowSide: "bottom", bounds: { x: cx - rx - 10, y: cy - ry, w: rx * 2 + 20, h: 160 } },
+          {
+            strokeWidth: 2.1,
+            shadowSide: "bottom",
+            bounds: { x: cx - rx - 10, y: cy - ry, w: rx * 2 + 20, h: 160 },
+          },
         );
       }
     } else {
@@ -1535,13 +2037,22 @@ function drawHairBack2D(
         ctx,
         () => {
           ctx.moveTo(cx, cy - ry);
-          ctx.quadraticCurveTo(cx + backDir * (rx + 10), cy - 8, cx + backDir * (rx + 6), a.chinY + 12);
+          ctx.quadraticCurveTo(
+            cx + backDir * (rx + 10),
+            cy - 8,
+            cx + backDir * (rx + 6),
+            a.chinY + 12,
+          );
           ctx.lineTo(cx + backDir * (rx * 0.25), a.chinY + 5);
           ctx.closePath();
         },
         col,
         mode,
-        { strokeWidth: 2.2, shadowSide: "bottom", bounds: { x: cx - rx - 16, y: cy - ry, w: rx * 2 + 32, h: 160 } },
+        {
+          strokeWidth: 2.2,
+          shadowSide: "bottom",
+          bounds: { x: cx - rx - 16, y: cy - ry, w: rx * 2 + 32, h: 160 },
+        },
       );
     }
   }
@@ -1595,10 +2106,31 @@ function drawHairFront2D(
       },
       col,
       mode,
-      { strokeWidth: 2.3, shadowSide: dir > 0 ? "left" : "right", highlight: true, bounds: { x: cx - rx - 12, y: topY, w: rx * 2 + 24, h: 240 } },
+      {
+        strokeWidth: 2.3,
+        shadowSide: dir > 0 ? "left" : "right",
+        highlight: true,
+        bounds: { x: cx - rx - 12, y: topY, w: rx * 2 + 24, h: 240 },
+      },
     );
-    strokeLine(ctx, [[cx - rx * 0.36, cy - ry * 0.2], [cx - rx * 0.48, a.chinY - 6]], mode, 1.5);
-    strokeLine(ctx, [[cx + rx * 0.36, cy - ry * 0.2], [cx + rx * 0.48, a.chinY - 6]], mode, 1.5);
+    strokeLine(
+      ctx,
+      [
+        [cx - rx * 0.36, cy - ry * 0.2],
+        [cx - rx * 0.48, a.chinY - 6],
+      ],
+      mode,
+      1.5,
+    );
+    strokeLine(
+      ctx,
+      [
+        [cx + rx * 0.36, cy - ry * 0.2],
+        [cx + rx * 0.48, a.chinY - 6],
+      ],
+      mode,
+      1.5,
+    );
     return;
   }
 
@@ -1622,10 +2154,31 @@ function drawHairFront2D(
       },
       col,
       mode,
-      { strokeWidth: 2.3, shadowSide: dir > 0 ? "left" : "right", highlight: true, bounds: { x: cx - rx - 10, y: topY, w: rx * 2 + 20, h: 170 } },
+      {
+        strokeWidth: 2.3,
+        shadowSide: dir > 0 ? "left" : "right",
+        highlight: true,
+        bounds: { x: cx - rx - 10, y: topY, w: rx * 2 + 20, h: 170 },
+      },
     );
-    strokeLine(ctx, [[cx, topY + 14], [cx - dir * 18, cy + 10]], mode, 1.4);
-    strokeLine(ctx, [[cx + dir * 10, topY + 18], [cx + dir * 20, browY - 2]], mode, 1.4);
+    strokeLine(
+      ctx,
+      [
+        [cx, topY + 14],
+        [cx - dir * 18, cy + 10],
+      ],
+      mode,
+      1.4,
+    );
+    strokeLine(
+      ctx,
+      [
+        [cx + dir * 10, topY + 18],
+        [cx + dir * 20, browY - 2],
+      ],
+      mode,
+      1.4,
+    );
     return;
   }
 
@@ -1709,8 +2262,630 @@ function drawHairFront2D(
     },
   );
   // Crisp inner anime strand lines for manga hair depth
-  strokeLine(ctx, [[cx - rx * 0.32, topY + 14], [cx - rx * 0.42 + shift, browY - 4]], mode, 1.3);
-  strokeLine(ctx, [[cx + rx * 0.32, topY + 14], [cx + rx * 0.42 + shift, browY - 4]], mode, 1.3);
+  strokeLine(
+    ctx,
+    [
+      [cx - rx * 0.32, topY + 14],
+      [cx - rx * 0.42 + shift, browY - 4],
+    ],
+    mode,
+    1.3,
+  );
+  strokeLine(
+    ctx,
+    [
+      [cx + rx * 0.32, topY + 14],
+      [cx + rx * 0.42 + shift, browY - 4],
+    ],
+    mode,
+    1.3,
+  );
+}
+
+function drawIllustratedHair2D(
+  ctx: C,
+  char: Character2D,
+  a: BodyAngleAnchors,
+  angle: Angle2D,
+  mode: RenderMode2D,
+  side: "back" | "front",
+  imageMap: Map<string, HTMLImageElement>,
+  pack: IllustratedHairPack2D | null,
+) {
+  if (!pack) return;
+  const src = side === "back" ? pack.backFrames[angle] : pack.frontFrames[angle];
+  if (!src) return;
+  const img = imageMap.get(src);
+  if (!img) return;
+
+  const sprite = getRecoloredIllustratedPart(
+    img,
+    src,
+    char.hair.color,
+    mode,
+    char.shadingDepth ?? "cel",
+  );
+  const sx = a.headRx / pack.refHeadRx;
+  const sy = a.headRy / pack.refHeadRy;
+
+  ctx.save();
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.translate(a.headCx, a.headCy);
+  ctx.scale(sx, sy);
+  ctx.drawImage(sprite, -pack.pivotX, -pack.pivotY, pack.canvasW, pack.canvasH);
+  ctx.restore();
+}
+
+function drawIllustratedClothing2D(
+  ctx: C,
+  pack: IllustratedClothingPack2D | null,
+  primaryHex: string,
+  accentHex: string,
+  angle: Angle2D,
+  mode: RenderMode2D,
+  shadingDepth: ShadingDepth2D,
+  imageMap: Map<string, HTMLImageElement>,
+) {
+  if (!pack) return;
+  const src = pack.frames[angle];
+  const img = src ? imageMap.get(src) : undefined;
+  if (!src || !img) return;
+
+  const maskSrc = pack.accentMasks?.[angle];
+  const maskImg = maskSrc ? imageMap.get(maskSrc) : undefined;
+  const sprite = getRecoloredIllustratedPart(
+    img,
+    src,
+    primaryHex,
+    mode,
+    shadingDepth,
+    maskImg,
+    maskSrc,
+    accentHex,
+    CHAR2D_W,
+    CHAR2D_H,
+  );
+  ctx.drawImage(sprite, 0, 0, CHAR2D_W, CHAR2D_H);
+}
+
+function getProfileSkinForearmCanvas(
+  rawBaseImg: HTMLImageElement,
+  processedBase: HTMLCanvasElement,
+  rawBaseSrc: string,
+  a: BodyAngleAnchors,
+  angle: Angle2D,
+  mode: RenderMode2D,
+  skinTone: string | null,
+): { canvas: HTMLCanvasElement; x: number; y: number } {
+  const arm = angle === 90 ? a.armLeft : a.armRight;
+  const elbow = arm[1];
+  const wrist = arm[2];
+  const shiftX = angle === 90 ? 12 : -12;
+  const bx0 = Math.max(0, Math.round(Math.min(elbow.x, wrist.x) + shiftX - 30));
+  const bx1 = Math.min(CHAR2D_W - 1, Math.round(Math.max(elbow.x, wrist.x) + shiftX + 30));
+  const by0 = Math.max(0, Math.round(elbow.y - 2));
+  const by1 = Math.min(CHAR2D_H - 1, Math.round(wrist.y + 84));
+  const bw = bx1 - bx0 + 1;
+  const bh = by1 - by0 + 1;
+
+  const key = `prof-arm-v3|${rawBaseSrc}|${angle}|${mode}|${skinTone ?? "orig"}|${bx0},${by0},${bw},${bh}`;
+  const hit = PROCESSED_SPRITE_CACHE.get(key);
+  if (hit) return { canvas: hit, x: bx0, y: by0 };
+
+  const rawC = document.createElement("canvas");
+  rawC.width = bw;
+  rawC.height = bh;
+  const rawCtx = rawC.getContext("2d")!;
+  rawCtx.drawImage(rawBaseImg, bx0, by0, bw, bh, 0, 0, bw, bh);
+  const rawD = rawCtx.getImageData(0, 0, bw, bh).data;
+
+  const outC = document.createElement("canvas");
+  outC.width = bw;
+  outC.height = bh;
+  const outCtx = outC.getContext("2d")!;
+  outCtx.drawImage(processedBase, bx0, by0, bw, bh, 0, 0, bw, bh);
+  const outId = outCtx.getImageData(0, 0, bw, bh);
+  const od = outId.data;
+
+  // Tapered anatomical arm+hand envelope calibrated to Model #1 90° / 270° contours
+  // plus edge-snap to dark contour lines so zero stomach, rear thigh, or black briefs leak through.
+  const keys: ReadonlyArray<readonly [number, number, number]> =
+    angle === 90
+      ? [
+          [392, 200, 235],
+          [415, 201, 238],
+          [440, 209, 239],
+          [465, 217, 243],
+          [495, 223, 250],
+          [515, 220, 253],
+          [538, 223, 253],
+          [558, 228, 251],
+          [570, 234, 249],
+          [576, 240, 246],
+        ]
+      : [
+          [392, 243, 279],
+          [415, 238, 278],
+          [440, 240, 270],
+          [465, 236, 262],
+          [495, 226, 254],
+          [515, 225, 256],
+          [538, 223, 254],
+          [558, 226, 249],
+          [570, 226, 238],
+          [576, 228, 234],
+        ];
+
+  const evalSpan = (wy: number): [number, number] | null => {
+    if (wy < keys[0]![0] || wy > keys[keys.length - 1]![0]) return null;
+    for (let k = 0; k < keys.length - 1; k++) {
+      const [y0, l0, r0] = keys[k]!;
+      const [y1, l1, r1] = keys[k + 1]!;
+      if (wy >= y0 && wy <= y1) {
+        const t = (wy - y0) / Math.max(1, y1 - y0);
+        return [l0 + (l1 - l0) * t, r0 + (r1 - r0) * t];
+      }
+    }
+    return null;
+  };
+
+  const keepMask = new Uint8Array(bw * bh);
+  for (let y = 0; y < bh; y++) {
+    const wy = by0 + y;
+    const span = evalSpan(wy);
+    if (!span) continue;
+    let [elx, erx] = span;
+
+    // Refine within ±3px in black-briefs band to trim dark briefs pixels while retaining 1px ink outline
+    if (wy >= 432 && wy <= 504) {
+      let sl = -1;
+      let sr = -1;
+      for (let wx = Math.round(elx) - 3; wx <= Math.round(erx) + 3; wx++) {
+        const x = wx - bx0;
+        if (x < 0 || x >= bw) continue;
+        const i = (y * bw + x) * 4;
+        if ((rawD[i + 3] ?? 0) < 40) continue;
+        const r = rawD[i] ?? 0;
+        const g = rawD[i + 1] ?? 0;
+        const b = rawD[i + 2] ?? 0;
+        const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+        if (r > g + 4 && r - b >= 14 && lum > 118) {
+          if (sl < 0) sl = wx;
+          sr = wx;
+        }
+      }
+      if (sl >= 0 && sr >= sl) {
+        elx = sl - 1;
+        erx = sr + 1;
+      }
+    }
+
+    const xStart = Math.max(0, Math.round(elx) - bx0);
+    const xEnd = Math.min(bw - 1, Math.round(erx) - bx0);
+    for (let x = xStart; x <= xEnd; x++) {
+      const i = (y * bw + x) * 4;
+      if ((rawD[i + 3] ?? 0) > 40) keepMask[y * bw + x] = 1;
+    }
+  }
+
+  for (let p = 0; p < bw * bh; p++) {
+    if (!keepMask[p]) od[p * 4 + 3] = 0;
+  }
+  outCtx.putImageData(outId, 0, 0);
+  putProcessedCache(key, outC);
+  return { canvas: outC, x: bx0, y: by0 };
+}
+
+export function extractProfileForearmForPose2D(
+  char: Character2D,
+  baseModel: BaseModel2D,
+  angle: Angle2D,
+  mode: RenderMode2D,
+  imageMap: Map<string, HTMLImageElement>,
+  headPack?: HeadPack2D,
+): { canvas: HTMLCanvasElement; x: number; y: number } | null {
+  if (angle !== 90 && angle !== 270) return null;
+  const head = headPack ?? resolveHeadPack2D(char.headShapeId);
+  const anchors = resolveEffectiveAnchors(baseModel, char, angle, head);
+  const seamless = isUsingSeamlessHeadVariant(baseModel, char, angle, head);
+  const variantSrc = seamless ? head.bodyVariants?.[baseModel.id]?.[angle] : undefined;
+  const baseSrc = variantSrc ?? baseModel.frames[angle] ?? baseModel.frames[0];
+  const rawImg = baseSrc ? imageMap.get(baseSrc) : undefined;
+  if (!rawImg || !baseSrc) return null;
+
+  let processedBaseCanvas: HTMLCanvasElement;
+  if (variantSrc) {
+    processedBaseCanvas = getProcessedBaseSprite(rawImg, variantSrc, mode, char.skinTone);
+  } else {
+    const headSrc = head.overlayFrames[angle] ?? head.overlayFrames[0];
+    const headImg = headSrc ? imageMap.get(headSrc) : undefined;
+    const fitScale = Math.max(0.75, Math.min(1.25, char.headFit?.scale ?? 1));
+    const fitOffsetY = char.headFit?.offsetY ?? 0;
+    processedBaseCanvas = getProcessedCompositedBaseSprite(
+      rawImg,
+      baseSrc,
+      headImg,
+      headSrc,
+      baseModel.anchors[angle],
+      head.anchors[angle] ?? head.anchors[0],
+      fitScale,
+      fitOffsetY,
+      mode,
+      char.skinTone,
+    );
+  }
+  return getProfileSkinForearmCanvas(
+    rawImg,
+    processedBaseCanvas,
+    baseSrc,
+    anchors,
+    angle,
+    mode,
+    char.skinTone,
+  );
+}
+
+function drawForegroundProfileArm2D(
+  ctx: C,
+  rawBaseImg: HTMLImageElement | null,
+  processedBase: HTMLCanvasElement | null,
+  rawBaseSrc: string,
+  a: BodyAngleAnchors,
+  angle: Angle2D,
+  mode: RenderMode2D,
+  skinTone: string | null,
+) {
+  if (!rawBaseImg || !processedBase || !rawBaseSrc || (angle !== 90 && angle !== 270)) return;
+  const sprite = getProfileSkinForearmCanvas(
+    rawBaseImg,
+    processedBase,
+    rawBaseSrc,
+    a,
+    angle,
+    mode,
+    skinTone,
+  );
+  ctx.drawImage(sprite.canvas, sprite.x, sprite.y);
+}
+
+function drawExpressionClosedEyes2D(
+  ctx: C,
+  cx: number,
+  cy: number,
+  fScale: number,
+  angle: Angle2D,
+  eyeMode: "happy" | "closed",
+  mode: RenderMode2D,
+  a: BodyAngleAnchors,
+) {
+  const prof = isProfile(angle);
+  const dir = facingDir(angle);
+  const ink = inkOf(mode);
+
+  const drawSingle = (ex: number, ey: number, ew: number) => {
+    ctx.save();
+    ctx.translate(ex, ey);
+    ctx.strokeStyle = ink;
+    ctx.lineCap = "round";
+    ctx.lineWidth = 2.5 * fScale;
+    ctx.beginPath();
+    if (eyeMode === "happy") {
+      ctx.moveTo(-ew * 0.5, 2 * fScale);
+      ctx.quadraticCurveTo(0, -6.5 * fScale, ew * 0.5, 2 * fScale);
+    } else {
+      ctx.moveTo(-ew * 0.5, -1 * fScale);
+      ctx.quadraticCurveTo(0, 4.5 * fScale, ew * 0.5, -1 * fScale);
+    }
+    ctx.stroke();
+    ctx.restore();
+  };
+
+  if (prof) {
+    drawSingle(cx + a.faceShiftX * 0.78, cy, 11 * fScale);
+  } else if (dir !== 0) {
+    drawSingle(cx + a.faceShiftX * 0.28 - dir * 6 * fScale, cy, 15 * fScale);
+    drawSingle(cx + a.faceShiftX * 0.78 + dir * 13 * fScale, cy, 11 * fScale);
+  } else {
+    drawSingle(cx - 19 * fScale, cy, 16 * fScale);
+    drawSingle(cx + 19 * fScale, cy, 16 * fScale);
+  }
+}
+
+function drawMangaEmotionFx2D(
+  ctx: C,
+  fxList: Character2D["face"]["fx"],
+  cx: number,
+  eyeY: number,
+  fScale: number,
+  dir: number,
+  prof: boolean,
+  mode: RenderMode2D,
+) {
+  if (!fxList.length) return;
+  ctx.save();
+  ctx.translate(cx, eyeY);
+  ctx.scale(fScale, fScale);
+  for (const fx of fxList) {
+    if (fx === "blush") {
+      ctx.save();
+      ctx.strokeStyle = mode === "manga" ? MANGA_INK : "#ec4899";
+      ctx.lineWidth = 1.4;
+      const xs = prof ? [dir * 16] : [-20, 18];
+      for (const bx of xs) {
+        for (let k = -1; k <= 1; k++) {
+          ctx.beginPath();
+          ctx.moveTo(bx + k * 4, 13);
+          ctx.lineTo(bx + k * 4 - 2, 19);
+          ctx.stroke();
+        }
+      }
+      ctx.restore();
+    } else if (fx === "sweat") {
+      ctx.save();
+      ctx.fillStyle = mode === "manga" ? "#ffffff" : "#7dd3fc";
+      ctx.strokeStyle = inkOf(mode);
+      ctx.lineWidth = 1.6;
+      const sx = prof ? -dir * 16 : 30;
+      ctx.beginPath();
+      ctx.moveTo(sx, -24);
+      ctx.quadraticCurveTo(sx + 6, -12, sx, -8);
+      ctx.quadraticCurveTo(sx - 6, -12, sx, -24);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    } else if (fx === "anger") {
+      ctx.save();
+      ctx.strokeStyle = mode === "manga" ? MANGA_INK : "#ef4444";
+      ctx.lineWidth = 1.9;
+      const ax = prof ? -dir * 12 : -29;
+      const ay = -10;
+      for (const [dx, dy] of [
+        [1, 1],
+        [-1, 1],
+        [1, -1],
+        [-1, -1],
+      ] as const) {
+        ctx.beginPath();
+        ctx.moveTo(ax + dx * 2, ay + dy * 6);
+        ctx.quadraticCurveTo(ax + dx * 2, ay + dy * 2, ax + dx * 6, ay + dy * 2);
+        ctx.stroke();
+      }
+      ctx.restore();
+    } else if (fx === "tears") {
+      ctx.save();
+      ctx.fillStyle = mode === "manga" ? "#ffffff" : "#93c5fd";
+      ctx.strokeStyle = inkOf(mode);
+      ctx.lineWidth = 1.3;
+      const txs = prof ? [dir * 20] : [-18, 18];
+      for (const tx of txs) {
+        ctx.beginPath();
+        ctx.roundRect(tx - 3, 6, 6, 22, 3);
+        ctx.fill();
+        ctx.stroke();
+      }
+      ctx.restore();
+    } else if (fx === "gloom") {
+      ctx.save();
+      ctx.strokeStyle = inkOf(mode);
+      ctx.lineWidth = 1.5;
+      for (let gx = -26; gx <= 26; gx += 7) {
+        ctx.beginPath();
+        ctx.moveTo(gx, -44);
+        ctx.lineTo(gx, -22);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+  }
+  ctx.restore();
+}
+
+function drawIllustratedFace2D(
+  ctx: C,
+  char: Character2D,
+  a: BodyAngleAnchors,
+  angle: Angle2D,
+  mode: RenderMode2D,
+  imageMap: Map<string, HTMLImageElement>,
+  facePack: IllustratedFacePack2D | null,
+) {
+  if (isBackFacingAngle2D(angle)) return;
+
+  const dir = facingDir(angle);
+  const prof = isProfile(angle);
+  const preset = EXPRESSION_PRESETS_2D[char.face.expression] ?? EXPRESSION_PRESETS_2D.neutral;
+  const fScale = Math.max(0.75, Math.min(1.35, char.face.scale));
+  const fOffsetY = char.face.offsetY;
+  const eyeCenterY = a.eyeY + fOffsetY;
+  const angAssets = facePack?.angles[angle];
+
+  if (facePack && angAssets) {
+    const sx = (a.headRx / facePack.refHeadRx) * fScale;
+    const sy = (a.headRy / facePack.refHeadRy) * fScale;
+
+    if (char.face.eyeStyle !== "none") {
+      if (preset.eyeMode === "happy" || preset.eyeMode === "closed") {
+        drawExpressionClosedEyes2D(
+          ctx,
+          a.headCx,
+          eyeCenterY,
+          fScale,
+          angle,
+          preset.eyeMode,
+          mode,
+          a,
+        );
+      } else {
+        const ebImg = imageMap.get(angAssets.eyesBase);
+        const eiImg = imageMap.get(angAssets.eyesIris);
+        const eyeYScale =
+          preset.eyeMode === "glare" || preset.eyeMode === "smug"
+            ? 0.82
+            : preset.eyeMode === "serious"
+              ? 0.92
+              : preset.eyeMode === "shock"
+                ? 1.08
+                : 1;
+        ctx.save();
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
+        ctx.translate(a.headCx, eyeCenterY);
+        ctx.scale(sx, sy * eyeYScale);
+        if (ebImg) {
+          const ebSprite = mode === "manga" ? getMangaLineSprite(ebImg, angAssets.eyesBase) : ebImg;
+          ctx.drawImage(
+            ebSprite,
+            -facePack.pivotX,
+            -facePack.pivotY,
+            facePack.canvasW,
+            facePack.canvasH,
+          );
+        }
+        if (eiImg) {
+          const irisSprite = getRecoloredIrisSprite(
+            eiImg,
+            angAssets.eyesIris,
+            char.face.eyeColor,
+            mode,
+          );
+          ctx.drawImage(
+            irisSprite,
+            -facePack.pivotX,
+            -facePack.pivotY,
+            facePack.canvasW,
+            facePack.canvasH,
+          );
+        }
+        ctx.restore();
+      }
+    }
+
+    if (char.face.browStyle !== "none") {
+      const brImg = imageMap.get(angAssets.brows);
+      if (brImg) {
+        const brSprite = getRecoloredInkSprite(brImg, angAssets.brows, char.face.browColor, mode);
+        const browDy = preset.browTilt > 0 ? 4 : preset.browTilt < 0 ? -4 : 0;
+        const tiltRad = (preset.browTilt * 0.45 * Math.PI) / 180;
+        ctx.save();
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
+        ctx.translate(a.headCx, eyeCenterY);
+        ctx.scale(sx, sy);
+
+        if (prof || Math.abs(tiltRad) < 0.01) {
+          const px = angle === 90 ? 174 : angle === 270 ? 46 : 110;
+          const py = 76;
+          ctx.translate(px - facePack.pivotX, py - facePack.pivotY + browDy);
+          if (prof) ctx.rotate((angle === 90 ? 1 : -1) * tiltRad);
+          ctx.drawImage(brSprite, -px, -py, facePack.canvasW, facePack.canvasH);
+        } else {
+          const splitX = angle === 45 ? 162 : angle === 315 ? 58 : 110;
+          const leftPivotX = angle === 45 ? 132 : angle === 315 ? 36 : 72;
+          const rightPivotX = angle === 45 ? 186 : angle === 315 ? 92 : 148;
+          const py = 76;
+
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(-facePack.pivotX, -facePack.pivotY, splitX, facePack.canvasH);
+          ctx.clip();
+          ctx.translate(leftPivotX - facePack.pivotX, py - facePack.pivotY + browDy);
+          ctx.rotate(tiltRad);
+          ctx.drawImage(brSprite, -leftPivotX, -py, facePack.canvasW, facePack.canvasH);
+          ctx.restore();
+
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(
+            splitX - facePack.pivotX,
+            -facePack.pivotY,
+            facePack.canvasW - splitX,
+            facePack.canvasH,
+          );
+          ctx.clip();
+          ctx.translate(rightPivotX - facePack.pivotX, py - facePack.pivotY + browDy);
+          ctx.rotate(-tiltRad);
+          ctx.drawImage(brSprite, -rightPivotX, -py, facePack.canvasW, facePack.canvasH);
+          ctx.restore();
+        }
+        ctx.restore();
+      }
+    }
+
+    if (char.face.noseStyle !== "none") {
+      const nsImg = imageMap.get(angAssets.nose);
+      if (nsImg) {
+        const nsSprite = getRecoloredInkSprite(nsImg, angAssets.nose, "#1c1f29", mode);
+        ctx.save();
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
+        ctx.translate(a.headCx, eyeCenterY);
+        ctx.scale(sx, sy);
+        ctx.drawImage(
+          nsSprite,
+          -facePack.pivotX,
+          -facePack.pivotY,
+          facePack.canvasW,
+          facePack.canvasH,
+        );
+        ctx.restore();
+      }
+    }
+
+    if (char.face.mouthStyle !== "none") {
+      if (preset.mouthPose === "neutral" || preset.mouthPose === "serious") {
+        const mtImg = imageMap.get(angAssets.mouth);
+        if (mtImg) {
+          const mtSprite = getRecoloredInkSprite(mtImg, angAssets.mouth, "#1c1f29", mode);
+          ctx.save();
+          ctx.imageSmoothingEnabled = true;
+          ctx.imageSmoothingQuality = "high";
+          ctx.translate(a.headCx, eyeCenterY);
+          ctx.scale(sx, sy * (preset.mouthPose === "serious" ? 0.92 : 1));
+          ctx.drawImage(
+            mtSprite,
+            -facePack.pivotX,
+            -facePack.pivotY,
+            facePack.canvasW,
+            facePack.canvasH,
+          );
+          ctx.restore();
+        }
+      } else {
+        const mouthX = a.headCx + a.faceShiftX * (prof ? 0.72 : dir !== 0 ? 1.15 : 0);
+        const mouthY = eyeCenterY + (a.mouthY - a.eyeY - (prof ? 13 : 14)) * fScale;
+        ctx.save();
+        if (prof) {
+          ctx.translate(mouthX, mouthY);
+          ctx.scale(1, 0.74);
+          ctx.translate(-mouthX, -mouthY);
+        }
+        drawAnimeMouth2D(
+          ctx,
+          mouthX,
+          mouthY,
+          "line",
+          preset.mouthPose,
+          (prof ? 0.36 : dir !== 0 ? 0.72 : 0.94) * fScale,
+          char.face.mouthColor,
+          dir,
+          mode,
+        );
+        ctx.restore();
+      }
+    }
+  }
+
+  drawMangaEmotionFx2D(
+    ctx,
+    char.face.fx,
+    a.headCx + a.faceShiftX * 0.42,
+    eyeCenterY,
+    fScale,
+    dir,
+    prof,
+    mode,
+  );
 }
 
 function resolveAngleCustomTransform(layer: CustomLayerInstance2D, angle: Angle2D) {
@@ -1738,8 +2913,8 @@ function drawCustomLayers2D(
 
     const rawSrc =
       asset.kind === "single"
-        ? asset.singleSrc ?? asset.frames[angle] ?? asset.frames[0]
-        : asset.frames[angle] ?? asset.frames[0];
+        ? (asset.singleSrc ?? asset.frames[angle] ?? asset.frames[0])
+        : (asset.frames[angle] ?? asset.frames[0]);
     if (!rawSrc) continue;
 
     const img = imageMap.get(rawSrc);
@@ -1750,6 +2925,7 @@ function drawCustomLayers2D(
       rawSrc,
       char.renderMode,
       layer.tintEnabled ? layer.tintColor : null,
+      char.shadingDepth ?? "cel",
     );
 
     ctx.save();
@@ -1759,9 +2935,7 @@ function drawCustomLayers2D(
     ctx.scale(tr.flipX ? -tr.scaleX : tr.scaleX, tr.scaleY);
     const baseW = asset.kind === "single" ? Math.min(260, sprite.width) : CHAR2D_W;
     const baseH =
-      asset.kind === "single"
-        ? (baseW * sprite.height) / Math.max(1, sprite.width)
-        : CHAR2D_H;
+      asset.kind === "single" ? (baseW * sprite.height) / Math.max(1, sprite.width) : CHAR2D_H;
     ctx.drawImage(sprite, -baseW / 2, -baseH / 2, baseW, baseH);
     ctx.restore();
   }
@@ -1782,6 +2956,51 @@ export async function preloadCharacter2DImages(
   if (!variantSrc) {
     const ovSrc = head.overlayFrames[char.angle] ?? head.overlayFrames[0];
     if (ovSrc) urls.add(ovSrc);
+  }
+
+  const ang = char.angle;
+  const hairPack = resolveIllustratedHairPack2D(char.hair.style);
+  if (hairPack) {
+    if (hairPack.frontFrames[ang]) urls.add(hairPack.frontFrames[ang]);
+    const backSrc = hairPack.backFrames[ang];
+    if (backSrc) urls.add(backSrc);
+  }
+
+  const topPack = resolveIllustratedTopPack2D(char.clothes.top);
+  if (topPack) {
+    urls.add(topPack.frames[ang]);
+    const topMask = topPack.accentMasks?.[ang];
+    if (topMask) urls.add(topMask);
+  }
+
+  const bottomPack = resolveIllustratedBottomPack2D(char.clothes.bottom);
+  if (bottomPack) {
+    urls.add(bottomPack.frames[ang]);
+    const botMask = bottomPack.accentMasks?.[ang];
+    if (botMask) urls.add(botMask);
+  }
+
+  const footwearPack = resolveIllustratedFootwearPack2D(char.clothes.footwear);
+  if (footwearPack) {
+    urls.add(footwearPack.frames[ang]);
+    const fwMask = footwearPack.accentMasks?.[ang];
+    if (fwMask) urls.add(fwMask);
+  }
+
+  if (!isBackFacingAngle2D(ang)) {
+    const facePack =
+      resolveIllustratedFacePack2D(char.face.eyeStyle) ??
+      resolveIllustratedFacePack2D(char.face.browStyle) ??
+      resolveIllustratedFacePack2D(char.face.noseStyle) ??
+      resolveIllustratedFacePack2D(char.face.mouthStyle);
+    const faceAng = facePack?.angles[ang];
+    if (faceAng) {
+      urls.add(faceAng.eyesBase);
+      urls.add(faceAng.eyesIris);
+      urls.add(faceAng.brows);
+      urls.add(faceAng.nose);
+      urls.add(faceAng.mouth);
+    }
   }
 
   const partMap = new Map(customParts.map((p) => [p.id, p]));
@@ -1812,23 +3031,40 @@ export function renderCharacter2DSync(
   customParts: CustomPartAsset2D[],
   imageMap: Map<string, HTMLImageElement>,
   headPack?: HeadPack2D,
+  opts?: { skipProfileForegroundArm?: boolean },
 ) {
   const angle = char.angle;
   const mode = char.renderMode;
+  const shadingDepth = char.shadingDepth ?? "cel";
   const head = headPack ?? resolveHeadPack2D(char.headShapeId);
   const anchors = resolveEffectiveAnchors(baseModel, char, angle, head);
   const seamless = isUsingSeamlessHeadVariant(baseModel, char, angle, head);
   const variantSrc = seamless ? head.bodyVariants?.[baseModel.id]?.[angle] : undefined;
 
+  const hairPack = resolveIllustratedHairPack2D(char.hair.style);
+  const topPack = resolveIllustratedTopPack2D(char.clothes.top);
+  const bottomPack = resolveIllustratedBottomPack2D(char.clothes.bottom);
+  const footwearPack = resolveIllustratedFootwearPack2D(char.clothes.footwear);
+  const facePack =
+    resolveIllustratedFacePack2D(char.face.eyeStyle) ??
+    resolveIllustratedFacePack2D(char.face.browStyle) ??
+    resolveIllustratedFacePack2D(char.face.noseStyle) ??
+    resolveIllustratedFacePack2D(char.face.mouthStyle);
+
   ctx.save();
-  drawHairBack2D(ctx, char, anchors, angle, mode);
+  drawIllustratedHair2D(ctx, char, anchors, angle, mode, "back", imageMap, hairPack);
   drawCustomLayers2D(ctx, char, customParts, "behind", angle, imageMap);
 
+  let processedBaseCanvas: HTMLCanvasElement | null = null;
+  let rawBaseImg: HTMLImageElement | null = null;
+  let rawBaseSrc = "";
   if (variantSrc) {
     const varImg = imageMap.get(variantSrc);
     if (varImg) {
-      const processed = getProcessedBaseSprite(varImg, variantSrc, mode, char.skinTone);
-      ctx.drawImage(processed, 0, 0, CHAR2D_W, CHAR2D_H);
+      rawBaseImg = varImg;
+      rawBaseSrc = variantSrc;
+      processedBaseCanvas = getProcessedBaseSprite(varImg, variantSrc, mode, char.skinTone);
+      ctx.drawImage(processedBaseCanvas, 0, 0, CHAR2D_W, CHAR2D_H);
     }
   } else {
     const baseSrc = baseModel.frames[angle] ?? baseModel.frames[0];
@@ -1836,9 +3072,11 @@ export function renderCharacter2DSync(
     const headSrc = head.overlayFrames[angle] ?? head.overlayFrames[0];
     const headImg = headSrc ? imageMap.get(headSrc) : undefined;
     if (baseImg) {
+      rawBaseImg = baseImg;
+      rawBaseSrc = baseSrc;
       const fitScale = Math.max(0.75, Math.min(1.25, char.headFit?.scale ?? 1));
       const fitOffsetY = char.headFit?.offsetY ?? 0;
-      const processed = getProcessedCompositedBaseSprite(
+      processedBaseCanvas = getProcessedCompositedBaseSprite(
         baseImg,
         baseSrc,
         headImg,
@@ -1850,15 +3088,58 @@ export function renderCharacter2DSync(
         mode,
         char.skinTone,
       );
-      ctx.drawImage(processed, 0, 0, CHAR2D_W, CHAR2D_H);
+      ctx.drawImage(processedBaseCanvas, 0, 0, CHAR2D_W, CHAR2D_H);
     }
   }
 
-  drawFootwear2D(ctx, char, anchors, angle, mode);
-  drawBottoms2D(ctx, char, anchors, angle, mode);
-  drawTop2D(ctx, char, anchors, angle, mode);
-  drawFace2D(ctx, char, anchors, angle, mode);
-  drawHairFront2D(ctx, char, anchors, angle, mode);
+  drawIllustratedClothing2D(
+    ctx,
+    footwearPack,
+    char.clothes.footwearColor,
+    char.clothes.footwearAccentColor,
+    angle,
+    mode,
+    shadingDepth,
+    imageMap,
+  );
+  drawIllustratedClothing2D(
+    ctx,
+    bottomPack,
+    char.clothes.bottomColor,
+    char.clothes.bottomAccentColor,
+    angle,
+    mode,
+    shadingDepth,
+    imageMap,
+  );
+  drawIllustratedClothing2D(
+    ctx,
+    topPack,
+    char.clothes.topColor,
+    char.clothes.topAccentColor,
+    angle,
+    mode,
+    shadingDepth,
+    imageMap,
+  );
+  if (
+    !opts?.skipProfileForegroundArm &&
+    (bottomPack || topPack) &&
+    (!topPack || topPack.shortSleeve)
+  ) {
+    drawForegroundProfileArm2D(
+      ctx,
+      rawBaseImg,
+      processedBaseCanvas,
+      rawBaseSrc,
+      anchors,
+      angle,
+      mode,
+      char.skinTone,
+    );
+  }
+  drawIllustratedFace2D(ctx, char, anchors, angle, mode, imageMap, facePack);
+  drawIllustratedHair2D(ctx, char, anchors, angle, mode, "front", imageMap, hairPack);
   drawCustomLayers2D(ctx, char, customParts, "front", angle, imageMap);
   ctx.restore();
 }

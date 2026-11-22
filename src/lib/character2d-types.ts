@@ -22,6 +22,7 @@ export const MIRROR_PAIRS_2D: ReadonlyArray<readonly [Angle2D, Angle2D]> = [
 ];
 
 export type RenderMode2D = "color" | "manga";
+export type ShadingDepth2D = "flat" | "cel" | "dramatic";
 
 export interface BodyPoint2D {
   x: number;
@@ -116,26 +117,20 @@ export interface BaseModel2D {
   anchors: Record<Angle2D, BodyAngleAnchors>;
 }
 
-export type EyeStyle2D = "sharp" | "round" | "almond" | "intense" | "gentle" | "stoic";
-export type BrowStyle2D = "thin" | "bold" | "sharp" | "soft" | "flat";
-export type NoseStyle2D = "subtle" | "wedge" | "classic" | "tall" | "button";
-export type MouthStyle2D = "line" | "grin" | "smile" | "smirk" | "soft" | "wide";
+export type EyeStyle2D = "none" | "sharp" | "round" | "almond" | "intense" | "gentle" | "stoic";
+export type BrowStyle2D = "none" | "sharp" | "thin" | "bold" | "soft" | "flat";
+export type NoseStyle2D = "none" | "sharp" | "subtle" | "wedge" | "classic" | "tall" | "button";
+export type MouthStyle2D = "none" | "sharp" | "line" | "grin" | "smile" | "smirk" | "soft" | "wide";
 
 export type Expression2DId =
-  | "neutral"
-  | "happy"
-  | "angry"
-  | "shocked"
-  | "sad"
-  | "smug"
-  | "serious"
-  | "closed";
+  "neutral" | "happy" | "angry" | "shocked" | "sad" | "smug" | "serious" | "closed";
 
 export type FaceFx2D = "blush" | "sweat" | "anger" | "tears" | "gloom";
 
 export type HairStyle2D = "none" | "spiky" | "messy" | "short" | "slick" | "curtains" | "long";
-export type TopStyle2D = "none" | "hoodie" | "tshirt" | "longsleeve" | "zip_jacket" | "blazer";
-export type BottomStyle2D = "none" | "jeans" | "cargo" | "shorts";
+export type TopStyle2D =
+  "none" | "zip_hoodie_tee" | "hoodie" | "tshirt" | "longsleeve" | "zip_jacket" | "blazer";
+export type BottomStyle2D = "none" | "cargo" | "jeans" | "shorts";
 export type FootwearStyle2D = "none" | "sneakers" | "boots";
 
 export interface CustomLayerTransform2D {
@@ -182,6 +177,7 @@ export interface Character2D {
   updatedAt: number;
   angle: Angle2D;
   renderMode: RenderMode2D;
+  shadingDepth?: ShadingDepth2D;
   skinTone: string | null; // null keeps original base sprite skin color untouched
   face: {
     eyeStyle: EyeStyle2D;
@@ -224,43 +220,34 @@ export interface Source2DMetadata {
   snapshot?: Character2D;
 }
 
-export const EYE_STYLE_LABELS_2D: Record<EyeStyle2D, string> = {
+export const EYE_STYLE_LABELS_2D: Partial<Record<EyeStyle2D, string>> = {
+  none: "None",
   sharp: "Shonen Sharp",
-  round: "Expressive Round",
-  almond: "Cool Almond",
-  intense: "Fierce Intense",
-  gentle: "Soft Gentle",
-  stoic: "Narrow Stoic",
 };
 
-export const BROW_STYLE_LABELS_2D: Record<BrowStyle2D, string> = {
-  thin: "Thin",
-  bold: "Bold",
-  sharp: "Sharp Taper",
-  soft: "Soft",
-  flat: "Straight",
+export const BROW_STYLE_LABELS_2D: Partial<Record<BrowStyle2D, string>> = {
+  none: "None",
+  sharp: "Shonen Sharp",
 };
 
-export const NOSE_STYLE_LABELS_2D: Record<NoseStyle2D, string> = {
-  subtle: "Anime Subtle",
-  wedge: "Angular Wedge",
-  classic: "Classic Bridge",
-  tall: "Sharp Tall",
-  button: "Small Dot",
+export const NOSE_STYLE_LABELS_2D: Partial<Record<NoseStyle2D, string>> = {
+  none: "None",
+  sharp: "Shonen Sharp",
 };
 
-export const MOUTH_STYLE_LABELS_2D: Record<MouthStyle2D, string> = {
-  line: "Clean Line",
-  grin: "Bright Grin",
-  smile: "Warm Smile",
-  smirk: "Side Smirk",
-  soft: "Soft Lip",
-  wide: "Bold Shout",
+export const MOUTH_STYLE_LABELS_2D: Partial<Record<MouthStyle2D, string>> = {
+  none: "None",
+  sharp: "Shonen Sharp",
 };
 
 export const EXPRESSION_PRESETS_2D: Record<
   Expression2DId,
-  { label: string; eyeMode: "open" | "happy" | "glare" | "shock" | "sad" | "smug" | "serious" | "closed"; browTilt: number; mouthPose: "neutral" | "smile" | "grin" | "angry" | "gasp" | "sad" | "smirk" | "serious" }
+  {
+    label: string;
+    eyeMode: "open" | "happy" | "glare" | "shock" | "sad" | "smug" | "serious" | "closed";
+    browTilt: number;
+    mouthPose: "neutral" | "smile" | "grin" | "angry" | "gasp" | "sad" | "smirk" | "serious";
+  }
 > = {
   neutral: { label: "Neutral", eyeMode: "open", browTilt: 0, mouthPose: "neutral" },
   happy: { label: "Happy", eyeMode: "happy", browTilt: -6, mouthPose: "grin" },
@@ -280,36 +267,24 @@ export const FACE_FX_LABELS_2D: Record<FaceFx2D, string> = {
   gloom: "Gloom Lines",
 };
 
-export const HAIR_STYLE_LABELS_2D: Record<HairStyle2D, string> = {
+export const HAIR_STYLE_LABELS_2D: Partial<Record<HairStyle2D, string>> = {
   none: "Bald / Base",
-  spiky: "Spiky Shonen",
-  messy: "Messy Fringe",
-  short: "Short Crop",
-  slick: "Slicked Back",
-  curtains: "Center Part",
-  long: "Long Layered",
+  spiky: "Spiky Anime",
 };
 
-export const TOP_STYLE_LABELS_2D: Record<TopStyle2D, string> = {
+export const TOP_STYLE_LABELS_2D: Partial<Record<TopStyle2D, string>> = {
   none: "Bare Torso",
-  hoodie: "Pullover Hoodie",
-  tshirt: "T-Shirt",
-  longsleeve: "Long Sleeve",
-  zip_jacket: "Open Zip Jacket",
-  blazer: "School / Coat Blazer",
+  zip_hoodie_tee: "Zip Hoodie + Tee",
 };
 
-export const BOTTOM_STYLE_LABELS_2D: Record<BottomStyle2D, string> = {
+export const BOTTOM_STYLE_LABELS_2D: Partial<Record<BottomStyle2D, string>> = {
   none: "Base Briefs",
-  jeans: "Fitted Jeans",
   cargo: "Cargo Joggers",
-  shorts: "Athletic Shorts",
 };
 
-export const FOOTWEAR_STYLE_LABELS_2D: Record<FootwearStyle2D, string> = {
+export const FOOTWEAR_STYLE_LABELS_2D: Partial<Record<FootwearStyle2D, string>> = {
   none: "Barefoot",
-  sneakers: "Hi-Top Sneakers",
-  boots: "Combat Boots",
+  sneakers: "High-Top Sneakers",
 };
 
 export const SKIN_PRESETS_2D: { label: string; color: string | null }[] = [
@@ -359,12 +334,13 @@ export function createDefaultCharacter2D(name = "Hero #1"): Character2D {
     updatedAt: now,
     angle: 0,
     renderMode: "color",
+    shadingDepth: "cel",
     skinTone: null,
     face: {
       eyeStyle: "sharp",
-      browStyle: "bold",
-      noseStyle: "wedge",
-      mouthStyle: "line",
+      browStyle: "sharp",
+      noseStyle: "sharp",
+      mouthStyle: "sharp",
       expression: "neutral",
       fx: [],
       eyeColor: "#2563eb",
@@ -378,15 +354,15 @@ export function createDefaultCharacter2D(name = "Hero #1"): Character2D {
       color: "#1e2433",
     },
     clothes: {
-      top: "hoodie",
+      top: "zip_hoodie_tee",
       topColor: "#273b5c",
-      topAccentColor: "#e2e8f0",
-      bottom: "jeans",
-      bottomColor: "#30435c",
+      topAccentColor: "#f8fafc",
+      bottom: "cargo",
+      bottomColor: "#334155",
       bottomAccentColor: "#94a3b8",
       footwear: "sneakers",
       footwearColor: "#1e293b",
-      footwearAccentColor: "#f8fafc",
+      footwearAccentColor: "#ffffff",
     },
     customLayers: [],
   };
