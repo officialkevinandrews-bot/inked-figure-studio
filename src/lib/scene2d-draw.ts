@@ -2386,6 +2386,7 @@ export function renderScene2DSync(
     showGuides?: boolean;
     selectedObjectId?: string | null;
     activeStroke?: SceneStroke2D | null;
+    onAfterDepthLayer?: (depth: SceneDepthLayer, ctx: C) => void;
   } = {},
 ) {
   ctx.save();
@@ -2398,83 +2399,85 @@ export function renderScene2DSync(
   const allStrokes = opts.activeStroke ? [...scene.strokes, opts.activeStroke] : scene.strokes;
   drawManualLayerBuffer(ctx, allStrokes, "behind", scene.renderMode);
 
-  // 3. Sorted Scene Objects (background -> midground -> foreground)
+  // 3. Sorted Scene Objects (background -> midground -> foreground) interleaved with staged actors
   const assetMap = new Map(customAssets.map((a) => [a.id, a]));
-  const ordered = [...scene.objects].sort((a, b) => DEPTH_ORDER[a.depth] - DEPTH_ORDER[b.depth]);
 
-  for (const obj of ordered) {
-    if (!obj.visible) continue;
-    ctx.save();
-    ctx.globalAlpha = Math.max(0.05, Math.min(1, obj.opacity));
-    ctx.translate(obj.x, obj.y);
-    if (obj.rotation) ctx.rotate((obj.rotation * Math.PI) / 180);
-    if (obj.skewX || obj.skewY) {
-      ctx.transform(
-        1,
-        Math.tan((obj.skewY * Math.PI) / 180),
-        Math.tan((obj.skewX * Math.PI) / 180),
-        1,
-        0,
-        0,
-      );
-    }
-    ctx.scale(obj.flipX ? -1 : 1, obj.flipY ? -1 : 1);
-
-    // Subtle ground contact shadow
-    if (
-      obj.shadow &&
-      obj.assetId !== "spotlight_beam" &&
-      obj.assetId !== "fluffy_cloud" &&
-      obj.assetId !== "sakura_petals"
-    ) {
+  for (const depthPass of ["background", "midground", "foreground"] as const) {
+    for (const obj of scene.objects) {
+      if (obj.depth !== depthPass || !obj.visible) continue;
       ctx.save();
-      ctx.fillStyle = scene.renderMode === "manga" ? "rgba(0,0,0,0.12)" : "rgba(15,23,42,0.18)";
-      ctx.beginPath();
-      ctx.ellipse(
-        0,
-        obj.height * 0.48,
-        obj.width * 0.44,
-        Math.max(6, obj.height * 0.08),
-        0,
-        0,
-        Math.PI * 2,
-      );
-      ctx.fill();
+      ctx.globalAlpha = Math.max(0.05, Math.min(1, obj.opacity));
+      ctx.translate(obj.x, obj.y);
+      if (obj.rotation) ctx.rotate((obj.rotation * Math.PI) / 180);
+      if (obj.skewX || obj.skewY) {
+        ctx.transform(
+          1,
+          Math.tan((obj.skewY * Math.PI) / 180),
+          Math.tan((obj.skewX * Math.PI) / 180),
+          1,
+          0,
+          0,
+        );
+      }
+      ctx.scale(obj.flipX ? -1 : 1, obj.flipY ? -1 : 1);
+
+      // Subtle ground contact shadow
+      if (
+        obj.shadow &&
+        obj.assetId !== "spotlight_beam" &&
+        obj.assetId !== "fluffy_cloud" &&
+        obj.assetId !== "sakura_petals"
+      ) {
+        ctx.save();
+        ctx.fillStyle = scene.renderMode === "manga" ? "rgba(0,0,0,0.12)" : "rgba(15,23,42,0.18)";
+        ctx.beginPath();
+        ctx.ellipse(
+          0,
+          obj.height * 0.48,
+          obj.width * 0.44,
+          Math.max(6, obj.height * 0.08),
+          0,
+          0,
+          Math.PI * 2,
+        );
+        ctx.fill();
+        ctx.restore();
+      }
+
+      if (obj.kind === "builtin") {
+        drawBuiltinObject2D(
+          ctx,
+          obj.assetId,
+          obj.width,
+          obj.height,
+          obj.primaryColor,
+          obj.accentColor,
+          scene.renderMode,
+        );
+      } else {
+        const asset = assetMap.get(obj.assetId);
+        const img = asset?.src ? imageMap.get(asset.src) : undefined;
+        if (img && asset) {
+          const sprite = getProcessedCustomSceneSprite(
+            img,
+            asset.src,
+            scene.renderMode,
+            obj.tintEnabled ? obj.primaryColor : null,
+          );
+          ctx.drawImage(sprite, -obj.width / 2, -obj.height / 2, obj.width, obj.height);
+        }
+      }
+
+      if (opts.selectedObjectId === obj.id) {
+        ctx.strokeStyle = "#ef4444";
+        ctx.lineWidth = 2.5;
+        ctx.setLineDash([6, 4]);
+        ctx.strokeRect(-obj.width / 2 - 4, -obj.height / 2 - 4, obj.width + 8, obj.height + 8);
+        ctx.setLineDash([]);
+      }
       ctx.restore();
     }
-
-    if (obj.kind === "builtin") {
-      drawBuiltinObject2D(
-        ctx,
-        obj.assetId,
-        obj.width,
-        obj.height,
-        obj.primaryColor,
-        obj.accentColor,
-        scene.renderMode,
-      );
-    } else {
-      const asset = assetMap.get(obj.assetId);
-      const img = asset?.src ? imageMap.get(asset.src) : undefined;
-      if (img && asset) {
-        const sprite = getProcessedCustomSceneSprite(
-          img,
-          asset.src,
-          scene.renderMode,
-          obj.tintEnabled ? obj.primaryColor : null,
-        );
-        ctx.drawImage(sprite, -obj.width / 2, -obj.height / 2, obj.width, obj.height);
-      }
-    }
-
-    if (opts.selectedObjectId === obj.id) {
-      ctx.strokeStyle = "#ef4444";
-      ctx.lineWidth = 2.5;
-      ctx.setLineDash([6, 4]);
-      ctx.strokeRect(-obj.width / 2 - 4, -obj.height / 2 - 4, obj.width + 8, obj.height + 8);
-      ctx.setLineDash([]);
-    }
-    ctx.restore();
+    opts.onAfterDepthLayer?.(depthPass, ctx);
   }
 
   // 4. Front manual ink / marker / screentone / signage buffer

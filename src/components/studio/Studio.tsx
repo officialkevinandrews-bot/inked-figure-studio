@@ -153,6 +153,11 @@ const Scene2DStudio = lazy(() =>
     default: m.Scene2DStudio,
   })),
 );
+const Pose2DStudio = lazy(() =>
+  import("@/components/pose2d/Pose2DStudio").then((m) => ({
+    default: m.Pose2DStudio,
+  })),
+);
 import {
   type PageLayout,
   type PlacedElement,
@@ -355,6 +360,7 @@ export function Studio() {
   }, [outfit, modelName]);
   const [activeTab, setActiveTab] = useState<"create" | "scenes" | "pose" | "panels">("panels");
   const [createSubMode, setCreateSubMode] = useState<"2d" | "3d">("2d");
+  const [poseSubMode, setPoseSubMode] = useState<"2d" | "3d">("2d");
   const [editing2DTarget, setEditing2DTarget] = useState<{
     elementId: string;
     source2d: import("@/lib/character2d-types").Source2DMetadata;
@@ -363,13 +369,20 @@ export function Studio() {
     elementId: string;
     sourceScene2d: import("@/lib/scene2d-types").SourceScene2DMetadata;
   } | null>(null);
+  const [editingStage2DTarget, setEditingStage2DTarget] = useState<{
+    elementId: string;
+    sourceStage2d: import("@/lib/pose2d-types").SourceStage2DMetadata;
+  } | null>(null);
   const [hasMounted3d, setHasMounted3d] = useState(false);
   const preservePoseOnInitRef = useRef(false);
   useEffect(() => {
-    if (activeTab === "pose" || (activeTab === "create" && createSubMode === "3d")) {
+    if (
+      (activeTab === "pose" && poseSubMode === "3d") ||
+      (activeTab === "create" && createSubMode === "3d")
+    ) {
       setHasMounted3d(true);
     }
-  }, [activeTab, createSubMode]);
+  }, [activeTab, createSubMode, poseSubMode]);
   const [chapterHist, setChapterHist] = useState<HistoryState<{ pages: PageLayout[]; activePageIndex: number }>>(() =>
     createHistory({ pages: createDefaultPages(), activePageIndex: 0 }),
   );
@@ -836,10 +849,14 @@ export function Studio() {
         const canvas = document.querySelector<HTMLCanvasElement>('[data-testid="scene2d-canvas"]');
         return canvas ? canvas.toDataURL("image/jpeg", 0.85) : null;
       }
+      if (activeTab === "pose" && poseSubMode === "2d") {
+        const canvas = document.querySelector<HTMLCanvasElement>('[data-testid="pose2d-canvas"]');
+        return canvas ? canvas.toDataURL("image/jpeg", 0.85) : null;
+      }
       return viewportRef.current?.captureSnapshot({ pixelRatio: 1 })?.dataUrl ?? null;
     });
     return () => feedback.registerCaptureHandler(null);
-  }, [activeTab, currentPageLayout, feedback]);
+  }, [activeTab, poseSubMode, currentPageLayout, feedback]);
 
   const createCharacter = () => {
     const curKey = loadedModelKey.current || DUMMY_MODEL;
@@ -1706,8 +1723,14 @@ export function Studio() {
           setEditingScene2DTarget({ elementId, sourceScene2d });
           goTab("scenes");
         }}
+        onEditStage2D={(elementId, sourceStage2d) => {
+          setEditingStage2DTarget({ elementId, sourceStage2d });
+          setPoseSubMode("2d");
+          goTab("pose");
+        }}
         onOpen3dStudio={() => goTab("pose")}
         onRePoseIn3D={(source3d) => {
+          setPoseSubMode("3d");
           if (!loadedModelKey.current) {
             preservePoseOnInitRef.current = true;
           }
@@ -1947,12 +1970,137 @@ export function Studio() {
     </Suspense>
   );
 
+  const pose2dView = activeTab === "pose" && poseSubMode === "2d" && (
+    <Suspense
+      fallback={
+        <div className="flex h-dvh items-center justify-center text-sm font-semibold">
+          Loading 2D Pose &amp; Stage Studio…
+        </div>
+      }
+    >
+      <Pose2DStudio
+        panels={currentPageLayout.panels}
+        elementCount={currentPageLayout.elements.length}
+        editingTarget={editingStage2DTarget}
+        onCancelEditingTarget={() => setEditingStage2DTarget(null)}
+        onGoTab={goTab}
+        onSwitchTo3DLegacy={() => setPoseSubMode("3d")}
+        onStampStageToPanel={async (panelId, dataUrl, sourceStage2d) => {
+          const targetPanel =
+            currentPageLayout.panels.find((p) => p.id === panelId) || currentPageLayout.panels[0];
+          if (!targetPanel) return;
+          const bounds = getPanelPixelBounds(
+            targetPanel,
+            currentPageLayout.format.width,
+            currentPageLayout.format.height,
+            currentPageLayout.format.margin,
+            currentPageLayout.format.gutter,
+          );
+          const newEl: PlacedElement = {
+            id: `el-${Date.now()}`,
+            panelId: targetPanel.id,
+            type: "background",
+            imageUrl: dataUrl,
+            x: bounds.minX,
+            y: bounds.minY,
+            width: bounds.width,
+            height: bounds.height,
+            rotation: 0,
+            flipX: false,
+            flipY: false,
+            fitMode: "fill-panel",
+            zIndex: 2,
+            breakout: false,
+            sourceStage2d,
+          };
+          handleUpdateCurrentPage({
+            ...currentPageLayout,
+            elements: [...currentPageLayout.elements, newEl],
+          });
+          setEditingStage2DTarget(null);
+          setActiveTab("panels");
+        }}
+        onStampActorToPanel={async (panelId, dataUrl, sourceStage2d) => {
+          const targetPanel =
+            currentPageLayout.panels.find((p) => p.id === panelId) || currentPageLayout.panels[0];
+          if (!targetPanel) return;
+          const bounds = getPanelPixelBounds(
+            targetPanel,
+            currentPageLayout.format.width,
+            currentPageLayout.format.height,
+            currentPageLayout.format.margin,
+            currentPageLayout.format.gutter,
+          );
+          const dim = await new Promise<{ w: number; h: number }>((resolve) => {
+            const im = new Image();
+            im.onload = () => resolve({ w: im.naturalWidth || 480, h: im.naturalHeight || 900 });
+            im.onerror = () => resolve({ w: 480, h: 900 });
+            im.src = dataUrl;
+          });
+          const fitH = Math.min(bounds.height * 0.86, 360);
+          const fitW = Math.max(44, Math.round((fitH * dim.w) / Math.max(1, dim.h)));
+          const newEl: PlacedElement = {
+            id: `el-${Date.now()}`,
+            panelId: targetPanel.id,
+            type: "character",
+            imageUrl: dataUrl,
+            x: bounds.minX + Math.max(8, (bounds.width - fitW) / 2),
+            y: bounds.minY + Math.max(8, (bounds.height - fitH) / 2),
+            width: fitW,
+            height: fitH,
+            rotation: 0,
+            flipX: false,
+            flipY: false,
+            zIndex: currentPageLayout.elements.length + 4,
+            breakout: false,
+            sourceStage2d,
+          };
+          handleUpdateCurrentPage({
+            ...currentPageLayout,
+            elements: [...currentPageLayout.elements, newEl],
+          });
+          setEditingStage2DTarget(null);
+          setActiveTab("panels");
+        }}
+        onUpdatePanelElement={async (elementId, dataUrl, sourceStage2d) => {
+          const dim = await new Promise<{ w: number; h: number }>((resolve) => {
+            const im = new Image();
+            im.onload = () => resolve({ w: im.naturalWidth || 480, h: im.naturalHeight || 900 });
+            im.onerror = () => resolve({ w: 480, h: 900 });
+            im.src = dataUrl;
+          });
+          handleUpdateCurrentPage({
+            ...currentPageLayout,
+            elements: currentPageLayout.elements.map((el) => {
+              if (el.id !== elementId) return el;
+              if (el.type === "background") {
+                return { ...el, imageUrl: dataUrl, sourceStage2d };
+              }
+              const nextW = Math.max(40, Math.round((el.height * dim.w) / Math.max(1, dim.h)));
+              const cx = el.x + el.width / 2;
+              return {
+                ...el,
+                x: cx - nextW / 2,
+                width: nextW,
+                imageUrl: dataUrl,
+                sourceStage2d,
+              };
+            }),
+          });
+          setEditingStage2DTarget(null);
+          setActiveTab("panels");
+        }}
+      />
+    </Suspense>
+  );
+
   return (
     <>
     {panelsView}
     {character2dView}
     {scene2dView}
-    <div className={`${activeTab === "panels" || activeTab === "scenes" || (activeTab === "create" && createSubMode === "2d") ? "hidden" : "flex"} h-dvh flex-col bg-background text-foreground select-none overflow-hidden`}>
+    {pose2dView}
+    <div className={`${activeTab === "panels" || activeTab === "scenes" || (activeTab === "create" && createSubMode === "2d") || (activeTab === "pose" && poseSubMode === "2d") ? "hidden" : "flex"} h-dvh flex-col bg-background text-foreground select-none overflow-hidden`}>
       {/* Top Bar */}
       <header className="flex flex-wrap items-center gap-x-2 gap-y-1.5 border-b-2 border-foreground px-2.5 sm:px-4 py-1.5 sm:py-2 bg-card safe-pt shrink-0">
         <h1 className="font-display text-base sm:text-xl tracking-wide shrink-0">
@@ -1992,7 +2140,19 @@ export function Studio() {
         )}
 
         {activeTab === "pose" && (
-          <div className="flex items-center gap-1.5 text-xs max-w-full overflow-x-auto" data-testid="pose-character-picker">
+          <div className="flex items-center gap-2 text-xs max-w-full overflow-x-auto" data-testid="pose-character-picker">
+            <div className="flex items-center rounded-sm border border-border bg-background p-0.5 text-[11px] font-semibold shrink-0">
+              <button
+                type="button"
+                onClick={() => setPoseSubMode("2d")}
+                className="rounded-xs px-2 py-0.5 text-muted-foreground hover:text-foreground"
+              >
+                2D Stage
+              </button>
+              <span className="rounded-xs bg-primary px-2 py-0.5 text-primary-foreground">
+                3D Legacy
+              </span>
+            </div>
             <label className="font-semibold flex items-center shrink-0">
               <span className="hidden sm:inline">Character</span>
               <select aria-label="Character" value={activeCharId ?? ""} className="sm:ml-1 max-w-[130px] rounded-sm border border-input bg-background p-1"

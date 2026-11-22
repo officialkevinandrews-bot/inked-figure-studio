@@ -30,6 +30,8 @@ export interface StudioBackup {
   parts2d?: import("./character2d-types").CustomPartAsset2D[];
   scenes2d?: import("./scene2d-types").Scene2D[];
   sceneObjects2d?: import("./scene2d-types").SceneObjectAsset2D[];
+  stages2d?: import("./pose2d-types").Stage2D[];
+  poses2d?: import("./pose2d-types").Pose2DPreset[];
   facePacks: FacePack[];
   customPoses?: CustomPose[];
   customProps?: CustomPropMeta[];

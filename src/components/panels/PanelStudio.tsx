@@ -151,6 +151,10 @@ export interface PanelStudioProps {
     elementId: string,
     sourceScene2d: import("@/lib/scene2d-types").SourceScene2DMetadata,
   ) => void;
+  onEditStage2D?: (
+    elementId: string,
+    sourceStage2d: import("@/lib/pose2d-types").SourceStage2DMetadata,
+  ) => void;
   onOpen3dStudio: () => void;
   onRePoseIn3D?: (source3d: NonNullable<PlacedElement["source3d"]>) => void;
   allPages?: PageLayout[];
@@ -191,6 +195,7 @@ export function PanelStudio({
   onEdit2DCharacter,
   onOpenScenes,
   onEditScene2D,
+  onEditStage2D,
   onOpen3dStudio,
   onRePoseIn3D,
   allPages,
@@ -3764,6 +3769,22 @@ export function PanelStudio({
                 >
                   <ImageIcon className="h-3.5 w-3.5 text-primary" />
                   Edit Scene in Scene Builder
+                </button>
+              )}
+
+              {/* Non-Destructive Re-Pose 2D Stage / Posed Actor */}
+              {selectedElement.sourceStage2d && onEditStage2D && (
+                <button
+                  type="button"
+                  data-testid="panel-edit-2d-stage-btn"
+                  onClick={() =>
+                    selectedElement.sourceStage2d &&
+                    onEditStage2D(selectedElement.id, selectedElement.sourceStage2d)
+                  }
+                  className="w-full flex items-center justify-center gap-1.5 rounded border-2 border-foreground bg-primary/15 py-1.5 font-bold shadow-ink text-xs hover:bg-primary/25 transition-transform hover:-translate-y-0.5"
+                >
+                  <Camera className="h-3.5 w-3.5 text-primary" />
+                  Re-Pose in Pose &amp; Stage
                 </button>
               )}
 

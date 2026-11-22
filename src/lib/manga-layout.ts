@@ -73,6 +73,8 @@ export interface PlacedElement {
   source2d?: import("./character2d-types").Source2DMetadata;
   /** Optional 2D scene builder recipe so stamped scenes can be reopened & edited cleanly. */
   sourceScene2d?: import("./scene2d-types").SourceScene2DMetadata;
+  /** Optional 2D Pose & Stage recipe so stamped posed scenes/characters can be re-posed cleanly. */
+  sourceStage2d?: import("./pose2d-types").SourceStage2DMetadata;
 }
 
 export interface PageFormat {

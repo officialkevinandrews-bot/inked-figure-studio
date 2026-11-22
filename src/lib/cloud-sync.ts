@@ -26,6 +26,8 @@ import {
   loadScenes2D,
 } from "./scene2d-store";
 import type { Scene2D, SceneObjectAsset2D } from "./scene2d-types";
+import { loadCustomPoses2D, loadStages2D } from "./pose2d-store";
+import type { Pose2DPreset, Stage2D } from "./pose2d-types";
 import { loadCustomPropsMeta, type CustomPropMeta } from "./custom-props";
 import { loadCustomTemplates, type SavedCustomTemplate } from "./custom-templates";
 import { loadPacks, type FacePack } from "./face-parts";
@@ -114,6 +116,8 @@ interface WorkspaceCloudDoc {
   parts2d?: CustomPartAsset2D[];
   scenes2d?: Scene2D[];
   sceneObjects2d?: SceneObjectAsset2D[];
+  stages2d?: Stage2D[];
+  poses2d?: Pose2DPreset[];
   facePacks: FacePack[];
   customPoses: CustomPose[];
   customProps: CustomPropMeta[];
@@ -622,6 +626,8 @@ function collectWorkspaceDoc(uid: string, library: MangaLibraryState | null): Wo
     parts2d: loadCustomParts2D().slice(0, 500),
     scenes2d: loadScenes2D().slice(0, 200),
     sceneObjects2d: loadCustomSceneObjects2D().slice(0, 500),
+    stages2d: loadStages2D().slice(0, 200),
+    poses2d: loadCustomPoses2D().slice(0, 300),
     facePacks: loadPacks().slice(0, 500),
     customPoses: loadCustomPoses().slice(0, 500),
     customProps: loadCustomPropsMeta().slice(0, 500),
@@ -685,6 +691,12 @@ async function applyRemoteStateToLocal(
           JSON.stringify(remoteWorkspace.sceneObjects2d),
           "workspace",
         );
+      }
+      if (Array.isArray(remoteWorkspace.stages2d)) {
+        userLsSet("koma-stages-2d", JSON.stringify(remoteWorkspace.stages2d), "workspace");
+      }
+      if (Array.isArray(remoteWorkspace.poses2d)) {
+        userLsSet("koma-poses-2d", JSON.stringify(remoteWorkspace.poses2d), "workspace");
       }
       userLsSet("koma-face-packs", JSON.stringify(remoteWorkspace.facePacks ?? []), "workspace");
       userLsSet(
@@ -1311,6 +1323,8 @@ export async function buildFullAccountBackup(
   const parts2d = loadCustomParts2D();
   const scenes2d = loadScenes2D();
   const sceneObjects2d = loadCustomSceneObjects2D();
+  const stages2d = loadStages2D();
+  const poses2d = loadCustomPoses2D();
   const facePacks = loadPacks();
   const customPoses = loadCustomPoses();
   const customProps = loadCustomPropsMeta();
@@ -1361,6 +1375,8 @@ export async function buildFullAccountBackup(
     parts2d,
     scenes2d,
     sceneObjects2d,
+    stages2d,
+    poses2d,
     facePacks,
     customPoses,
     customProps,

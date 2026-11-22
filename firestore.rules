@@ -49,6 +49,8 @@ service cloud.firestore {
     //      - parts2d: list (optional, <= 500 items)
     //      - scenes2d: list (optional, <= 200 items)
     //      - sceneObjects2d: list (optional, <= 500 items)
+    //      - stages2d: list (optional, <= 200 items)
+    //      - poses2d: list (optional, <= 300 items)
     //      - facePacks: list (optional, <= 500 items)
     //      - customPoses: list (optional, <= 500 items)
     //      - customProps: list (optional, <= 500 items)
@@ -328,6 +330,7 @@ service cloud.firestore {
         'activeProjectId', 'activeCharacterId', 'activePageIndex',
         'characters', 'characters2d', 'baseModels', 'baseModels2d',
         'heads2d', 'parts2d', 'scenes2d', 'sceneObjects2d',
+        'stages2d', 'poses2d',
         'facePacks', 'customPoses', 'customProps',
         'customTemplates', 'roster', 'sceneCast', 'handPoses', 'pages',
         'faceConfigs', 'faceCalibrations', 'wardrobeOutfits',
@@ -351,6 +354,8 @@ service cloud.firestore {
              isValidOptionalList(data, 'parts2d', 500) &&
              isValidOptionalList(data, 'scenes2d', 200) &&
              isValidOptionalList(data, 'sceneObjects2d', 500) &&
+             isValidOptionalList(data, 'stages2d', 200) &&
+             isValidOptionalList(data, 'poses2d', 300) &&
              isValidOptionalList(data, 'facePacks', 500) &&
              isValidOptionalList(data, 'customPoses', 500) &&
              isValidOptionalList(data, 'customProps', 500) &&
