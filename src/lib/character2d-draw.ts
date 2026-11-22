@@ -225,6 +225,279 @@ function getMangaLineSprite(img: HTMLImageElement, srcKey: string): HTMLCanvasEl
   return putProcessedCache(key, extractIllustratedMangaLineartCanvas(img));
 }
 
+interface HeadSilhouetteInfo {
+  topY: number;
+  chinY: number;
+  headH: number;
+  eyeY: number;
+  noseY: number;
+  mouthY: number;
+  skullL: number;
+  skullR: number;
+  skullCx: number;
+  skullW: number;
+  headCy: number;
+  eyeSpan: [number, number];
+  noseSpan: [number, number];
+  mouthSpan: [number, number];
+  neckL: number;
+  neckR: number;
+  neckCx: number;
+  neckW: number;
+  headMaskCanvas: HTMLCanvasElement;
+}
+
+const HEAD_SILHOUETTE_CACHE = new Map<string, HeadSilhouetteInfo>();
+
+const M1_REF_SKULL_W: Record<Angle2D, number> = {
+  0: 88,
+  45: 96,
+  90: 102,
+  135: 98,
+  180: 90,
+  225: 101,
+  270: 101,
+  315: 94,
+};
+
+function analyzeBaseHeadSilhouette(
+  processedBase: HTMLCanvasElement,
+  key: string,
+  angle: Angle2D,
+  fallbackAnchors: BodyAngleAnchors,
+): HeadSilhouetteInfo {
+  const cacheKey = `${key}|${angle}|${Math.round(fallbackAnchors.chinY)}`;
+  const cached = HEAD_SILHOUETTE_CACHE.get(cacheKey);
+  if (cached) return cached;
+
+  const ctx = processedBase.getContext("2d")!;
+  const x0 = 140;
+  const x1 = 340;
+  const y0 = 55;
+  const y1 = 255;
+  const rw = x1 - x0;
+  const rh = y1 - y0;
+  const data = ctx.getImageData(x0, y0, rw, rh).data;
+
+  const rowSpan = (wy: number): [number, number] | null => {
+    const ly = Math.round(wy) - y0;
+    if (ly < 0 || ly >= rh) return null;
+    let l = -1;
+    let r = -1;
+    for (let lx = 0; lx < rw; lx++) {
+      if ((data[(ly * rw + lx) * 4 + 3] ?? 0) > 60) {
+        if (l < 0) l = x0 + lx;
+        r = x0 + lx;
+      }
+    }
+    return l >= 0 ? [l, r] : null;
+  };
+
+  let topY = 80;
+  for (let y = 58; y <= 135; y++) {
+    const sp = rowSpan(y);
+    if (sp && sp[1] - sp[0] + 1 >= 14) {
+      topY = y;
+      break;
+    }
+  }
+
+  const chinY = Math.max(topY + 112, Math.min(topY + 130, Math.round(fallbackAnchors.chinY)));
+  const headH = Math.max(100, chinY - topY);
+  const eyeY = Math.round(topY + headH * 0.515);
+  const noseY = Math.round(topY + headH * 0.695);
+  const mouthY = Math.round(topY + headH * 0.825);
+
+  const rowSpanBand = (cy: number, fallbackW: number): [number, number] => {
+    const ls: number[] = [];
+    const rs: number[] = [];
+    for (let dy = -2; dy <= 2; dy++) {
+      const sp = rowSpan(cy + dy);
+      if (sp && sp[1] - sp[0] > 18) {
+        ls.push(sp[0]);
+        rs.push(sp[1]);
+      }
+    }
+    if (!ls.length) {
+      return [fallbackAnchors.headCx - fallbackW / 2, fallbackAnchors.headCx + fallbackW / 2];
+    }
+    ls.sort((a, b) => a - b);
+    rs.sort((a, b) => a - b);
+    return [ls[ls.length >> 1]!, rs[rs.length >> 1]!];
+  };
+
+  const skullLs: number[] = [];
+  const skullRs: number[] = [];
+  for (let y = topY + 24; y <= eyeY - 4; y++) {
+    const sp = rowSpan(y);
+    if (sp && sp[1] - sp[0] >= 30) {
+      skullLs.push(sp[0]);
+      skullRs.push(sp[1]);
+    }
+  }
+  skullLs.sort((a, b) => a - b);
+  skullRs.sort((a, b) => a - b);
+  const skullL = skullLs.length ? skullLs[skullLs.length >> 1]! : fallbackAnchors.headCx - 45;
+  const skullR = skullRs.length ? skullRs[skullRs.length >> 1]! : fallbackAnchors.headCx + 45;
+  const skullCx = (skullL + skullR) / 2;
+  const skullW = skullR - skullL + 1;
+  const headCy = topY + headH * 0.51;
+
+  const eyeSpan = rowSpanBand(eyeY, skullW);
+  const noseSpan = rowSpanBand(noseY, skullW * 0.86);
+  const mouthSpan = rowSpanBand(mouthY, skullW * 0.72);
+
+  let neckL = fallbackAnchors.neckL;
+  let neckR = fallbackAnchors.neckR;
+  let minNeckW = 999;
+  for (let y = chinY + 5; y <= 226; y++) {
+    const sp = rowSpan(y);
+    if (sp) {
+      const w = sp[1] - sp[0] + 1;
+      if (w >= 26 && w < minNeckW) {
+        minNeckW = w;
+        neckL = sp[0];
+        neckR = sp[1];
+      }
+    }
+  }
+  const neckCx = (neckL + neckR) / 2;
+  const neckW = neckR - neckL + 1;
+
+  // Build per-pixel eroded interior head mask canvas so zero face pixels can float outside head outline
+  const headMaskCanvas = document.createElement("canvas");
+  headMaskCanvas.width = rw;
+  headMaskCanvas.height = rh;
+  const hmCtx = headMaskCanvas.getContext("2d")!;
+  const hmId = hmCtx.createImageData(rw, rh);
+  const hmd = hmId.data;
+  const maxMaskY = Math.min(rh - 1, chinY - 2 - y0);
+  const minMaskY = Math.max(0, topY + 2 - y0);
+  const alphaAt = (lx: number, ly: number) =>
+    lx >= 0 && lx < rw && ly >= 0 && ly < rh ? (data[(ly * rw + lx) * 4 + 3] ?? 0) : 0;
+  for (let ly = minMaskY; ly <= maxMaskY; ly++) {
+    for (let lx = 0; lx < rw; lx++) {
+      if (
+        alphaAt(lx, ly) >= 200 &&
+        alphaAt(lx - 2, ly) >= 180 &&
+        alphaAt(lx + 2, ly) >= 180 &&
+        alphaAt(lx, ly - 1) >= 180 &&
+        alphaAt(lx, ly + 1) >= 180
+      ) {
+        const p = (ly * rw + lx) * 4;
+        hmd[p] = 0;
+        hmd[p + 1] = 0;
+        hmd[p + 2] = 0;
+        hmd[p + 3] = 255;
+      }
+    }
+  }
+  hmCtx.putImageData(hmId, 0, 0);
+
+  const info: HeadSilhouetteInfo = {
+    topY,
+    chinY,
+    headH,
+    eyeY,
+    noseY,
+    mouthY,
+    skullL,
+    skullR,
+    skullCx,
+    skullW,
+    headCy,
+    eyeSpan,
+    noseSpan,
+    mouthSpan,
+    neckL,
+    neckR,
+    neckCx,
+    neckW,
+    headMaskCanvas,
+  };
+  if (HEAD_SILHOUETTE_CACHE.size >= 48) {
+    const first = HEAD_SILHOUETTE_CACHE.keys().next().value;
+    if (first !== undefined) HEAD_SILHOUETTE_CACHE.delete(first);
+  }
+  HEAD_SILHOUETTE_CACHE.set(cacheKey, info);
+  return info;
+}
+
+function getNeckFittedTopSprite(
+  baseSprite: HTMLCanvasElement,
+  srcKey: string,
+  extraL: number,
+  extraR: number,
+  neckCx: number,
+): HTMLCanvasElement {
+  if (extraL <= 2 && extraR <= 2) return baseSprite;
+  const key = `neckwarp2|${srcKey}|${Math.round(extraL)}|${Math.round(extraR)}|${Math.round(neckCx)}`;
+  const hit = PROCESSED_SPRITE_CACHE.get(key);
+  if (hit) return hit;
+
+  const out = document.createElement("canvas");
+  out.width = CHAR2D_W;
+  out.height = CHAR2D_H;
+  const octx = out.getContext("2d")!;
+  octx.drawImage(baseSprite, 0, 0);
+
+  const yMin = 205;
+  const yMax = 286;
+  const srcId = baseSprite.getContext("2d")!.getImageData(0, yMin, CHAR2D_W, yMax - yMin).data;
+  const dstId = octx.getImageData(0, yMin, CHAR2D_W, yMax - yMin);
+  const dd = dstId.data;
+  const shiftL = Math.min(15, extraL * 0.95);
+  const shiftR = Math.min(15, extraR * 0.95);
+
+  for (let ly = 0; ly < yMax - yMin; ly++) {
+    const wy = yMin + ly;
+    const yFac = Math.pow(1 - (wy - yMin) / (yMax - yMin), 1.5);
+    if (yFac <= 0.01) continue;
+    for (let x = 136; x < 344; x++) {
+      const dx = x - neckCx;
+      const absDx = Math.abs(dx);
+      if (absDx < 2 || absDx > 72) continue;
+      const sideShift = dx < 0 ? shiftL : shiftR;
+      if (sideShift <= 0.2) continue;
+      const hEnv = Math.exp(-Math.pow(Math.max(0, absDx - 18) / 26, 2));
+      const shift = Math.sign(dx) * sideShift * yFac * hEnv * Math.min(1, absDx / 12);
+      const sx = x - shift;
+      const x0 = Math.max(0, Math.min(CHAR2D_W - 2, Math.floor(sx)));
+      const f = sx - x0;
+      const i0 = (ly * CHAR2D_W + x0) * 4;
+      const i1 = i0 + 4;
+      const oi = (ly * CHAR2D_W + x) * 4;
+      dd[oi] = Math.round((srcId[i0] ?? 0) * (1 - f) + (srcId[i1] ?? 0) * f);
+      dd[oi + 1] = Math.round((srcId[i0 + 1] ?? 0) * (1 - f) + (srcId[i1 + 1] ?? 0) * f);
+      dd[oi + 2] = Math.round((srcId[i0 + 2] ?? 0) * (1 - f) + (srcId[i1 + 2] ?? 0) * f);
+      dd[oi + 3] = Math.round((srcId[i0 + 3] ?? 0) * (1 - f) + (srcId[i1 + 3] ?? 0) * f);
+    }
+  }
+  octx.putImageData(dstId, 0, yMin);
+  return putProcessedCache(key, out);
+}
+
+function redrawHeadNeckAboveCollar2D(
+  ctx: C,
+  processedBase: HTMLCanvasElement | null,
+  sil: HeadSilhouetteInfo | null,
+  angle: Angle2D,
+) {
+  if (!processedBase || !sil) return;
+  ctx.save();
+  ctx.beginPath();
+  if (isBackFacingAngle2D(angle)) {
+    // On rear views (135°, 180°, 225°), keep head crisp only above the hoodie hood top (y = 214)
+    ctx.rect(140, 0, 200, 213);
+  } else {
+    // Keep jawline & chin crisp strictly above y = chinY + 1 so collar & inner T-shirt crewneck remain intact
+    ctx.rect(140, 0, 200, sil.chinY + 1);
+  }
+  ctx.clip();
+  ctx.drawImage(processedBase, 0, 0, CHAR2D_W, CHAR2D_H);
+  ctx.restore();
+}
+
 function parseRgb(hex: string): [number, number, number] {
   const clean = hex.replace("#", "").trim();
   if (clean.length === 3) {
@@ -2291,6 +2564,7 @@ function drawIllustratedHair2D(
   side: "back" | "front",
   imageMap: Map<string, HTMLImageElement>,
   pack: IllustratedHairPack2D | null,
+  sil: HeadSilhouetteInfo | null,
 ) {
   if (!pack) return;
   const src = side === "back" ? pack.backFrames[angle] : pack.frontFrames[angle];
@@ -2305,13 +2579,26 @@ function drawIllustratedHair2D(
     mode,
     char.shadingDepth ?? "cel",
   );
-  const sx = a.headRx / pack.refHeadRx;
-  const sy = a.headRy / pack.refHeadRy;
+  const fwdShiftX =
+    angle === 45 ? 2.5 : angle === 315 ? -2.5 : angle === 90 ? 4 : angle === 270 ? -4 : 0;
+  const skullCx = (sil ? sil.skullCx : a.headCx) + fwdShiftX;
+  const crownY =
+    (sil ? sil.topY + 63 : a.headCy) +
+    (angle === 90 || angle === 270 ? 3 : angle === 135 || angle === 225 ? 1 : 0);
+  const refW = M1_REF_SKULL_W[angle];
+  const hugBoost =
+    angle === 90 || angle === 270 ? 1.06 : angle === 45 || angle === 315 ? 1.05 : 1.03;
+  const wRatio = sil
+    ? Math.max(0.92, Math.min(1.2, (sil.skullW / refW) * hugBoost))
+    : a.headRx / 46;
+  const hRatio = Math.max(0.94, Math.min(1.12, 0.4 + 0.6 * wRatio));
+  const sx = (46 / pack.refHeadRx) * wRatio;
+  const sy = (61 / pack.refHeadRy) * hRatio;
 
   ctx.save();
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "high";
-  ctx.translate(a.headCx, a.headCy);
+  ctx.translate(skullCx, crownY);
   ctx.scale(sx, sy);
   ctx.drawImage(sprite, -pack.pivotX, -pack.pivotY, pack.canvasW, pack.canvasH);
   ctx.restore();
@@ -2326,6 +2613,7 @@ function drawIllustratedClothing2D(
   mode: RenderMode2D,
   shadingDepth: ShadingDepth2D,
   imageMap: Map<string, HTMLImageElement>,
+  neckFit?: { extraL: number; extraR: number; neckCx: number } | null,
 ) {
   if (!pack) return;
   const src = pack.frames[angle];
@@ -2334,7 +2622,7 @@ function drawIllustratedClothing2D(
 
   const maskSrc = pack.accentMasks?.[angle];
   const maskImg = maskSrc ? imageMap.get(maskSrc) : undefined;
-  const sprite = getRecoloredIllustratedPart(
+  let sprite = getRecoloredIllustratedPart(
     img,
     src,
     primaryHex,
@@ -2346,6 +2634,10 @@ function drawIllustratedClothing2D(
     CHAR2D_W,
     CHAR2D_H,
   );
+  if (pack.slot === "top" && neckFit && (neckFit.extraL > 2 || neckFit.extraR > 2)) {
+    const sk = `ill|${src}|${maskSrc ?? "nomask"}|${mode}|${shadingDepth}|${primaryHex}|${accentHex}`;
+    sprite = getNeckFittedTopSprite(sprite, sk, neckFit.extraL, neckFit.extraR, neckFit.neckCx);
+  }
   ctx.drawImage(sprite, 0, 0, CHAR2D_W, CHAR2D_H);
 }
 
@@ -2549,47 +2841,30 @@ function drawForegroundProfileArm2D(
   ctx.drawImage(sprite.canvas, sprite.x, sprite.y);
 }
 
-function drawExpressionClosedEyes2D(
+function drawSingleClosedEye2D(
   ctx: C,
-  cx: number,
-  cy: number,
+  ex: number,
+  ey: number,
+  ew: number,
   fScale: number,
-  angle: Angle2D,
   eyeMode: "happy" | "closed",
   mode: RenderMode2D,
-  a: BodyAngleAnchors,
 ) {
-  const prof = isProfile(angle);
-  const dir = facingDir(angle);
-  const ink = inkOf(mode);
-
-  const drawSingle = (ex: number, ey: number, ew: number) => {
-    ctx.save();
-    ctx.translate(ex, ey);
-    ctx.strokeStyle = ink;
-    ctx.lineCap = "round";
-    ctx.lineWidth = 2.5 * fScale;
-    ctx.beginPath();
-    if (eyeMode === "happy") {
-      ctx.moveTo(-ew * 0.5, 2 * fScale);
-      ctx.quadraticCurveTo(0, -6.5 * fScale, ew * 0.5, 2 * fScale);
-    } else {
-      ctx.moveTo(-ew * 0.5, -1 * fScale);
-      ctx.quadraticCurveTo(0, 4.5 * fScale, ew * 0.5, -1 * fScale);
-    }
-    ctx.stroke();
-    ctx.restore();
-  };
-
-  if (prof) {
-    drawSingle(cx + a.faceShiftX * 0.78, cy, 11 * fScale);
-  } else if (dir !== 0) {
-    drawSingle(cx + a.faceShiftX * 0.28 - dir * 6 * fScale, cy, 15 * fScale);
-    drawSingle(cx + a.faceShiftX * 0.78 + dir * 13 * fScale, cy, 11 * fScale);
+  ctx.save();
+  ctx.translate(ex, ey);
+  ctx.strokeStyle = inkOf(mode);
+  ctx.lineCap = "round";
+  ctx.lineWidth = 2.4 * fScale;
+  ctx.beginPath();
+  if (eyeMode === "happy") {
+    ctx.moveTo(-ew * 0.5, 2 * fScale);
+    ctx.quadraticCurveTo(0, -6.5 * fScale, ew * 0.5, 2 * fScale);
   } else {
-    drawSingle(cx - 19 * fScale, cy, 16 * fScale);
-    drawSingle(cx + 19 * fScale, cy, 16 * fScale);
+    ctx.moveTo(-ew * 0.5, -1 * fScale);
+    ctx.quadraticCurveTo(0, 4.5 * fScale, ew * 0.5, -1 * fScale);
   }
+  ctx.stroke();
+  ctx.restore();
 }
 
 function drawMangaEmotionFx2D(
@@ -2689,6 +2964,7 @@ function drawIllustratedFace2D(
   mode: RenderMode2D,
   imageMap: Map<string, HTMLImageElement>,
   facePack: IllustratedFacePack2D | null,
+  sil: HeadSilhouetteInfo | null,
 ) {
   if (isBackFacingAngle2D(angle)) return;
 
@@ -2697,138 +2973,246 @@ function drawIllustratedFace2D(
   const preset = EXPRESSION_PRESETS_2D[char.face.expression] ?? EXPRESSION_PRESETS_2D.neutral;
   const fScale = Math.max(0.75, Math.min(1.35, char.face.scale));
   const fOffsetY = char.face.offsetY;
-  const eyeCenterY = a.eyeY + fOffsetY;
-  const angAssets = facePack?.angles[angle];
+  const eyeCenterY = (sil ? sil.eyeY : a.eyeY) + fOffsetY;
+  const noseCenterY = (sil ? sil.noseY : a.noseY) + fOffsetY;
+  const mouthCenterY = (sil ? sil.mouthY : a.mouthY) + fOffsetY;
 
+  const eyeL = sil ? sil.eyeSpan[0] : a.headCx - a.headRx;
+  const eyeR = sil ? sil.eyeSpan[1] : a.headCx + a.headRx;
+  const eyeW = Math.max(40, eyeR - eyeL);
+  const noseL = sil ? sil.noseSpan[0] : eyeL + 4;
+  const noseR = sil ? sil.noseSpan[1] : eyeR - 4;
+  const noseW = Math.max(32, noseR - noseL);
+  const mouthL = sil ? sil.mouthSpan[0] : eyeL + 10;
+  const mouthR = sil ? sil.mouthSpan[1] : eyeR - 10;
+  const mouthW = Math.max(26, mouthR - mouthL);
+  const skullW = sil ? sil.skullW : a.headRx * 2;
+  const baseS = 0.48 * (skullW / M1_REF_SKULL_W[angle]) * fScale;
+
+  // Individual feature anchors strictly inside active head silhouette
+  let leftEyePos: { x: number; y: number; sx: number; sy: number; tiltDir: number };
+  let rightEyePos: { x: number; y: number; sx: number; sy: number; tiltDir: number } | null = null;
+  let nosePos: { x: number; y: number; sx: number } | null = null;
+  let mouthPos: { x: number; y: number; sx: number };
+
+  if (angle === 0) {
+    const midX = (eyeL + eyeR) / 2;
+    const dx = eyeW * 0.215;
+    leftEyePos = { x: midX - dx, y: eyeCenterY, sx: baseS, sy: baseS, tiltDir: 1 };
+    rightEyePos = { x: midX + dx, y: eyeCenterY, sx: baseS, sy: baseS, tiltDir: -1 };
+    nosePos = { x: (noseL + noseR) / 2, y: noseCenterY, sx: baseS };
+    mouthPos = { x: (mouthL + mouthR) / 2, y: mouthCenterY, sx: baseS };
+  } else if (angle === 45) {
+    leftEyePos = {
+      x: eyeR - eyeW * 0.49,
+      y: eyeCenterY,
+      sx: baseS,
+      sy: baseS,
+      tiltDir: 1,
+    };
+    rightEyePos = {
+      x: eyeR - eyeW * 0.2,
+      y: eyeCenterY,
+      sx: baseS * 0.8,
+      sy: baseS,
+      tiltDir: -1,
+    };
+    nosePos = { x: noseR - noseW * 0.28, y: noseCenterY, sx: baseS * 0.92 };
+    mouthPos = { x: mouthR - mouthW * 0.34, y: mouthCenterY, sx: baseS * 0.9 };
+  } else if (angle === 315) {
+    leftEyePos = {
+      x: eyeL + eyeW * 0.2,
+      y: eyeCenterY,
+      sx: baseS * 0.8,
+      sy: baseS,
+      tiltDir: 1,
+    };
+    rightEyePos = {
+      x: eyeL + eyeW * 0.49,
+      y: eyeCenterY,
+      sx: baseS,
+      sy: baseS,
+      tiltDir: -1,
+    };
+    nosePos = { x: noseL + noseW * 0.28, y: noseCenterY, sx: baseS * 0.92 };
+    mouthPos = { x: mouthL + mouthW * 0.34, y: mouthCenterY, sx: baseS * 0.9 };
+  } else if (angle === 90) {
+    leftEyePos = {
+      x: eyeR - Math.max(17, eyeW * 0.205),
+      y: eyeCenterY,
+      sx: baseS * 0.88,
+      sy: baseS,
+      tiltDir: -1,
+    };
+    nosePos = null; // Base head already draws crisp profile nose bridge
+    mouthPos = { x: mouthR - Math.max(10, mouthW * 0.13), y: mouthCenterY, sx: baseS * 0.85 };
+  } else {
+    leftEyePos = {
+      x: eyeL + Math.max(17, eyeW * 0.205),
+      y: eyeCenterY,
+      sx: baseS * 0.88,
+      sy: baseS,
+      tiltDir: 1,
+    };
+    nosePos = null;
+    mouthPos = { x: mouthL + Math.max(10, mouthW * 0.13), y: mouthCenterY, sx: baseS * 0.85 };
+  }
+
+  const angAssets = facePack?.angles[angle];
   if (facePack && angAssets) {
-    const sx = (a.headRx / facePack.refHeadRx) * fScale;
-    const sy = (a.headRy / facePack.refHeadRy) * fScale;
+    // Render all facial parts onto a 200x200 offscreen canvas and intersect with active eroded head mask
+    const x0 = 140;
+    const y0 = 55;
+    const fc = document.createElement("canvas");
+    fc.width = 200;
+    fc.height = 200;
+    const fctx = fc.getContext("2d")!;
+    fctx.imageSmoothingEnabled = true;
+    fctx.imageSmoothingQuality = "high";
+    fctx.translate(-x0, -y0);
+
+    const drawCenteredSprite = (
+      img: HTMLImageElement | HTMLCanvasElement,
+      cx: number,
+      cy: number,
+      w: number,
+      h: number,
+      sx: number,
+      sy: number,
+      rotRad = 0,
+    ) => {
+      fctx.save();
+      fctx.translate(cx, cy);
+      if (rotRad !== 0) fctx.rotate(rotRad);
+      fctx.scale(sx, sy);
+      fctx.drawImage(img, -w / 2, -h / 2, w, h);
+      fctx.restore();
+    };
+
+    const eyeYScale =
+      preset.eyeMode === "glare" || preset.eyeMode === "smug"
+        ? 0.82
+        : preset.eyeMode === "serious"
+          ? 0.92
+          : preset.eyeMode === "shock"
+            ? 1.08
+            : 1;
 
     if (char.face.eyeStyle !== "none") {
       if (preset.eyeMode === "happy" || preset.eyeMode === "closed") {
-        drawExpressionClosedEyes2D(
-          ctx,
-          a.headCx,
-          eyeCenterY,
+        drawSingleClosedEye2D(
+          fctx,
+          leftEyePos.x,
+          leftEyePos.y,
+          prof ? 11 * fScale : (leftEyePos.sx / baseS) * 16 * fScale,
           fScale,
-          angle,
           preset.eyeMode,
           mode,
-          a,
         );
-      } else {
-        const ebImg = imageMap.get(angAssets.eyesBase);
-        const eiImg = imageMap.get(angAssets.eyesIris);
-        const eyeYScale =
-          preset.eyeMode === "glare" || preset.eyeMode === "smug"
-            ? 0.82
-            : preset.eyeMode === "serious"
-              ? 0.92
-              : preset.eyeMode === "shock"
-                ? 1.08
-                : 1;
-        ctx.save();
-        ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = "high";
-        ctx.translate(a.headCx, eyeCenterY);
-        ctx.scale(sx, sy * eyeYScale);
-        if (ebImg) {
-          const ebSprite = mode === "manga" ? getMangaLineSprite(ebImg, angAssets.eyesBase) : ebImg;
-          ctx.drawImage(
-            ebSprite,
-            -facePack.pivotX,
-            -facePack.pivotY,
-            facePack.canvasW,
-            facePack.canvasH,
-          );
-        }
-        if (eiImg) {
-          const irisSprite = getRecoloredIrisSprite(
-            eiImg,
-            angAssets.eyesIris,
-            char.face.eyeColor,
+        if (rightEyePos) {
+          drawSingleClosedEye2D(
+            fctx,
+            rightEyePos.x,
+            rightEyePos.y,
+            (rightEyePos.sx / baseS) * 16 * fScale,
+            fScale,
+            preset.eyeMode,
             mode,
           );
-          ctx.drawImage(
-            irisSprite,
-            -facePack.pivotX,
-            -facePack.pivotY,
-            facePack.canvasW,
-            facePack.canvasH,
-          );
         }
-        ctx.restore();
+      } else {
+        const renderEyeUnit = (
+          pos: { x: number; y: number; sx: number; sy: number },
+          baseSrc: string | undefined,
+          irisSrc: string | undefined,
+        ) => {
+          if (!baseSrc || !irisSrc) return;
+          const ebImg = imageMap.get(baseSrc);
+          const eiImg = imageMap.get(irisSrc);
+          if (ebImg) {
+            const ebSp = mode === "manga" ? getMangaLineSprite(ebImg, baseSrc) : ebImg;
+            drawCenteredSprite(
+              ebSp,
+              pos.x,
+              pos.y,
+              facePack.eyeW,
+              facePack.eyeH,
+              pos.sx,
+              pos.sy * eyeYScale,
+            );
+          }
+          if (eiImg) {
+            const eiSp = getRecoloredIrisSprite(eiImg, irisSrc, char.face.eyeColor, mode);
+            drawCenteredSprite(
+              eiSp,
+              pos.x,
+              pos.y,
+              facePack.eyeW,
+              facePack.eyeH,
+              pos.sx,
+              pos.sy * eyeYScale,
+            );
+          }
+        };
+
+        renderEyeUnit(leftEyePos, angAssets.eyeLeftBase, angAssets.eyeLeftIris);
+        if (rightEyePos) {
+          renderEyeUnit(rightEyePos, angAssets.eyeRightBase, angAssets.eyeRightIris);
+        }
       }
     }
 
     if (char.face.browStyle !== "none") {
-      const brImg = imageMap.get(angAssets.brows);
-      if (brImg) {
-        const brSprite = getRecoloredInkSprite(brImg, angAssets.brows, char.face.browColor, mode);
-        const browDy = preset.browTilt > 0 ? 4 : preset.browTilt < 0 ? -4 : 0;
-        const tiltRad = (preset.browTilt * 0.45 * Math.PI) / 180;
-        ctx.save();
-        ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = "high";
-        ctx.translate(a.headCx, eyeCenterY);
-        ctx.scale(sx, sy);
+      const browDy = (preset.browTilt > 0 ? 3 : preset.browTilt < 0 ? -3.5 : 0) * fScale;
+      const tiltRad = (preset.browTilt * 0.55 * Math.PI) / 180;
+      const brOffY = (prof ? 8.5 : 9.5) * fScale;
+      const browLeftSx = prof ? leftEyePos.sx * 0.82 : leftEyePos.sx;
 
-        if (prof || Math.abs(tiltRad) < 0.01) {
-          const px = angle === 90 ? 174 : angle === 270 ? 46 : 110;
-          const py = 76;
-          ctx.translate(px - facePack.pivotX, py - facePack.pivotY + browDy);
-          if (prof) ctx.rotate((angle === 90 ? 1 : -1) * tiltRad);
-          ctx.drawImage(brSprite, -px, -py, facePack.canvasW, facePack.canvasH);
-        } else {
-          const splitX = angle === 45 ? 162 : angle === 315 ? 58 : 110;
-          const leftPivotX = angle === 45 ? 132 : angle === 315 ? 36 : 72;
-          const rightPivotX = angle === 45 ? 186 : angle === 315 ? 92 : 148;
-          const py = 76;
-
-          ctx.save();
-          ctx.beginPath();
-          ctx.rect(-facePack.pivotX, -facePack.pivotY, splitX, facePack.canvasH);
-          ctx.clip();
-          ctx.translate(leftPivotX - facePack.pivotX, py - facePack.pivotY + browDy);
-          ctx.rotate(tiltRad);
-          ctx.drawImage(brSprite, -leftPivotX, -py, facePack.canvasW, facePack.canvasH);
-          ctx.restore();
-
-          ctx.save();
-          ctx.beginPath();
-          ctx.rect(
-            splitX - facePack.pivotX,
-            -facePack.pivotY,
-            facePack.canvasW - splitX,
-            facePack.canvasH,
+      const blImg = imageMap.get(angAssets.browLeft);
+      if (blImg) {
+        const blSp = getRecoloredInkSprite(blImg, angAssets.browLeft, char.face.browColor, mode);
+        drawCenteredSprite(
+          blSp,
+          leftEyePos.x,
+          leftEyePos.y - brOffY + browDy,
+          facePack.browW,
+          facePack.browH,
+          browLeftSx,
+          leftEyePos.sy,
+          leftEyePos.tiltDir * tiltRad,
+        );
+      }
+      if (rightEyePos && angAssets.browRight) {
+        const brImg = imageMap.get(angAssets.browRight);
+        if (brImg) {
+          const brSp = getRecoloredInkSprite(brImg, angAssets.browRight, char.face.browColor, mode);
+          drawCenteredSprite(
+            brSp,
+            rightEyePos.x,
+            rightEyePos.y - brOffY + browDy,
+            facePack.browW,
+            facePack.browH,
+            rightEyePos.sx,
+            rightEyePos.sy,
+            rightEyePos.tiltDir * tiltRad,
           );
-          ctx.clip();
-          ctx.translate(rightPivotX - facePack.pivotX, py - facePack.pivotY + browDy);
-          ctx.rotate(-tiltRad);
-          ctx.drawImage(brSprite, -rightPivotX, -py, facePack.canvasW, facePack.canvasH);
-          ctx.restore();
         }
-        ctx.restore();
       }
     }
 
-    if (char.face.noseStyle !== "none") {
+    if (char.face.noseStyle !== "none" && nosePos) {
       const nsImg = imageMap.get(angAssets.nose);
       if (nsImg) {
-        const nsSprite = getRecoloredInkSprite(nsImg, angAssets.nose, "#1c1f29", mode);
-        ctx.save();
-        ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = "high";
-        ctx.translate(a.headCx, eyeCenterY);
-        ctx.scale(sx, sy);
-        ctx.drawImage(
-          nsSprite,
-          -facePack.pivotX,
-          -facePack.pivotY,
-          facePack.canvasW,
-          facePack.canvasH,
+        const nsSp = getRecoloredInkSprite(nsImg, angAssets.nose, "#1c1f29", mode);
+        drawCenteredSprite(
+          nsSp,
+          nosePos.x,
+          nosePos.y,
+          facePack.noseW,
+          facePack.noseH,
+          nosePos.sx,
+          baseS,
         );
-        ctx.restore();
       }
     }
 
@@ -2836,34 +3220,28 @@ function drawIllustratedFace2D(
       if (preset.mouthPose === "neutral" || preset.mouthPose === "serious") {
         const mtImg = imageMap.get(angAssets.mouth);
         if (mtImg) {
-          const mtSprite = getRecoloredInkSprite(mtImg, angAssets.mouth, "#1c1f29", mode);
-          ctx.save();
-          ctx.imageSmoothingEnabled = true;
-          ctx.imageSmoothingQuality = "high";
-          ctx.translate(a.headCx, eyeCenterY);
-          ctx.scale(sx, sy * (preset.mouthPose === "serious" ? 0.92 : 1));
-          ctx.drawImage(
-            mtSprite,
-            -facePack.pivotX,
-            -facePack.pivotY,
-            facePack.canvasW,
-            facePack.canvasH,
+          const mtSp = getRecoloredInkSprite(mtImg, angAssets.mouth, "#1c1f29", mode);
+          drawCenteredSprite(
+            mtSp,
+            mouthPos.x,
+            mouthPos.y,
+            facePack.mouthW,
+            facePack.mouthH,
+            mouthPos.sx,
+            baseS * (preset.mouthPose === "serious" ? 0.9 : 1),
           );
-          ctx.restore();
         }
       } else {
-        const mouthX = a.headCx + a.faceShiftX * (prof ? 0.72 : dir !== 0 ? 1.15 : 0);
-        const mouthY = eyeCenterY + (a.mouthY - a.eyeY - (prof ? 13 : 14)) * fScale;
-        ctx.save();
+        fctx.save();
         if (prof) {
-          ctx.translate(mouthX, mouthY);
-          ctx.scale(1, 0.74);
-          ctx.translate(-mouthX, -mouthY);
+          fctx.translate(mouthPos.x, mouthPos.y);
+          fctx.scale(1, 0.74);
+          fctx.translate(-mouthPos.x, -mouthPos.y);
         }
         drawAnimeMouth2D(
-          ctx,
-          mouthX,
-          mouthY,
+          fctx,
+          mouthPos.x,
+          mouthPos.y,
           "line",
           preset.mouthPose,
           (prof ? 0.36 : dir !== 0 ? 0.72 : 0.94) * fScale,
@@ -2871,15 +3249,26 @@ function drawIllustratedFace2D(
           dir,
           mode,
         );
-        ctx.restore();
+        fctx.restore();
       }
     }
+
+    // Hard clip all facial features strictly inside active eroded head silhouette (zero floating pixels)
+    if (sil?.headMaskCanvas) {
+      fctx.save();
+      fctx.setTransform(1, 0, 0, 1, 0, 0);
+      fctx.globalCompositeOperation = "destination-in";
+      fctx.drawImage(sil.headMaskCanvas, 0, 0);
+      fctx.restore();
+    }
+
+    ctx.drawImage(fc, x0, y0);
   }
 
   drawMangaEmotionFx2D(
     ctx,
     char.face.fx,
-    a.headCx + a.faceShiftX * 0.42,
+    (leftEyePos.x + (rightEyePos ? rightEyePos.x : leftEyePos.x)) / 2,
     eyeCenterY,
     fScale,
     dir,
@@ -2995,9 +3384,12 @@ export async function preloadCharacter2DImages(
       resolveIllustratedFacePack2D(char.face.mouthStyle);
     const faceAng = facePack?.angles[ang];
     if (faceAng) {
-      urls.add(faceAng.eyesBase);
-      urls.add(faceAng.eyesIris);
-      urls.add(faceAng.brows);
+      urls.add(faceAng.eyeLeftBase);
+      urls.add(faceAng.eyeLeftIris);
+      if (faceAng.eyeRightBase) urls.add(faceAng.eyeRightBase);
+      if (faceAng.eyeRightIris) urls.add(faceAng.eyeRightIris);
+      urls.add(faceAng.browLeft);
+      if (faceAng.browRight) urls.add(faceAng.browRight);
       urls.add(faceAng.nose);
       urls.add(faceAng.mouth);
     }
@@ -3051,20 +3443,17 @@ export function renderCharacter2DSync(
     resolveIllustratedFacePack2D(char.face.noseStyle) ??
     resolveIllustratedFacePack2D(char.face.mouthStyle);
 
-  ctx.save();
-  drawIllustratedHair2D(ctx, char, anchors, angle, mode, "back", imageMap, hairPack);
-  drawCustomLayers2D(ctx, char, customParts, "behind", angle, imageMap);
-
   let processedBaseCanvas: HTMLCanvasElement | null = null;
   let rawBaseImg: HTMLImageElement | null = null;
   let rawBaseSrc = "";
+  let silKey = "";
   if (variantSrc) {
     const varImg = imageMap.get(variantSrc);
     if (varImg) {
       rawBaseImg = varImg;
       rawBaseSrc = variantSrc;
+      silKey = `${variantSrc}|${mode}`;
       processedBaseCanvas = getProcessedBaseSprite(varImg, variantSrc, mode, char.skinTone);
-      ctx.drawImage(processedBaseCanvas, 0, 0, CHAR2D_W, CHAR2D_H);
     }
   } else {
     const baseSrc = baseModel.frames[angle] ?? baseModel.frames[0];
@@ -3076,6 +3465,7 @@ export function renderCharacter2DSync(
       rawBaseSrc = baseSrc;
       const fitScale = Math.max(0.75, Math.min(1.25, char.headFit?.scale ?? 1));
       const fitOffsetY = char.headFit?.offsetY ?? 0;
+      silKey = `${baseSrc}|${headSrc}|${fitScale}|${fitOffsetY}|${mode}`;
       processedBaseCanvas = getProcessedCompositedBaseSprite(
         baseImg,
         baseSrc,
@@ -3088,8 +3478,19 @@ export function renderCharacter2DSync(
         mode,
         char.skinTone,
       );
-      ctx.drawImage(processedBaseCanvas, 0, 0, CHAR2D_W, CHAR2D_H);
     }
+  }
+
+  const headSil = processedBaseCanvas
+    ? analyzeBaseHeadSilhouette(processedBaseCanvas, silKey, angle, anchors)
+    : null;
+
+  ctx.save();
+  drawIllustratedHair2D(ctx, char, anchors, angle, mode, "back", imageMap, hairPack, headSil);
+  drawCustomLayers2D(ctx, char, customParts, "behind", angle, imageMap);
+
+  if (processedBaseCanvas) {
+    ctx.drawImage(processedBaseCanvas, 0, 0, CHAR2D_W, CHAR2D_H);
   }
 
   drawIllustratedClothing2D(
@@ -3112,6 +3513,14 @@ export function renderCharacter2DSync(
     shadingDepth,
     imageMap,
   );
+  const refNeckA = baseModel.anchors[angle];
+  const neckFit = headSil
+    ? {
+        extraL: Math.max(0, Math.min(16, refNeckA.neckL - headSil.neckL)),
+        extraR: Math.max(0, Math.min(16, headSil.neckR - refNeckA.neckR)),
+        neckCx: headSil.neckCx,
+      }
+    : null;
   drawIllustratedClothing2D(
     ctx,
     topPack,
@@ -3121,7 +3530,11 @@ export function renderCharacter2DSync(
     mode,
     shadingDepth,
     imageMap,
+    neckFit,
   );
+  if (topPack) {
+    redrawHeadNeckAboveCollar2D(ctx, processedBaseCanvas, headSil, angle);
+  }
   if (
     !opts?.skipProfileForegroundArm &&
     (bottomPack || topPack) &&
@@ -3138,8 +3551,8 @@ export function renderCharacter2DSync(
       char.skinTone,
     );
   }
-  drawIllustratedFace2D(ctx, char, anchors, angle, mode, imageMap, facePack);
-  drawIllustratedHair2D(ctx, char, anchors, angle, mode, "front", imageMap, hairPack);
+  drawIllustratedFace2D(ctx, char, anchors, angle, mode, imageMap, facePack, headSil);
+  drawIllustratedHair2D(ctx, char, anchors, angle, mode, "front", imageMap, hairPack, headSil);
   drawCustomLayers2D(ctx, char, customParts, "front", angle, imageMap);
   ctx.restore();
 }

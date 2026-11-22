@@ -37,9 +37,12 @@ export interface IllustratedClothingPack2D {
 }
 
 export interface IllustratedFaceAngleAssets2D {
-  eyesBase: string;
-  eyesIris: string;
-  brows: string;
+  eyeLeftBase: string;
+  eyeLeftIris: string;
+  eyeRightBase?: string;
+  eyeRightIris?: string;
+  browLeft: string;
+  browRight?: string;
   nose: string;
   mouth: string;
 }
@@ -48,12 +51,15 @@ export interface IllustratedFacePack2D {
   id: "sharp";
   name: string;
   angles: Partial<Record<Angle2D, IllustratedFaceAngleAssets2D>>;
-  canvasW: number;
-  canvasH: number;
-  pivotX: number;
-  pivotY: number;
-  refHeadRx: number;
-  refHeadRy: number;
+  eyeW: number;
+  eyeH: number;
+  browW: number;
+  browH: number;
+  noseW: number;
+  noseH: number;
+  mouthW: number;
+  mouthH: number;
+  featureScaleRef: number;
 }
 
 export interface ArtTemplateGuide2D {
@@ -143,23 +149,38 @@ export const ILLUSTRATED_FACE_PACKS_2D: IllustratedFacePack2D[] = [
     id: "sharp",
     name: "Shonen Sharp",
     angles: Object.fromEntries(
-      FRONT5.map((ang) => [
-        ang,
-        {
-          eyesBase: `/characters/parts/face/shonen-sharp/eyes-base-angle-${ang}.webp`,
-          eyesIris: `/characters/parts/face/shonen-sharp/eyes-iris-angle-${ang}.webp`,
-          brows: `/characters/parts/face/shonen-sharp/brows-angle-${ang}.webp`,
-          nose: `/characters/parts/face/shonen-sharp/nose-angle-${ang}.webp`,
-          mouth: `/characters/parts/face/shonen-sharp/mouth-angle-${ang}.webp`,
-        },
-      ]),
+      FRONT5.map((ang) => {
+        const twoEyes = ang === 0 || ang === 45 || ang === 315;
+        return [
+          ang,
+          {
+            eyeLeftBase: `/characters/parts/face/shonen-sharp/eye-left-base-angle-${ang}.webp`,
+            eyeLeftIris: `/characters/parts/face/shonen-sharp/eye-left-iris-angle-${ang}.webp`,
+            ...(twoEyes
+              ? {
+                  eyeRightBase: `/characters/parts/face/shonen-sharp/eye-right-base-angle-${ang}.webp`,
+                  eyeRightIris: `/characters/parts/face/shonen-sharp/eye-right-iris-angle-${ang}.webp`,
+                }
+              : {}),
+            browLeft: `/characters/parts/face/shonen-sharp/brow-left-angle-${ang}.webp`,
+            ...(twoEyes
+              ? { browRight: `/characters/parts/face/shonen-sharp/brow-right-angle-${ang}.webp` }
+              : {}),
+            nose: `/characters/parts/face/shonen-sharp/nose-angle-${ang}.webp`,
+            mouth: `/characters/parts/face/shonen-sharp/mouth-angle-${ang}.webp`,
+          } satisfies IllustratedFaceAngleAssets2D,
+        ];
+      }),
     ) as Partial<Record<Angle2D, IllustratedFaceAngleAssets2D>>,
-    canvasW: 220,
-    canvasH: 220,
-    pivotX: 110,
-    pivotY: 100,
-    refHeadRx: 92,
-    refHeadRy: 126,
+    eyeW: 72,
+    eyeH: 56,
+    browW: 72,
+    browH: 40,
+    noseW: 56,
+    noseH: 56,
+    mouthW: 72,
+    mouthH: 44,
+    featureScaleRef: 2.0,
   },
 ];
 

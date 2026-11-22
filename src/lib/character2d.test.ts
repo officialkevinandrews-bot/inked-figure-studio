@@ -32,6 +32,7 @@ import {
 } from "./character2d-store";
 import { LEGACY_EXACT_KEYS, setActiveStorageUser } from "./user-storage";
 import {
+  ILLUSTRATED_FACE_PACKS_2D,
   MODEL1_ART_TEMPLATES_2D,
   resolveIllustratedBottomPack2D,
   resolveIllustratedFacePack2D,
@@ -219,5 +220,14 @@ describe("2D Character Creator Studio data model & Model #1", () => {
       expect(tpl.href.startsWith("/characters/templates/")).toBe(true);
       expect(tpl.href.endsWith(".png")).toBe(true);
     }
+
+    const sharpFace = ILLUSTRATED_FACE_PACKS_2D[0]!;
+    expect(sharpFace.angles[0]?.eyeLeftBase).toContain("eye-left-base-angle-0.webp");
+    expect(sharpFace.angles[0]?.eyeRightBase).toContain("eye-right-base-angle-0.webp");
+    expect(sharpFace.angles[45]?.eyeRightBase).toContain("eye-right-base-angle-45.webp");
+    expect(sharpFace.angles[90]?.eyeLeftBase).toContain("eye-left-base-angle-90.webp");
+    expect(sharpFace.angles[90]?.eyeRightBase).toBeUndefined();
+    expect(sharpFace.angles[270]?.browRight).toBeUndefined();
+    expect(sharpFace.angles[315]?.mouth).toContain("mouth-angle-315.webp");
   });
 });

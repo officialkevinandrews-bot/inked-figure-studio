@@ -221,7 +221,12 @@ export function Character2DStudio({
   const [customParts, setCustomParts] = useState<CustomPartAsset2D[]>(() => loadCustomParts2D());
   const [inspectorTab, setInspectorTab] = useState<InspectorTab2D>("face");
   const [backdrop, setBackdrop] = useState<"checker" | "paper" | "dark">("checker");
-  const [cameraZoom, setCameraZoom] = useState<"full" | "face">("full");
+  const [cameraZoom, setCameraZoom] = useState<"full" | "face">("face");
+
+  const selectInspectorTab = (tab: InspectorTab2D) => {
+    setInspectorTab(tab);
+    setCameraZoom(tab === "face" || tab === "hair" ? "face" : "full");
+  };
   const [targetPanelId, setTargetPanelId] = useState<string>(() => panels[0]?.id ?? "");
   const [renaming, setRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
@@ -362,10 +367,10 @@ export function Character2DStudio({
           activeChar.angle,
           activeHeadPack,
         );
-        const z = 2.65;
-        ctx.translate(CHAR2D_W / 2, CHAR2D_H * 0.44);
+        const z = 2.42;
+        ctx.translate(CHAR2D_W / 2, CHAR2D_H * 0.47);
         ctx.scale(z, z);
-        ctx.translate(-anchors.headCx, -(anchors.headCy + 28));
+        ctx.translate(-anchors.headCx, -(anchors.headCy + 16));
       }
 
       renderCharacter2DSync(
@@ -1050,7 +1055,7 @@ export function Character2DStudio({
                   key={t.id}
                   type="button"
                   data-testid={`char2d-tab-${t.id}`}
-                  onClick={() => setInspectorTab(t.id)}
+                  onClick={() => selectInspectorTab(t.id)}
                   className={`flex flex-col sm:flex-row items-center justify-center gap-1 border-b-2 py-2 transition-colors ${isActive ? "border-primary bg-card text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}
                 >
                   <Icon className="h-3.5 w-3.5" />
@@ -1769,7 +1774,7 @@ export function Character2DStudio({
                   </div>
                   <button
                     type="button"
-                    onClick={() => setInspectorTab("face")}
+                    onClick={() => selectInspectorTab("face")}
                     className="shrink-0 rounded-xs border border-foreground bg-background px-2 py-1 text-[10px] font-bold hover:border-primary"
                   >
                     Change Head Shape →
