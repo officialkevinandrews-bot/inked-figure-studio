@@ -10,7 +10,7 @@ import { toneDataUrl, fadeGeometry, type Screentone } from "./screentone";
 import { fontStack, ensureFontsLoaded } from "./manga-fonts";
 import {
   COMIC_MARK_PRESETS,
-  balloonPathFromSpec,
+  buildBalloonRenderGeometry,
   generateSpeedWedges,
 } from "./manga-effects";
 import { tracePanelCanvasPath } from "./panel-geometry";
@@ -333,10 +333,12 @@ export async function renderPageToCanvas(
   // 5. Speech Balloons & Narration Caption Boxes
   for (const b of layout.balloons ?? []) {
     ctx.save();
-    const pathD = balloonPathFromSpec(b);
-    const p2d = new Path2D(pathD);
+    const geom = buildBalloonRenderGeometry(b);
+    const bodyP2d = new Path2D(geom.bodyPath);
+    const tailP2ds = geom.pointedTailPaths.map((d) => new Path2D(d));
     const strokeW = b.borderWidth ?? b.strokeWidth ?? 2.5;
     const strokeCol = b.borderColor || b.strokeColor || "#000000";
+    const fillCol = b.backgroundColor || "#ffffff";
 
     ctx.translate(b.x, b.y);
     ctx.globalAlpha = b.opacity ?? 1;
@@ -345,20 +347,66 @@ export async function renderPageToCanvas(
       ctx.save();
       ctx.translate(3, 3);
       ctx.fillStyle = "rgba(0, 0, 0, 0.22)";
-      ctx.fill(p2d);
+      ctx.fill(bodyP2d);
+      for (const tp of tailP2ds) ctx.fill(tp);
+      for (const circle of geom.thoughtCircles) {
+        ctx.beginPath();
+        ctx.arc(circle.cx, circle.cy, circle.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
       ctx.restore();
     }
 
-    ctx.fillStyle = b.backgroundColor || "#ffffff";
-    ctx.fill(p2d);
-
-    ctx.lineWidth = strokeW;
-    ctx.strokeStyle = strokeCol;
+    const useMergedStrokePass = tailP2ds.length > 0 && fillCol !== "transparent" && strokeW > 0;
+    ctx.save();
     ctx.lineJoin = "round";
+    ctx.miterLimit = 3;
     if (b.shape === "whisper") {
       ctx.setLineDash([5, 4]);
     }
-    ctx.stroke(p2d);
+
+    if (useMergedStrokePass) {
+      // Pass 1: Double-width outer stroke beneath unified fill so tail roots have no border seam
+      ctx.lineWidth = strokeW * 2;
+      ctx.strokeStyle = strokeCol;
+      ctx.stroke(bodyP2d);
+      for (const tp of tailP2ds) ctx.stroke(tp);
+
+      // Pass 2: Solid interior fill mask
+      ctx.fillStyle = fillCol;
+      ctx.fill(bodyP2d);
+      for (const tp of tailP2ds) ctx.fill(tp);
+    } else {
+      if (fillCol !== "transparent") {
+        ctx.fillStyle = fillCol;
+        ctx.fill(bodyP2d);
+        for (const tp of tailP2ds) ctx.fill(tp);
+      }
+      if (strokeW > 0) {
+        ctx.lineWidth = strokeW;
+        ctx.strokeStyle = strokeCol;
+        ctx.stroke(bodyP2d);
+        for (const tp of tailP2ds) ctx.stroke(tp);
+      }
+    }
+    ctx.restore();
+
+    if (geom.thoughtCircles.length > 0) {
+      ctx.save();
+      ctx.setLineDash([]);
+      ctx.lineWidth = strokeW;
+      ctx.strokeStyle = strokeCol;
+      for (const circle of geom.thoughtCircles) {
+        ctx.beginPath();
+        ctx.arc(circle.cx, circle.cy, circle.r, 0, Math.PI * 2);
+        if (fillCol !== "transparent") {
+          ctx.fillStyle = fillCol;
+          ctx.fill();
+        }
+        if (strokeW > 0) ctx.stroke();
+      }
+      ctx.restore();
+    }
 
     if ((b.doubleBorder || b.shape === "narration") && b.width > 20 && b.height > 20) {
       ctx.save();

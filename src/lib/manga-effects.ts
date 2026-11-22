@@ -14,12 +14,30 @@ export type BalloonShape =
   | "icy" // Cold / menacing icicle edge
   | "narration"; // Caption box with inner keyline
 
+export const MAX_BALLOON_TAILS = 6;
+export const DEFAULT_TAIL_WIDTH = 24;
+
 export interface BalloonTail {
-  x: number; // tip X relative to balloon top-left
-  y: number; // tip Y relative to balloon top-left
+  id?: string;
+  x: number; // tip X relative to balloon center (width / 2)
+  y: number; // tip Y relative to balloon center (height / 2)
   curved?: boolean;
-  curveX?: number; // control point for quadratic bezier
-  curveY?: number;
+  curveX?: number; // quadratic bezier control X relative to balloon center
+  curveY?: number; // quadratic bezier control Y relative to balloon center
+  width?: number; // tail base width in px (defaults to DEFAULT_TAIL_WIDTH)
+}
+
+export interface ThoughtCircle {
+  cx: number;
+  cy: number;
+  r: number;
+}
+
+export interface BalloonRenderGeometry {
+  bodyPath: string;
+  pointedTailPaths: string[];
+  thoughtCircles: ThoughtCircle[];
+  combinedPath: string;
 }
 
 export interface SpeechBalloon {
@@ -31,13 +49,14 @@ export interface SpeechBalloon {
   y: number;
   width: number;
   height: number;
+  tails?: BalloonTail[]; // Multi-tail group dialogue support (0..MAX_BALLOON_TAILS)
   tail?: BalloonTail;
   tailX?: number;
   tailY?: number;
   tailCurved?: boolean;
   tailCurveX?: number;
   tailCurveY?: number;
-  secondaryTail?: BalloonTail; // For 2-person group dialogue
+  secondaryTail?: BalloonTail; // Legacy 2-person group dialogue field
   hasTail: boolean;
   hasSecondaryTail?: boolean;
   fontSize: number;
@@ -191,6 +210,216 @@ export const COMIC_MARK_PRESETS = [
   { mark: "💥", label: "Impact Star Burst", type: "impact" },
 ];
 
+const FANNED_TAIL_ANGLES_DEG = [118, 62, 165, 15, -130, -50] as const;
+
+export function supportsBalloonTails(shape: BalloonShape): boolean {
+  return shape !== "box" && shape !== "icy" && shape !== "narration";
+}
+
+function normalizeSingleTail(tail: BalloonTail, fallbackId: string): BalloonTail {
+  const normalized: BalloonTail = {
+    id: tail.id && tail.id.trim() ? tail.id : fallbackId,
+    x: Number.isFinite(tail.x) ? tail.x : 0,
+    y: Number.isFinite(tail.y) ? tail.y : 80,
+    curved: Boolean(tail.curved),
+    width:
+      typeof tail.width === "number" && Number.isFinite(tail.width)
+        ? Math.max(8, Math.min(56, tail.width))
+        : DEFAULT_TAIL_WIDTH,
+  };
+  if (typeof tail.curveX === "number" && Number.isFinite(tail.curveX)) {
+    normalized.curveX = tail.curveX;
+  }
+  if (typeof tail.curveY === "number" && Number.isFinite(tail.curveY)) {
+    normalized.curveY = tail.curveY;
+  }
+  return normalized;
+}
+
+/**
+ * Returns normalized speaker tails (0..MAX_BALLOON_TAILS) for a speech/thought balloon.
+ * Seamlessly migrates legacy single/secondary tail fields when `tails` is absent.
+ */
+export function getBalloonTails(b: SpeechBalloon): BalloonTail[] {
+  if (Array.isArray(b.tails)) {
+    const seenIds = new Set<string>();
+    return b.tails.slice(0, MAX_BALLOON_TAILS).map((tail, idx) => {
+      const candidate = normalizeSingleTail(tail, `tail-${idx}`);
+      let uniqueId = candidate.id || `tail-${idx}`;
+      while (seenIds.has(uniqueId)) {
+        uniqueId = `${uniqueId}-${idx}`;
+      }
+      seenIds.add(uniqueId);
+      return { ...candidate, id: uniqueId };
+    });
+  }
+
+  const migrated: BalloonTail[] = [];
+  if (b.hasTail) {
+    migrated.push(
+      normalizeSingleTail(
+        {
+          id: "tail-0",
+          x: b.tailX ?? 0,
+          y: b.tailY ?? b.height * 0.8,
+          curved: Boolean(b.tailCurved),
+          curveX: b.tailCurveX,
+          curveY: b.tailCurveY,
+          width: DEFAULT_TAIL_WIDTH,
+        },
+        "tail-0",
+      ),
+    );
+  }
+  if (b.hasSecondaryTail) {
+    const sec = b.secondaryTail ?? { x: -48, y: b.height * 0.8 };
+    migrated.push(
+      normalizeSingleTail(
+        {
+          id: sec.id || "tail-1",
+          x: sec.x,
+          y: sec.y,
+          curved: Boolean(sec.curved),
+          curveX: sec.curveX,
+          curveY: sec.curveY,
+          width: sec.width ?? DEFAULT_TAIL_WIDTH,
+        },
+        "tail-1",
+      ),
+    );
+  }
+  return migrated.slice(0, MAX_BALLOON_TAILS);
+}
+
+/**
+ * Builds a partial balloon update synchronizing `tails[]` and legacy tail fields
+ * so old backups, exporters, and tests remain consistent.
+ */
+export function balloonPatchWithTails(
+  b: SpeechBalloon,
+  nextTails: BalloonTail[],
+): Partial<SpeechBalloon> {
+  const seenIds = new Set<string>();
+  const normalized = nextTails.slice(0, MAX_BALLOON_TAILS).map((tail, idx) => {
+    const entry = normalizeSingleTail(tail, `tail-${Date.now()}-${idx}`);
+    let uniqueId = entry.id || `tail-${idx}`;
+    while (seenIds.has(uniqueId)) {
+      uniqueId = `${uniqueId}-${idx}`;
+    }
+    seenIds.add(uniqueId);
+    return { ...entry, id: uniqueId };
+  });
+
+  const first = normalized[0];
+  const second = normalized[1];
+  return {
+    tails: normalized,
+    hasTail: normalized.length > 0,
+    tailX: first ? first.x : b.tailX,
+    tailY: first ? first.y : b.tailY,
+    tailCurved: first ? Boolean(first.curved) : false,
+    tailCurveX: first?.curveX,
+    tailCurveY: first?.curveY,
+    hasSecondaryTail: normalized.length > 1,
+    secondaryTail: second ? { ...second } : undefined,
+  };
+}
+
+/** Returns existing curve handle coordinates or a clean perpendicular midpoint bend. */
+export function defaultCurveControlForTail(tail: BalloonTail): { x: number; y: number } {
+  if (
+    typeof tail.curveX === "number" &&
+    Number.isFinite(tail.curveX) &&
+    typeof tail.curveY === "number" &&
+    Number.isFinite(tail.curveY)
+  ) {
+    return { x: tail.curveX, y: tail.curveY };
+  }
+  const len = Math.hypot(tail.x, tail.y) || 1;
+  const ux = tail.x / len;
+  const uy = tail.y / len;
+  const px = -uy;
+  const py = ux;
+  const bend = Math.max(22, Math.min(48, len * 0.25));
+  return {
+    x: Math.round((tail.x * 0.55 + px * bend) * 10) / 10,
+    y: Math.round((tail.y * 0.55 + py * bend) * 10) / 10,
+  };
+}
+
+/** Picks an unobstructed angular slot around the bubble so added tails fan cleanly outward. */
+export function createNextFannedTail(
+  b: SpeechBalloon,
+  existingTails?: BalloonTail[],
+): BalloonTail {
+  const current = existingTails ?? getBalloonTails(b);
+  let bestDeg: number = FANNED_TAIL_ANGLES_DEG[0];
+
+  if (current.length > 0) {
+    let bestSeparation = -1;
+    for (const deg of FANNED_TAIL_ANGLES_DEG) {
+      const rad = (deg * Math.PI) / 180;
+      let minDiff = Infinity;
+      for (const existing of current) {
+        const existingRad = Math.atan2(existing.y, existing.x);
+        let diff = Math.abs(rad - existingRad) % (Math.PI * 2);
+        if (diff > Math.PI) diff = Math.PI * 2 - diff;
+        if (diff < minDiff) minDiff = diff;
+      }
+      if (minDiff > bestSeparation) {
+        bestSeparation = minDiff;
+        bestDeg = deg;
+      }
+    }
+  }
+
+  const bestRad = (bestDeg * Math.PI) / 180;
+  const rx = b.width / 2;
+  const ry = b.height / 2;
+  const reachX = rx * 1.15 + 26;
+  const reachY = ry * 1.15 + 26;
+  const inheritedWidth = current[current.length - 1]?.width ?? DEFAULT_TAIL_WIDTH;
+  const usedIds = new Set(current.map((t) => t.id).filter(Boolean));
+  let idx = current.length;
+  let newId = `tail-${Date.now()}-${idx}`;
+  while (usedIds.has(newId)) {
+    idx += 1;
+    newId = `tail-${Date.now()}-${idx}`;
+  }
+
+  return {
+    id: newId,
+    x: Math.round(reachX * Math.cos(bestRad)),
+    y: Math.round(reachY * Math.sin(bestRad)),
+    curved: false,
+    width: inheritedWidth,
+  };
+}
+
+/** Appends a fanned speaker tail up to MAX_BALLOON_TAILS (returns null when at cap or unsupported). */
+export function addBalloonTail(b: SpeechBalloon): Partial<SpeechBalloon> | null {
+  if (!supportsBalloonTails(b.shape)) return null;
+  const current = getBalloonTails(b);
+  if (current.length >= MAX_BALLOON_TAILS) return null;
+  const nextTail = createNextFannedTail(b, current);
+  return balloonPatchWithTails(b, [...current, nextTail]);
+}
+
+function tailRootInsetForShape(shape: BalloonShape): number {
+  switch (shape) {
+    case "burst":
+    case "double_burst":
+    case "scream":
+    case "flash":
+    case "electric":
+      return 0.62;
+    case "heart":
+      return 0.65;
+    default:
+      return 0.78;
+  }
+}
+
 function buildTailSubpath(
   w: number,
   h: number,
@@ -199,22 +428,25 @@ function buildTailSubpath(
   isCurved = false,
   curveX?: number,
   curveY?: number,
+  baseWidth = DEFAULT_TAIL_WIDTH,
+  rootInsetFactor = 0.78,
 ): string {
   const rx = w / 2;
   const ry = h / 2;
   const cx = rx;
   const cy = ry;
   const rootAngle = Math.atan2(tipY - cy, tipX - cx);
-  const rootX = cx + rx * 0.8 * Math.cos(rootAngle);
-  const rootY = cy + ry * 0.8 * Math.sin(rootAngle);
-  const perpX = -Math.sin(rootAngle) * 12;
-  const perpY = Math.cos(rootAngle) * 12;
+  const rootX = cx + rx * rootInsetFactor * Math.cos(rootAngle);
+  const rootY = cy + ry * rootInsetFactor * Math.sin(rootAngle);
+  const halfW = Math.max(4, Math.min(28, baseWidth / 2));
+  const perpX = -Math.sin(rootAngle) * halfW;
+  const perpY = Math.cos(rootAngle) * halfW;
 
   if (isCurved && curveX !== undefined && curveY !== undefined) {
     return `
       M ${rootX + perpX} ${rootY + perpY}
       Q ${curveX} ${curveY} ${tipX} ${tipY}
-      Q ${curveX + perpX * 0.5} ${curveY + perpY * 0.5} ${rootX - perpX} ${rootY - perpY}
+      Q ${curveX - perpX * 0.55} ${curveY - perpY * 0.55} ${rootX - perpX} ${rootY - perpY}
     `;
   }
   const midX = (rootX + tipX) / 2 + perpX * 0.3;
@@ -226,32 +458,82 @@ function buildTailSubpath(
   `;
 }
 
-/**
- * Generates an SVG path string for speech balloon contours with curved & multi-tail attachment.
- * Supports object tail, numeric (tailX, tailY, hasTail), plus optional curve / secondary tail.
- */
-export function generateBalloonPath(
-  shape: BalloonShape,
+function clampNum(val: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, val));
+}
+
+/** Builds descending trailing thought-bubble circles (`O o .`) along one tail path. */
+export function buildThoughtCirclesForTail(
   w: number,
   h: number,
-  tailArg?: BalloonTail | { x: number; y: number; curved?: boolean; curveX?: number; curveY?: number } | number,
-  tailYArg?: number,
-  hasTailArg?: boolean,
-  extra?: { curved?: boolean; curveX?: number; curveY?: number; secondaryTail?: BalloonTail },
-): string {
+  tail: BalloonTail,
+): ThoughtCircle[] {
+  const rx = w / 2;
+  const ry = h / 2;
+  const cx = rx;
+  const cy = ry;
+  const tipX = cx + tail.x;
+  const tipY = cy + tail.y;
+  const angle = Math.atan2(tipY - cy, tipX - cx);
+  const startX = cx + rx * 1.08 * Math.cos(angle);
+  const startY = cy + ry * 1.08 * Math.sin(angle);
+  const dist = Math.max(24, Math.hypot(tipX - startX, tipY - startY));
+  const scale = clampNum((tail.width ?? DEFAULT_TAIL_WIDTH) / DEFAULT_TAIL_WIDTH, 0.65, 1.5);
+  const ctrl = tail.curved ? defaultCurveControlForTail(tail) : null;
+  const ctrlX = ctrl ? cx + ctrl.x : (startX + tipX) / 2;
+  const ctrlY = ctrl ? cy + ctrl.y : (startY + tipY) / 2;
+
+  const evalPoint = (t: number): { cx: number; cy: number } => {
+    if (!ctrl) {
+      return {
+        cx: startX + (tipX - startX) * t,
+        cy: startY + (tipY - startY) * t,
+      };
+    }
+    const u = 1 - t;
+    return {
+      cx: u * u * startX + 2 * u * t * ctrlX + t * t * tipX,
+      cy: u * u * startY + 2 * u * t * ctrlY + t * t * tipY,
+    };
+  };
+
+  const specs = [
+    { t: 0.28, r: clampNum(dist * 0.14, 5.5, 12.5) * scale },
+    { t: 0.6, r: clampNum(dist * 0.095, 4.0, 9.0) * scale },
+    { t: 0.9, r: clampNum(dist * 0.06, 2.8, 6.0) * scale },
+  ];
+
+  return specs.map(({ t, r }) => {
+    const pt = evalPoint(t);
+    return {
+      cx: Math.round(pt.cx * 10) / 10,
+      cy: Math.round(pt.cy * 10) / 10,
+      r: Math.round(r * 10) / 10,
+    };
+  });
+}
+
+function thoughtCircleToSvgPath(c: ThoughtCircle): string {
+  const r = Number(c.r.toFixed(1));
+  const left = (c.cx - r).toFixed(1);
+  const right = (c.cx + r).toFixed(1);
+  const cy = c.cy.toFixed(1);
+  return `M ${left} ${cy} A ${r} ${r} 0 1 0 ${right} ${cy} A ${r} ${r} 0 1 0 ${left} ${cy} Z`;
+}
+
+function buildBalloonBodyPath(shape: BalloonShape, w: number, h: number): string {
   const rx = w / 2;
   const ry = h / 2;
   const cx = rx;
   const cy = ry;
 
-  let bodyPath = "";
-
   if (shape === "narration") {
-    bodyPath = `M 3 3 L ${w - 3} 3 L ${w - 3} ${h - 3} L 3 ${h - 3} Z`;
-  } else if (shape === "box") {
-    bodyPath = `M 4 4 L ${w - 4} 4 L ${w - 4} ${h - 4} L 4 ${h - 4} Z`;
-  } else if (shape === "burst") {
-    // Spiky shout burst
+    return `M 3 3 L ${w - 3} 3 L ${w - 3} ${h - 3} L 3 ${h - 3} Z`;
+  }
+  if (shape === "box") {
+    return `M 4 4 L ${w - 4} 4 L ${w - 4} ${h - 4} L 4 ${h - 4} Z`;
+  }
+  if (shape === "burst") {
     const points = 16;
     const pts: string[] = [];
     for (let i = 0; i < points * 2; i++) {
@@ -261,9 +543,9 @@ export function generateBalloonPath(
       const y = cy + ry * radius * Math.sin(angle);
       pts.push(`${i === 0 ? "M" : "L"} ${x.toFixed(1)} ${y.toFixed(1)}`);
     }
-    bodyPath = pts.join(" ") + " Z";
-  } else if (shape === "double_burst") {
-    // Extreme double explosion burst
+    return pts.join(" ") + " Z";
+  }
+  if (shape === "double_burst") {
     const points = 24;
     const pts: string[] = [];
     for (let i = 0; i < points * 2; i++) {
@@ -273,9 +555,9 @@ export function generateBalloonPath(
       const y = cy + ry * radius * Math.sin(angle);
       pts.push(`${i === 0 ? "M" : "L"} ${x.toFixed(1)} ${y.toFixed(1)}`);
     }
-    bodyPath = pts.join(" ") + " Z";
-  } else if (shape === "cloud") {
-    // Thought cloud with circular arcs
+    return pts.join(" ") + " Z";
+  }
+  if (shape === "cloud") {
     const arcs = 10;
     const pts: string[] = [];
     for (let i = 0; i < arcs; i++) {
@@ -287,12 +569,12 @@ export function generateBalloonPath(
       const y2 = cy + ry * Math.sin(a2);
       const r = (w / arcs) * 1.1;
       pts.push(
-        `${i === 0 ? `M ${x1.toFixed(1)} ${y1.toFixed(1)}` : ""} A ${r.toFixed(1)} ${r.toFixed(1)} 0 0 1 ${x2.toFixed(1)} ${y2.toFixed(1)}`
+        `${i === 0 ? `M ${x1.toFixed(1)} ${y1.toFixed(1)}` : ""} A ${r.toFixed(1)} ${r.toFixed(1)} 0 0 1 ${x2.toFixed(1)} ${y2.toFixed(1)}`,
       );
     }
-    bodyPath = pts.join(" ") + " Z";
-  } else if (shape === "electric") {
-    // Jagged electric broadcast balloon
+    return pts.join(" ") + " Z";
+  }
+  if (shape === "electric") {
     const jagged = 24;
     const pts: string[] = [];
     for (let i = 0; i < jagged; i++) {
@@ -302,47 +584,58 @@ export function generateBalloonPath(
       const y = cy + ry * variance * Math.sin(angle);
       pts.push(`${i === 0 ? "M" : "L"} ${x.toFixed(1)} ${y.toFixed(1)}`);
     }
-    bodyPath = pts.join(" ") + " Z";
-  } else if (shape === "heart") {
-    // Soft heart balloon
-    bodyPath = `
+    return pts.join(" ") + " Z";
+  }
+  if (shape === "heart") {
+    return `
       M ${cx} ${h * 0.85}
       C ${w * 0.15} ${h * 0.6}, ${w * 0.05} ${h * 0.25}, ${cx * 0.6} ${h * 0.12}
       C ${cx * 0.85} ${h * 0.05}, ${cx} ${h * 0.25}, ${cx} ${h * 0.3}
       C ${cx} ${h * 0.25}, ${cx * 1.15} ${h * 0.05}, ${w - cx * 0.6} ${h * 0.12}
       C ${w * 0.95} ${h * 0.25}, ${w * 0.85} ${h * 0.6}, ${cx} ${h * 0.85} Z
     `;
-  } else if (shape === "rounded") {
+  }
+  if (shape === "rounded") {
     const r = Math.min(w, h) * 0.28;
-    bodyPath = `M ${r + 3} 3 L ${w - r - 3} 3 Q ${w - 3} 3 ${w - 3} ${r + 3} L ${w - 3} ${h - r - 3} Q ${w - 3} ${h - 3} ${w - r - 3} ${h - 3} L ${r + 3} ${h - 3} Q 3 ${h - 3} 3 ${h - r - 3} L 3 ${r + 3} Q 3 3 ${r + 3} 3 Z`;
-  } else if (shape === "scream") {
+    return `M ${r + 3} 3 L ${w - r - 3} 3 Q ${w - 3} 3 ${w - 3} ${r + 3} L ${w - 3} ${h - r - 3} Q ${w - 3} ${h - 3} ${w - r - 3} ${h - 3} L ${r + 3} ${h - 3} Q 3 ${h - 3} 3 ${h - r - 3} L 3 ${r + 3} Q 3 3 ${r + 3} 3 Z`;
+  }
+  if (shape === "scream") {
     const n = 22;
     const pts: string[] = [];
     for (let i = 0; i < n * 2; i++) {
       const a = (i * Math.PI) / n + Math.sin(i * 7.3) * 0.06;
       const rr = i % 2 === 0 ? 1 + Math.sin(i * 3.7) * 0.12 : 0.66 + Math.cos(i * 5.1) * 0.06;
-      pts.push(`${i === 0 ? "M" : "L"} ${(cx + rx * rr * Math.cos(a)).toFixed(1)} ${(cy + ry * rr * Math.sin(a)).toFixed(1)}`);
+      pts.push(
+        `${i === 0 ? "M" : "L"} ${(cx + rx * rr * Math.cos(a)).toFixed(1)} ${(cy + ry * rr * Math.sin(a)).toFixed(1)}`,
+      );
     }
-    bodyPath = pts.join(" ") + " Z";
-  } else if (shape === "wavy") {
+    return pts.join(" ") + " Z";
+  }
+  if (shape === "wavy") {
     const n = 64;
     const pts: string[] = [];
     for (let i = 0; i <= n; i++) {
       const a = (i / n) * Math.PI * 2;
       const rr = 0.9 + Math.sin(a * 14) * 0.035;
-      pts.push(`${i === 0 ? "M" : "L"} ${(cx + rx * rr * Math.cos(a)).toFixed(1)} ${(cy + ry * rr * Math.sin(a)).toFixed(1)}`);
+      pts.push(
+        `${i === 0 ? "M" : "L"} ${(cx + rx * rr * Math.cos(a)).toFixed(1)} ${(cy + ry * rr * Math.sin(a)).toFixed(1)}`,
+      );
     }
-    bodyPath = pts.join(" ") + " Z";
-  } else if (shape === "flash") {
+    return pts.join(" ") + " Z";
+  }
+  if (shape === "flash") {
     const n = 60;
     const pts: string[] = [];
     for (let i = 0; i < n * 2; i++) {
       const a = (i * Math.PI) / n;
       const rr = i % 2 === 0 ? 1.05 + Math.abs(Math.sin(i * 2.3)) * 0.12 : 0.86;
-      pts.push(`${i === 0 ? "M" : "L"} ${(cx + rx * rr * Math.cos(a)).toFixed(1)} ${(cy + ry * rr * Math.sin(a)).toFixed(1)}`);
+      pts.push(
+        `${i === 0 ? "M" : "L"} ${(cx + rx * rr * Math.cos(a)).toFixed(1)} ${(cy + ry * rr * Math.sin(a)).toFixed(1)}`,
+      );
     }
-    bodyPath = pts.join(" ") + " Z";
-  } else if (shape === "icy") {
+    return pts.join(" ") + " Z";
+  }
+  if (shape === "icy") {
     const n = 9;
     let d = `M 4 ${h * 0.12} Q 4 4 ${w * 0.12} 4 L ${w * 0.88} 4 Q ${w - 4} 4 ${w - 4} ${h * 0.12} L ${w - 4} ${h * 0.7}`;
     for (let i = n; i >= 0; i--) {
@@ -350,77 +643,169 @@ export function generateBalloonPath(
       const drip = i % 2 === 0 ? h * 0.7 : h - 3 - (i % 3) * h * 0.08;
       d += ` L ${x.toFixed(1)} ${drip.toFixed(1)}`;
     }
-    bodyPath = d + " Z";
-  } else {
-    // Standard Oval & Whisper
-    bodyPath = `M ${cx} 2 A ${rx - 2} ${ry - 2} 0 1 1 ${cx} ${h - 2} A ${rx - 2} ${ry - 2} 0 1 1 ${cx} 2 Z`;
+    return d + " Z";
+  }
+  return `M ${cx} 2 A ${rx - 2} ${ry - 2} 0 1 1 ${cx} ${h - 2} A ${rx - 2} ${ry - 2} 0 1 1 ${cx} 2 Z`;
+}
+
+/**
+ * Generates separated body, pointed tail, and thought-circle geometry so SVG & Canvas 2D
+ * can render seamless merged outlines (`stroke-under-fill`) and trailing thought dots identically.
+ */
+export function buildBalloonRenderGeometry(b: SpeechBalloon): BalloonRenderGeometry {
+  const w = b.width;
+  const h = b.height;
+  const bodyPath = buildBalloonBodyPath(b.shape, w, h);
+
+  if (!supportsBalloonTails(b.shape)) {
+    return {
+      bodyPath,
+      pointedTailPaths: [],
+      thoughtCircles: [],
+      combinedPath: bodyPath,
+    };
   }
 
-  // Determine tail parameters
-  if (shape === "box" || shape === "icy" || shape === "narration") return bodyPath;
-
-  const tailParts: string[] = [];
-  let hasPrimary = false;
-  let tipX = 0;
-  let tipY = 0;
-  let isCurved = Boolean(extra?.curved);
-  let curveX = extra?.curveX;
-  let curveY = extra?.curveY;
-
-  if (typeof tailArg === "number") {
-    if (hasTailArg !== false) {
-      hasPrimary = true;
-      tipX = cx + tailArg;
-      tipY = cy + (tailYArg ?? 0);
-    }
-  } else if (tailArg && typeof tailArg === "object") {
-    hasPrimary = true;
-    tipX = tailArg.x;
-    tipY = tailArg.y;
-    isCurved = Boolean(tailArg.curved ?? extra?.curved);
-    curveX = tailArg.curveX ?? extra?.curveX;
-    curveY = tailArg.curveY ?? extra?.curveY;
+  const tails = getBalloonTails(b);
+  if (tails.length === 0) {
+    return {
+      bodyPath,
+      pointedTailPaths: [],
+      thoughtCircles: [],
+      combinedPath: bodyPath,
+    };
   }
 
-  if (hasPrimary) {
-    tailParts.push(buildTailSubpath(w, h, tipX, tipY, isCurved, curveX, curveY));
+  if (b.shape === "cloud") {
+    const thoughtCircles = tails.flatMap((t) => buildThoughtCirclesForTail(w, h, t));
+    const circlePaths = thoughtCircles.map(thoughtCircleToSvgPath);
+    return {
+      bodyPath,
+      pointedTailPaths: [],
+      thoughtCircles,
+      combinedPath: [bodyPath, ...circlePaths].join(" "),
+    };
   }
 
-  if (extra?.secondaryTail) {
-    const s = extra.secondaryTail;
-    tailParts.push(
-      buildTailSubpath(
-        w,
-        h,
-        cx + s.x,
-        cy + s.y,
-        Boolean(s.curved),
-        s.curveX !== undefined ? cx + s.curveX : undefined,
-        s.curveY !== undefined ? cy + s.curveY : undefined,
-      ),
+  const cx = w / 2;
+  const cy = h / 2;
+  const inset = tailRootInsetForShape(b.shape);
+  const pointedTailPaths = tails.map((t) => {
+    const ctrl = t.curved ? defaultCurveControlForTail(t) : null;
+    return buildTailSubpath(
+      w,
+      h,
+      cx + t.x,
+      cy + t.y,
+      Boolean(t.curved),
+      ctrl ? cx + ctrl.x : undefined,
+      ctrl ? cy + ctrl.y : undefined,
+      t.width ?? DEFAULT_TAIL_WIDTH,
+      inset,
     );
+  });
+
+  return {
+    bodyPath,
+    pointedTailPaths,
+    thoughtCircles: [],
+    combinedPath: [bodyPath, ...pointedTailPaths].join(" "),
+  };
+}
+
+/**
+ * Generates an SVG path string for speech balloon contours with curved & multi-tail attachment.
+ * Supports object tail, numeric (tailX, tailY, hasTail), plus optional curve / secondary / tails array.
+ */
+export function generateBalloonPath(
+  shape: BalloonShape,
+  w: number,
+  h: number,
+  tailArg?: BalloonTail | { x: number; y: number; curved?: boolean; curveX?: number; curveY?: number } | number,
+  tailYArg?: number,
+  hasTailArg?: boolean,
+  extra?: {
+    curved?: boolean;
+    curveX?: number;
+    curveY?: number;
+    secondaryTail?: BalloonTail;
+    tails?: BalloonTail[];
+  },
+): string {
+  const rx = w / 2;
+  const ry = h / 2;
+  const cx = rx;
+  const cy = ry;
+  const bodyPath = buildBalloonBodyPath(shape, w, h);
+
+  if (!supportsBalloonTails(shape)) return bodyPath;
+
+  const inset = tailRootInsetForShape(shape);
+  const collectedTails: BalloonTail[] = [];
+
+  if (Array.isArray(extra?.tails)) {
+    for (const t of extra.tails.slice(0, MAX_BALLOON_TAILS)) {
+      collectedTails.push(t);
+    }
+  } else {
+    if (typeof tailArg === "number") {
+      if (hasTailArg !== false) {
+        collectedTails.push({
+          x: tailArg,
+          y: tailYArg ?? 0,
+          curved: Boolean(extra?.curved),
+          curveX: extra?.curveX !== undefined ? extra.curveX - cx : undefined,
+          curveY: extra?.curveY !== undefined ? extra.curveY - cy : undefined,
+        });
+      }
+    } else if (tailArg && typeof tailArg === "object") {
+      const explicitCurveX = tailArg.curveX ?? extra?.curveX;
+      const explicitCurveY = tailArg.curveY ?? extra?.curveY;
+      collectedTails.push({
+        x: tailArg.x - cx,
+        y: tailArg.y - cy,
+        curved: Boolean(tailArg.curved ?? extra?.curved),
+        curveX: explicitCurveX !== undefined ? explicitCurveX - cx : undefined,
+        curveY: explicitCurveY !== undefined ? explicitCurveY - cy : undefined,
+        width: (tailArg as BalloonTail).width,
+      });
+    }
+
+    if (extra?.secondaryTail) {
+      collectedTails.push(extra.secondaryTail);
+    }
   }
 
-  if (tailParts.length === 0) return bodyPath;
+  if (collectedTails.length === 0) return bodyPath;
+
+  if (shape === "cloud") {
+    const circlePaths = collectedTails
+      .flatMap((t) => buildThoughtCirclesForTail(w, h, t))
+      .map(thoughtCircleToSvgPath);
+    return [bodyPath, ...circlePaths].join(" ");
+  }
+
+  const tailParts = collectedTails.slice(0, MAX_BALLOON_TAILS).map((t) => {
+    const ctrl = t.curved ? defaultCurveControlForTail(t) : null;
+    return buildTailSubpath(
+      w,
+      h,
+      cx + t.x,
+      cy + t.y,
+      Boolean(t.curved),
+      ctrl ? cx + ctrl.x : undefined,
+      ctrl ? cy + ctrl.y : undefined,
+      t.width ?? DEFAULT_TAIL_WIDTH,
+      inset,
+    );
+  });
+
   return `${bodyPath} ${tailParts.join(" ")}`;
 }
 
 /** Convenience wrapper generating full balloon SVG path directly from a SpeechBalloon object. */
 export function balloonPathFromSpec(b: SpeechBalloon): string {
-  return generateBalloonPath(
-    b.shape,
-    b.width,
-    b.height,
-    b.tailX ?? 0,
-    b.tailY ?? b.height * 0.8,
-    b.hasTail,
-    {
-      curved: b.tailCurved,
-      curveX: b.tailCurveX !== undefined ? b.width / 2 + b.tailCurveX : undefined,
-      curveY: b.tailCurveY !== undefined ? b.height / 2 + b.tailCurveY : undefined,
-      secondaryTail: b.hasSecondaryTail ? b.secondaryTail : undefined,
-    },
-  );
+  return buildBalloonRenderGeometry(b).combinedPath;
 }
 
 /** Deterministic PRNG in [0, 1) for crisp repeatable speed line geometry. */

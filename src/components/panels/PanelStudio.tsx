@@ -26,6 +26,8 @@ import {
   syncPanelBoundElements,
 } from "@/lib/manga-layout";
 import {
+  DEFAULT_TAIL_WIDTH,
+  MAX_BALLOON_TAILS,
   type BalloonShape,
   type SpeechBalloon,
   type ComicMark,
@@ -33,7 +35,13 @@ import {
   type SFXStamp,
   SFX_PRESETS,
   SFX_STYLES,
+  addBalloonTail,
+  balloonPatchWithTails,
+  defaultCurveControlForTail,
+  getBalloonTails,
+  supportsBalloonTails,
 } from "@/lib/manga-effects";
+import { BALLOON_TAIL_BADGE_CLASSES } from "./SpeechBalloonRenderer";
 import { VECTOR_MARKS, markPath } from "@/lib/manga-marks";
 import { MANGA_FONTS, fontStack } from "@/lib/manga-fonts";
 import { MANGA_BACKGROUNDS, getMangaBackgroundDataUrl, type MangaBackground } from "@/lib/manga-backgrounds";
@@ -469,6 +477,10 @@ export function PanelStudio({
             id: `balloon-${suffix}`,
             x: selectedBalloon.x + 20,
             y: selectedBalloon.y + 20,
+            tails: selectedBalloon.tails?.map((t) => ({ ...t })),
+            secondaryTail: selectedBalloon.secondaryTail
+              ? { ...selectedBalloon.secondaryTail }
+              : undefined,
           };
           onUpdateLayout({ ...layout, balloons: [...(layout.balloons ?? []), copy] });
           setSelectedItemId(copy.id);
@@ -946,6 +958,11 @@ export function PanelStudio({
     );
 
     const isNarr = shape === "narration";
+    const initWidth = Math.min(bounds.width * (isNarr ? 0.72 : 0.55), isNarr ? 260 : 200);
+    const initHeight = Math.min(bounds.height * (isNarr ? 0.42 : 0.4), isNarr ? 140 : 120);
+    const initTailX = -initWidth * 0.2;
+    const initTailY = initHeight * 0.85;
+    const canHaveTail = supportsBalloonTails(shape);
     const newBalloon: SpeechBalloon = {
       id: `balloon-${Date.now()}`,
       panelId: selectedPanel.id,
@@ -953,15 +970,18 @@ export function PanelStudio({
       text: shape === "burst" || shape === "double_burst" ? "N-NANI?!" : shape === "cloud" ? "..." : isNarr ? "Forty-two plates stacked. Three minutes until the shuttle." : "Speech...",
       x: bounds.minX + bounds.width * (isNarr ? 0.08 : 0.25),
       y: bounds.minY + bounds.height * (isNarr ? 0.45 : 0.2),
-      width: Math.min(bounds.width * (isNarr ? 0.72 : 0.55), isNarr ? 260 : 200),
-      height: Math.min(bounds.height * (isNarr ? 0.42 : 0.4), isNarr ? 140 : 120),
+      width: initWidth,
+      height: initHeight,
       tail: {
         x: bounds.minX + bounds.width * 0.35,
         y: bounds.minY + bounds.height * 0.55,
       },
-      tailX: -Math.min(bounds.width * 0.55, 200) * 0.2,
-      tailY: Math.min(bounds.height * 0.4, 120) * 0.85,
-      hasTail: shape !== "box" && !isNarr,
+      tailX: initTailX,
+      tailY: initTailY,
+      hasTail: canHaveTail,
+      tails: canHaveTail
+        ? [{ id: "tail-0", x: initTailX, y: initTailY, curved: false, width: DEFAULT_TAIL_WIDTH }]
+        : [],
       fontSize: isNarr ? 14 : 16,
       fontFamily: isNarr ? "sawarabi-mincho" : "comic-neue",
       fontWeight: shape === "burst" || shape === "double_burst" ? "bold" : isNarr ? "normal" : "normal",
@@ -3792,13 +3812,134 @@ export function PanelStudio({
                         ))}
                       </div>
                       <div className="grid grid-cols-2 gap-1.5">
-                        <label className="flex items-center gap-1.5"><input type="checkbox" checked={selectedBalloon.hasTail} onChange={(e) => setB({ hasTail: e.target.checked })} className="accent-primary" /> Tail</label>
                         <label className="flex items-center gap-1.5"><input type="checkbox" checked={!!selectedBalloon.isVertical} onChange={(e) => setB({ isVertical: e.target.checked, writingMode: e.target.checked ? "vertical-rl" : "horizontal-tb" })} className="accent-primary" /> Vertical (tategaki)</label>
-                        <label className="flex items-center gap-1.5"><input type="checkbox" checked={!!selectedBalloon.tailCurved} onChange={(e) => setB({ tailCurved: e.target.checked })} className="accent-primary" /> Curved Tail</label>
-                        <label className="flex items-center gap-1.5"><input type="checkbox" checked={!!selectedBalloon.hasSecondaryTail} onChange={(e) => setB({ hasSecondaryTail: e.target.checked, secondaryTail: selectedBalloon.secondaryTail ?? { x: -48, y: selectedBalloon.height * 0.8 } })} className="accent-primary" /> Dual Tail</label>
                         <label className="flex items-center gap-1.5"><input type="checkbox" checked={Boolean(selectedBalloon.doubleBorder ?? selectedBalloon.shape === "narration")} onChange={(e) => setB({ doubleBorder: e.target.checked })} className="accent-primary" /> Double Border</label>
                         <label className="flex items-center gap-1.5"><input type="checkbox" checked={Boolean(selectedBalloon.shadow ?? selectedBalloon.shape === "narration")} onChange={(e) => setB({ shadow: e.target.checked })} className="accent-primary" /> Drop Shadow</label>
                       </div>
+
+                      {supportsBalloonTails(selectedBalloon.shape) && (() => {
+                        const currentTails = getBalloonTails(selectedBalloon);
+                        const isCloud = selectedBalloon.shape === "cloud";
+                        return (
+                          <div className="space-y-1.5 rounded border border-border bg-muted/20 p-2" data-testid="inspector-tails-section">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-[11px] font-semibold">
+                                {isCloud ? "Thought Trails" : "Speaker Tails"} ({currentTails.length}/{MAX_BALLOON_TAILS})
+                              </span>
+                              <button
+                                type="button"
+                                data-testid="inspector-add-tail-btn"
+                                disabled={currentTails.length >= MAX_BALLOON_TAILS}
+                                onClick={() => {
+                                  const patch = addBalloonTail(selectedBalloon);
+                                  if (patch) setB(patch);
+                                }}
+                                className="inline-flex items-center gap-1 rounded border border-foreground/70 bg-background px-1.5 py-0.5 text-[10px] font-bold hover:border-primary hover:text-primary disabled:opacity-40"
+                              >
+                                <Plus className="h-2.5 w-2.5" />
+                                <span>Add Tail</span>
+                              </button>
+                            </div>
+
+                            {currentTails.length === 0 ? (
+                              <p className="text-[10px] text-muted-foreground">
+                                Floating bubble (0 tails). Click Add Tail to point at speakers.
+                              </p>
+                            ) : (
+                              <div className="space-y-1.5">
+                                {currentTails.map((tail, idx) => {
+                                  const badgeCls = BALLOON_TAIL_BADGE_CLASSES[idx % BALLOON_TAIL_BADGE_CLASSES.length];
+                                  const tailW = Math.round(tail.width ?? DEFAULT_TAIL_WIDTH);
+                                  return (
+                                    <div
+                                      key={tail.id ?? idx}
+                                      data-testid={`inspector-tail-row-${idx}`}
+                                      className="space-y-1 rounded border border-border/80 bg-background px-2 py-1.5"
+                                    >
+                                      <div className="flex items-center justify-between gap-2">
+                                        <div className="flex items-center gap-1.5">
+                                          <span
+                                            className={`inline-flex h-4 w-4 items-center justify-center rounded-full border border-foreground text-[9px] font-bold leading-none ${badgeCls}`}
+                                          >
+                                            {idx + 1}
+                                          </span>
+                                          <span className="text-[10px] font-semibold">
+                                            Tail #{idx + 1}
+                                          </span>
+                                        </div>
+
+                                        <div className="flex items-center gap-2">
+                                          <label className="flex items-center gap-1 text-[10px]">
+                                            <input
+                                              type="checkbox"
+                                              data-testid={`inspector-tail-curve-${idx}`}
+                                              checked={Boolean(tail.curved)}
+                                              onChange={(e) => {
+                                                const checked = e.target.checked;
+                                                const ctrl = checked ? defaultCurveControlForTail(tail) : null;
+                                                const nextTails = currentTails.map((item, i) =>
+                                                  i === idx
+                                                    ? {
+                                                        ...item,
+                                                        curved: checked,
+                                                        ...(ctrl ? { curveX: ctrl.x, curveY: ctrl.y } : {}),
+                                                      }
+                                                    : item
+                                                );
+                                                setB(balloonPatchWithTails(selectedBalloon, nextTails));
+                                              }}
+                                              className="accent-primary"
+                                            />
+                                            <span>Curved</span>
+                                          </label>
+                                          <button
+                                            type="button"
+                                            data-testid={`inspector-tail-delete-${idx}`}
+                                            aria-label={`Remove tail ${idx + 1}`}
+                                            title={`Remove tail ${idx + 1}`}
+                                            onClick={() => {
+                                              const nextTails = currentTails.filter((_, i) => i !== idx);
+                                              setB(balloonPatchWithTails(selectedBalloon, nextTails));
+                                            }}
+                                            className="rounded p-0.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                                          >
+                                            <Trash2 className="h-3 w-3" />
+                                          </button>
+                                        </div>
+                                      </div>
+
+                                      <label className="flex items-center gap-2 text-[10px]">
+                                        <span className="shrink-0 text-muted-foreground">
+                                          {isCloud ? "Dots" : "Width"}
+                                        </span>
+                                        <input
+                                          type="range"
+                                          min={10}
+                                          max={44}
+                                          step={2}
+                                          aria-label={`Tail ${idx + 1} width`}
+                                          value={tailW}
+                                          onChange={(e) => {
+                                            const nextWidth = +e.target.value;
+                                            const nextTails = currentTails.map((item, i) =>
+                                              i === idx ? { ...item, width: nextWidth } : item
+                                            );
+                                            setB(balloonPatchWithTails(selectedBalloon, nextTails));
+                                          }}
+                                          className="w-full accent-primary"
+                                        />
+                                        <span className="w-8 shrink-0 text-right font-mono text-[10px]">
+                                          {tailW}px
+                                        </span>
+                                      </label>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
                       <div className="grid grid-cols-2 gap-1.5">
                         <label className="block"><span className="flex justify-between"><span>Width</span><span className="font-mono">{Math.round(selectedBalloon.width)}</span></span>
                           <input type="range" min={60} max={500} value={selectedBalloon.width} onChange={(e) => setB({ width: +e.target.value })} className="w-full accent-primary" /></label>

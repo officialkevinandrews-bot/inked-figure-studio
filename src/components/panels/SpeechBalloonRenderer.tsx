@@ -1,10 +1,34 @@
 import React, { useState } from "react";
-import type { SpeechBalloon } from "@/lib/manga-effects";
-import { balloonPathFromSpec } from "@/lib/manga-effects";
+import {
+  DEFAULT_TAIL_WIDTH,
+  MAX_BALLOON_TAILS,
+  addBalloonTail,
+  balloonPatchWithTails,
+  buildBalloonRenderGeometry,
+  defaultCurveControlForTail,
+  getBalloonTails,
+  supportsBalloonTails,
+  type SpeechBalloon,
+} from "@/lib/manga-effects";
 import { computeResizedBox } from "@/lib/transform-box";
-import { Trash2, Type, AlignVerticalJustifyCenter, MessageCircle } from "lucide-react";
+import {
+  AlignVerticalJustifyCenter,
+  Minus,
+  Plus,
+  Trash2,
+  Type,
+} from "lucide-react";
 import { usePageZoom } from "./zoom-context";
 import { fontStack } from "@/lib/manga-fonts";
+
+export const BALLOON_TAIL_BADGE_CLASSES = [
+  "bg-primary text-primary-foreground",
+  "bg-sky-500 text-white",
+  "bg-emerald-500 text-white",
+  "bg-violet-500 text-white",
+  "bg-orange-500 text-white",
+  "bg-rose-500 text-white",
+] as const;
 
 interface SpeechBalloonRendererProps {
   balloon: SpeechBalloon;
@@ -37,10 +61,13 @@ export function SpeechBalloonRenderer({
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const [initialPos, setInitialPos] = useState({ x: 0, y: 0 });
   const [resizeStart, setResizeStart] = useState({ x: 0, y: 0, bx: 0, by: 0, w: 0, h: 0 });
+  const [dragTailState, setDragTailState] = useState<{
+    kind: "tip" | "curve";
+    index: number;
+  } | null>(null);
 
-  const [draggingTail, setDraggingTail] = useState(false);
-  const [draggingCurve, setDraggingCurve] = useState(false);
-  const [draggingTail2, setDraggingTail2] = useState(false);
+  const canHaveTails = supportsBalloonTails(balloon.shape);
+  const tails = canHaveTails ? getBalloonTails(balloon) : [];
 
   const handlePointerDown = (e: React.PointerEvent) => {
     e.stopPropagation();
@@ -75,33 +102,26 @@ export function SpeechBalloonRenderer({
         width: Math.max(56, next.width),
         height: Math.max(36, next.height),
       });
-    } else if (draggingTail) {
-      onChange({
-        tailX: initialPos.x + (e.clientX - dragStart.x) / zoom,
-        tailY: initialPos.y + (e.clientY - dragStart.y) / zoom,
+    } else if (dragTailState) {
+      const currentTails = getBalloonTails(balloon);
+      if (!currentTails[dragTailState.index]) return;
+      const nextX = initialPos.x + (e.clientX - dragStart.x) / zoom;
+      const nextY = initialPos.y + (e.clientY - dragStart.y) / zoom;
+      const nextTails = currentTails.map((tail, i) => {
+        if (i !== dragTailState.index) return tail;
+        if (dragTailState.kind === "tip") {
+          return { ...tail, x: nextX, y: nextY };
+        }
+        return { ...tail, curved: true, curveX: nextX, curveY: nextY };
       });
-    } else if (draggingCurve) {
-      onChange({
-        tailCurveX: initialPos.x + (e.clientX - dragStart.x) / zoom,
-        tailCurveY: initialPos.y + (e.clientY - dragStart.y) / zoom,
-      });
-    } else if (draggingTail2) {
-      onChange({
-        secondaryTail: {
-          ...(balloon.secondaryTail ?? { x: -40, y: balloon.height * 0.8 }),
-          x: initialPos.x + (e.clientX - dragStart.x) / zoom,
-          y: initialPos.y + (e.clientY - dragStart.y) / zoom,
-        },
-      });
+      onChange(balloonPatchWithTails(balloon, nextTails));
     }
   };
 
   const handlePointerUp = (e: React.PointerEvent) => {
     setDragging(false);
     setResizing(null);
-    setDraggingTail(false);
-    setDraggingCurve(false);
-    setDraggingTail2(false);
+    setDragTailState(null);
     try {
       (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
     } catch {
@@ -109,40 +129,38 @@ export function SpeechBalloonRenderer({
     }
   };
 
-  const handleTailPointerDown = (e: React.PointerEvent) => {
+  const handleTailTipPointerDown = (e: React.PointerEvent, index: number) => {
+    const tail = tails[index];
+    if (!tail) return;
     e.stopPropagation();
-    setDraggingTail(true);
+    onSelect();
+    setDragTailState({ kind: "tip", index });
     setDragStart({ x: e.clientX, y: e.clientY });
-    setInitialPos({ x: balloon.tailX ?? 0, y: balloon.tailY ?? balloon.height * 0.8 });
+    setInitialPos({ x: tail.x, y: tail.y });
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   };
 
-  const defaultCurveX = balloon.tailCurveX ?? (balloon.tailX ?? 0) * 0.55 + 24;
-  const defaultCurveY = balloon.tailCurveY ?? (balloon.tailY ?? balloon.height * 0.8) * 0.55;
-
-  const handleCurvePointerDown = (e: React.PointerEvent) => {
+  const handleTailCurvePointerDown = (e: React.PointerEvent, index: number) => {
+    const tail = tails[index];
+    if (!tail) return;
     e.stopPropagation();
-    setDraggingCurve(true);
+    onSelect();
+    const ctrl = defaultCurveControlForTail(tail);
+    setDragTailState({ kind: "curve", index });
     setDragStart({ x: e.clientX, y: e.clientY });
-    setInitialPos({ x: defaultCurveX, y: defaultCurveY });
+    setInitialPos(ctrl);
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   };
 
-  const secTailX = balloon.secondaryTail?.x ?? -48;
-  const secTailY = balloon.secondaryTail?.y ?? balloon.height * 0.8;
-
-  const handleTail2PointerDown = (e: React.PointerEvent) => {
-    e.stopPropagation();
-    setDraggingTail2(true);
-    setDragStart({ x: e.clientX, y: e.clientY });
-    setInitialPos({ x: secTailX, y: secTailY });
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-  };
-
-  const svgPath = balloonPathFromSpec(balloon);
+  const geom = buildBalloonRenderGeometry(balloon);
   const showDoubleBorder = Boolean(balloon.doubleBorder || balloon.shape === "narration");
   const showShadow = Boolean(balloon.shadow ?? balloon.shape === "narration");
   const outerStrokeW = balloon.borderWidth ?? 2.5;
+  const fillCol = balloon.backgroundColor || "#ffffff";
+  const strokeCol = balloon.borderColor || balloon.strokeColor || "#000000";
+  const strokeDash = balloon.shape === "whisper" ? "5,3" : undefined;
+  const useMergedStrokePass =
+    geom.pointedTailPaths.length > 0 && fillCol !== "transparent" && outerStrokeW > 0;
   const align = balloon.textAlign ?? (balloon.shape === "narration" ? "left" : "center");
   const justifyMap = { left: "flex-start", center: "center", right: "flex-end" } as const;
 
@@ -164,7 +182,7 @@ export function SpeechBalloonRenderer({
       onPointerUp={handlePointerUp}
       onDoubleClick={() => setIsEditing(true)}
     >
-      {/* Balloon Vector Body */}
+      {/* Balloon Vector Body + Merged Multi-Tail Outlines */}
       <svg
         style={{
           position: "absolute",
@@ -177,14 +195,78 @@ export function SpeechBalloonRenderer({
           filter: showShadow ? "drop-shadow(3px 3px 0px rgba(0, 0, 0, 0.22))" : undefined,
         }}
       >
-        <path
-          d={svgPath}
-          fill={balloon.backgroundColor || "#ffffff"}
-          stroke={balloon.borderColor || balloon.strokeColor || "#000000"}
-          strokeWidth={outerStrokeW}
-          strokeDasharray={balloon.shape === "whisper" ? "5,3" : undefined}
-          strokeLinejoin="round"
-        />
+        {useMergedStrokePass ? (
+          <>
+            {/* Pass 1: Continuous silhouette outer stroke under fill */}
+            <path
+              d={geom.bodyPath}
+              fill="none"
+              stroke={strokeCol}
+              strokeWidth={outerStrokeW * 2}
+              strokeDasharray={strokeDash}
+              strokeLinejoin="round"
+              strokeMiterlimit={3}
+            />
+            {geom.pointedTailPaths.map((tailD, idx) => (
+              <path
+                key={`tail-stroke-${tails[idx]?.id ?? idx}`}
+                d={tailD}
+                fill="none"
+                stroke={strokeCol}
+                strokeWidth={outerStrokeW * 2}
+                strokeDasharray={strokeDash}
+                strokeLinejoin="round"
+                strokeMiterlimit={3}
+              />
+            ))}
+            {/* Pass 2: Solid unified interior fill hides interior tail-base seams */}
+            <path d={geom.bodyPath} fill={fillCol} stroke="none" />
+            {geom.pointedTailPaths.map((tailD, idx) => (
+              <path
+                key={`tail-fill-${tails[idx]?.id ?? idx}`}
+                d={tailD}
+                fill={fillCol}
+                stroke="none"
+              />
+            ))}
+          </>
+        ) : (
+          <>
+            <path
+              d={geom.bodyPath}
+              fill={fillCol}
+              stroke={strokeCol}
+              strokeWidth={outerStrokeW}
+              strokeDasharray={strokeDash}
+              strokeLinejoin="round"
+            />
+            {geom.pointedTailPaths.map((tailD, idx) => (
+              <path
+                key={`tail-single-${tails[idx]?.id ?? idx}`}
+                d={tailD}
+                fill={fillCol}
+                stroke={strokeCol}
+                strokeWidth={outerStrokeW}
+                strokeDasharray={strokeDash}
+                strokeLinejoin="round"
+              />
+            ))}
+          </>
+        )}
+
+        {/* Thought-cloud trailing circles (`O o .`) */}
+        {geom.thoughtCircles.map((circle, idx) => (
+          <circle
+            key={`thought-dot-${idx}`}
+            cx={circle.cx}
+            cy={circle.cy}
+            r={circle.r}
+            fill={fillCol === "transparent" ? "#ffffff" : fillCol}
+            stroke={strokeCol}
+            strokeWidth={outerStrokeW}
+          />
+        ))}
+
         {showDoubleBorder && balloon.width > 20 && balloon.height > 20 && (
           <rect
             x={7.5}
@@ -192,7 +274,7 @@ export function SpeechBalloonRenderer({
             width={Math.max(4, balloon.width - 15)}
             height={Math.max(4, balloon.height - 15)}
             fill="none"
-            stroke={balloon.borderColor || balloon.strokeColor || "#000000"}
+            stroke={strokeCol}
             strokeWidth={Math.max(0.8, outerStrokeW * 0.42)}
           />
         )}
@@ -232,7 +314,8 @@ export function SpeechBalloonRenderer({
       </div>
 
       {/* On-canvas resize handles for balloons & narration boxes */}
-      {isSelected && !isEditing &&
+      {isSelected &&
+        !isEditing &&
         BALLOON_HANDLES.map((h) => (
           <div
             key={h.id}
@@ -262,91 +345,123 @@ export function SpeechBalloonRenderer({
           />
         ))}
 
-      {/* Draggable Tail Handles */}
-      {isSelected && balloon.hasTail && (
-        <div
-          role="button"
-          tabIndex={0}
-          aria-label="Drag primary speech tail"
-          style={{
-            position: "absolute",
-            left: `${balloon.width / 2 + (balloon.tailX ?? 0) - 6}px`,
-            top: `${balloon.height / 2 + (balloon.tailY ?? balloon.height * 0.8) - 6}px`,
-            cursor: "crosshair",
-            pointerEvents: "auto",
-            touchAction: "none",
-          }}
-          data-touch-handle="true"
-          className="w-3.5 h-3.5 bg-primary border-2 border-foreground rounded-full shadow-ink z-50 transition-transform hover:scale-125"
-          title="Drag to aim speech tail"
-          onPointerDown={handleTailPointerDown}
-          onPointerMove={handlePointerMove}
-          onPointerUp={handlePointerUp}
-          onClick={(e) => e.stopPropagation()}
-        />
-      )}
-      {isSelected && balloon.hasTail && balloon.tailCurved && (
-        <div
-          role="button"
-          tabIndex={0}
-          aria-label="Drag curved tail bend"
-          style={{
-            position: "absolute",
-            left: `${balloon.width / 2 + defaultCurveX - 5}px`,
-            top: `${balloon.height / 2 + defaultCurveY - 5}px`,
-            cursor: "grab",
-            pointerEvents: "auto",
-          }}
-          className="w-3 h-3 bg-amber-400 border-2 border-foreground rotate-45 shadow-xs z-50 transition-transform hover:scale-125"
-          title="Drag to bend curved tail"
-          onPointerDown={handleCurvePointerDown}
-          onPointerMove={handlePointerMove}
-          onPointerUp={handlePointerUp}
-          onClick={(e) => e.stopPropagation()}
-        />
-      )}
-      {isSelected && balloon.hasSecondaryTail && (
-        <div
-          role="button"
-          tabIndex={0}
-          aria-label="Drag secondary speech tail"
-          style={{
-            position: "absolute",
-            left: `${balloon.width / 2 + secTailX - 6}px`,
-            top: `${balloon.height / 2 + secTailY - 6}px`,
-            cursor: "crosshair",
-            pointerEvents: "auto",
-          }}
-          className="w-3.5 h-3.5 bg-sky-400 border-2 border-foreground rounded-full shadow-ink z-50 transition-transform hover:scale-125"
-          title="Drag to aim 2nd group dialogue tail"
-          onPointerDown={handleTail2PointerDown}
-          onPointerMove={handlePointerMove}
-          onPointerUp={handlePointerUp}
-          onClick={(e) => e.stopPropagation()}
-        />
-      )}
+      {/* Numbered, Touch-Safe Draggable Tail Tip & Curve Handles */}
+      {isSelected &&
+        !isEditing &&
+        tails.map((tail, idx) => {
+          const badgeCls = BALLOON_TAIL_BADGE_CLASSES[idx % BALLOON_TAIL_BADGE_CLASSES.length];
+          const ctrl = tail.curved ? defaultCurveControlForTail(tail) : null;
+          return (
+            <React.Fragment key={tail.id ?? idx}>
+              <div
+                role="button"
+                tabIndex={0}
+                data-touch-handle="true"
+                data-testid={`balloon-tail-handle-${idx}`}
+                aria-label={`Drag speech tail ${idx + 1}`}
+                title={`Drag tail ${idx + 1} (width ${Math.round(tail.width ?? DEFAULT_TAIL_WIDTH)}px)`}
+                style={{
+                  position: "absolute",
+                  left: `${balloon.width / 2 + tail.x - 9}px`,
+                  top: `${balloon.height / 2 + tail.y - 9}px`,
+                  cursor: "crosshair",
+                  pointerEvents: "auto",
+                  touchAction: "none",
+                }}
+                className={`z-50 flex h-[18px] w-[18px] items-center justify-center rounded-full border-2 border-foreground text-[9px] font-bold leading-none shadow-ink transition-transform hover:scale-125 ${badgeCls}`}
+                onPointerDown={(e) => handleTailTipPointerDown(e, idx)}
+                onPointerMove={handlePointerMove}
+                onPointerUp={handlePointerUp}
+                onClick={(e) => e.stopPropagation()}
+              >
+                {idx + 1}
+              </div>
+
+              {ctrl && (
+                <div
+                  role="button"
+                  tabIndex={0}
+                  data-touch-handle="true"
+                  data-testid={`balloon-curve-handle-${idx}`}
+                  aria-label={`Drag curved tail ${idx + 1} bend`}
+                  title={`Drag curve bend for tail ${idx + 1}`}
+                  style={{
+                    position: "absolute",
+                    left: `${balloon.width / 2 + ctrl.x - 6}px`,
+                    top: `${balloon.height / 2 + ctrl.y - 6}px`,
+                    cursor: "grab",
+                    pointerEvents: "auto",
+                    touchAction: "none",
+                  }}
+                  className="z-50 h-3 w-3 rotate-45 border-2 border-foreground bg-amber-400 shadow-xs transition-transform hover:scale-125"
+                  onPointerDown={(e) => handleTailCurvePointerDown(e, idx)}
+                  onPointerMove={handlePointerMove}
+                  onPointerUp={handlePointerUp}
+                  onClick={(e) => e.stopPropagation()}
+                />
+              )}
+            </React.Fragment>
+          );
+        })}
 
       {/* Selected Action Toolbar */}
       {isSelected && (
         <div
-          className="absolute -top-9 left-1/2 -translate-x-1/2 flex items-center gap-1 bg-foreground text-background px-2 py-0.5 rounded-sm shadow-ink text-[11px] z-50 pointer-events-auto"
+          className="absolute -top-9 left-1/2 -translate-x-1/2 flex items-center gap-1 whitespace-nowrap bg-foreground text-background px-2 py-0.5 rounded-sm shadow-ink text-[11px] z-50 pointer-events-auto"
           onPointerDown={(e) => e.stopPropagation()}
         >
           <button
+            type="button"
             onClick={() => onChange({ isVertical: !balloon.isVertical })}
             title="Toggle Vertical / Horizontal Text Flow"
             className={`p-1 rounded-xs ${balloon.isVertical ? "bg-primary text-primary-foreground" : "hover:bg-muted/30"}`}
           >
             <AlignVerticalJustifyCenter className="h-3 w-3" />
           </button>
+
+          {canHaveTails && (
+            <>
+              <button
+                type="button"
+                data-testid="balloon-add-tail-btn"
+                disabled={tails.length >= MAX_BALLOON_TAILS}
+                onClick={() => {
+                  const patch = addBalloonTail(balloon);
+                  if (patch) onChange(patch);
+                }}
+                title={
+                  tails.length >= MAX_BALLOON_TAILS
+                    ? `Max ${MAX_BALLOON_TAILS} tails reached`
+                    : balloon.shape === "cloud"
+                      ? "Add thought bubble dot trail"
+                      : "Add another speaker tail"
+                }
+                className="inline-flex items-center gap-0.5 rounded-xs px-1.5 py-0.5 text-[10px] font-bold hover:bg-muted/30 disabled:opacity-40"
+              >
+                <Plus className="h-3 w-3" />
+                <span>Tail</span>
+                {tails.length > 0 && (
+                  <span className="ml-0.5 font-mono text-[9px] opacity-80">{tails.length}</span>
+                )}
+              </button>
+
+              {tails.length > 0 && (
+                <button
+                  type="button"
+                  data-testid="balloon-remove-last-tail-btn"
+                  onClick={() => onChange(balloonPatchWithTails(balloon, tails.slice(0, -1)))}
+                  title="Remove last tail"
+                  aria-label="Remove last tail"
+                  className="p-1 rounded-xs hover:bg-muted/30"
+                >
+                  <Minus className="h-3 w-3" />
+                </button>
+              )}
+            </>
+          )}
+
           <button
-            onClick={() => onChange({ hasTail: !balloon.hasTail })}
-            title="Toggle Tail"
-            className="p-1 hover:bg-muted/30 rounded-xs"
-          >
-            <MessageCircle className="h-3 w-3" />
-          </button>
-          <button
+            type="button"
             onClick={() => setIsEditing(true)}
             title="Edit Text"
             className="p-1 hover:bg-muted/30 rounded-xs"
@@ -354,6 +469,7 @@ export function SpeechBalloonRenderer({
             <Type className="h-3 w-3" />
           </button>
           <button
+            type="button"
             onClick={onDelete}
             title="Delete Balloon"
             className="p-1 hover:text-destructive rounded-xs"
