@@ -5,8 +5,15 @@ import {
   MIRROR_PAIRS_2D,
   type Angle2D,
   type BodyAngleAnchors,
+  type HeadAngleAnchors2D,
+  type HeadPack2D,
   type RenderMode2D,
 } from "./character2d-types";
+import {
+  OVERLAY_HEAD_CROP_Y0,
+  OVERLAY_HEAD_H,
+  OVERLAY_HEAD_W,
+} from "./character2d-heads";
 import { defaultAnchorsForAngle } from "./character2d-model1";
 
 /**
@@ -488,4 +495,522 @@ export function tintCustomPartCanvas(
   }
   ctx.putImageData(img, 0, 0);
   return out;
+}
+
+function encodeCanvasPreferWebp(canvas: HTMLCanvasElement, quality = 0.94): string {
+  try {
+    const webp = canvas.toDataURL("image/webp", quality);
+    if (webp.startsWith("data:image/webp")) return webp;
+  } catch {
+    /* fallback below */
+  }
+  return canvas.toDataURL("image/png");
+}
+
+function scanRowSpan(
+  data: Uint8ClampedArray,
+  w: number,
+  y: number,
+  xMin: number,
+  xMax: number,
+  centerHint: number,
+): [number, number] | null {
+  const runs: [number, number][] = [];
+  let inRun = false;
+  let sx = 0;
+  for (let x = xMin; x <= xMax; x++) {
+    const op = (data[(y * w + x) * 4 + 3] ?? 0) > 40;
+    if (op && !inRun) {
+      sx = x;
+      inRun = true;
+    } else if (!op && inRun) {
+      runs.push([sx, x - 1]);
+      inRun = false;
+    }
+  }
+  if (inRun) runs.push([sx, xMax]);
+  if (runs.length === 0) return null;
+  if (runs.length === 1) return runs[0]!;
+  let best = runs[0]!;
+  let bestScore = -1e9;
+  for (const r of runs) {
+    const mid = (r[0] + r[1]) / 2;
+    const rw = r[1] - r[0] + 1;
+    const score = rw - Math.abs(mid - centerHint) * 1.5;
+    if (score > bestScore) {
+      bestScore = score;
+      best = r;
+    }
+  }
+  return best;
+}
+
+function medianNum(arr: number[]): number {
+  if (arr.length === 0) return 0;
+  const s = [...arr].sort((a, b) => a - b);
+  return s[Math.floor(s.length / 2)]!;
+}
+
+/**
+ * Measures head+neck landmarks from a normalized 480x1000 body frame OR a 220x280 head+neck overlay
+ * (returned coordinates are always expressed in canonical 480x1000 world space + overlay pivot).
+ */
+export function measureHeadAnchorsFromCanvas(
+  canvas: HTMLCanvasElement,
+  angle: Angle2D,
+  space: "body-480x1000" | "overlay-220x280" = "body-480x1000",
+): HeadAngleAnchors2D {
+  const ctx = canvas.getContext("2d");
+  const w = canvas.width;
+  const h = canvas.height;
+  const ref = defaultAnchorsForAngle(angle);
+  if (!ctx) {
+    return {
+      headCx: ref.headCx,
+      headCy: ref.headCy,
+      headRx: ref.headRx,
+      headRy: ref.headRy,
+      faceShiftX: ref.faceShiftX,
+      eyeY: ref.eyeY,
+      noseY: ref.noseY,
+      mouthY: ref.mouthY,
+      chinY: ref.chinY,
+      neckY: ref.neckY,
+      neckL: ref.neckL,
+      neckR: ref.neckR,
+      neckAttachX: OVERLAY_HEAD_W / 2,
+      neckAttachY: 230 - OVERLAY_HEAD_CROP_Y0,
+    };
+  }
+
+  const d = ctx.getImageData(0, 0, w, h).data;
+  const offsetY = space === "overlay-220x280" ? OVERLAY_HEAD_CROP_Y0 : 0;
+  const offsetX = space === "overlay-220x280" ? 240 - OVERLAY_HEAD_W / 2 : 0;
+  const xMin = 0;
+  const xMax = w - 1;
+  const centerX = w / 2;
+
+  let headTopLocal = Math.max(0, 80 - offsetY);
+  for (let y = 8; y <= Math.min(h - 40, 175 - offsetY); y++) {
+    const sp = scanRowSpan(d, w, y, xMin, xMax, centerX);
+    if (sp && sp[1] - sp[0] + 1 >= 8) {
+      headTopLocal = y;
+      break;
+    }
+  }
+  const headTopY = headTopLocal + offsetY;
+
+  let neckMinW = 999;
+  let neckL = ref.neckL;
+  let neckR = ref.neckR;
+  for (let y = 211 - offsetY; y <= Math.min(h - 1, 220 - offsetY); y++) {
+    if (y < 0) continue;
+    const sp = scanRowSpan(d, w, y, xMin, xMax, centerX);
+    if (sp) {
+      const rw = sp[1] - sp[0] + 1;
+      if (rw < neckMinW) {
+        neckMinW = rw;
+        neckL = sp[0] + offsetX;
+        neckR = sp[1] + offsetX;
+      }
+    }
+  }
+  const neckCx = (neckL + neckR) / 2;
+  const neckW = neckMinW < 999 ? neckMinW : ref.neckR - ref.neckL;
+
+  let chinY = 205;
+  if (angle === 90 || angle === 270) {
+    let peakFront = angle === 90 ? 0 : CHAR2D_W;
+    let peakY = 204;
+    for (let wy = 194; wy <= 215; wy++) {
+      const ly = wy - offsetY;
+      if (ly < 0 || ly >= h) continue;
+      const sp = scanRowSpan(d, w, ly, xMin, xMax, centerX);
+      if (!sp) continue;
+      const front = (angle === 90 ? sp[1] : sp[0]) + offsetX;
+      if (wy >= 198) {
+        if (angle === 90 && front >= peakFront - 1) {
+          peakFront = Math.max(peakFront, front);
+          peakY = wy;
+        } else if (angle === 270 && front <= peakFront + 1) {
+          peakFront = Math.min(peakFront, front);
+          peakY = wy;
+        }
+      }
+    }
+    chinY = Math.max(201, Math.min(213, peakY));
+    for (let wy = chinY; wy <= 217; wy++) {
+      const ly = wy - offsetY;
+      if (ly < 0 || ly >= h) continue;
+      const sp = scanRowSpan(d, w, ly, xMin, xMax, centerX);
+      if (!sp) continue;
+      const front = (angle === 90 ? sp[1] : sp[0]) + offsetX;
+      const dist = angle === 90 ? peakFront - front : front - peakFront;
+      if (dist >= 6) {
+        chinY = Math.max(201, Math.min(214, wy - 1));
+        break;
+      }
+    }
+  } else if (angle === 0 || angle === 45 || angle === 315) {
+    const initL: number[] = [];
+    const initR: number[] = [];
+    for (let wy = headTopY + 34; wy <= headTopY + 56; wy++) {
+      const ly = wy - offsetY;
+      if (ly < 0 || ly >= h) continue;
+      const sp = scanRowSpan(d, w, ly, xMin, xMax, centerX);
+      if (sp) {
+        initL.push(sp[0] + offsetX);
+        initR.push(sp[1] + offsetX);
+      }
+    }
+    const rawCx = initL.length ? Math.round((medianNum(initL) + medianNum(initR)) / 2) : 240;
+    const shiftHint = angle === 45 ? 10 : angle === 315 ? -10 : 0;
+    const cxLocal = rawCx + shiftHint - offsetX;
+    let darkestY = 205;
+    let darkestLum = 255;
+    for (let wy = 201; wy <= 216; wy++) {
+      const ly = wy - offsetY;
+      if (ly < 0 || ly >= h) continue;
+      let rowMin = 255;
+      for (let lx = Math.max(0, cxLocal - 4); lx <= Math.min(w - 1, cxLocal + 4); lx++) {
+        const i = (ly * w + lx) * 4;
+        if ((d[i + 3] ?? 0) < 80) continue;
+        const l = 0.299 * (d[i] ?? 255) + 0.587 * (d[i + 1] ?? 255) + 0.114 * (d[i + 2] ?? 255);
+        if (l < rowMin) rowMin = l;
+      }
+      if (rowMin < darkestLum) {
+        darkestLum = rowMin;
+        darkestY = wy;
+      }
+    }
+    if (darkestLum < 168) {
+      chinY = darkestY;
+    } else {
+      for (let wy = 200; wy <= 218; wy++) {
+        const ly = wy - offsetY;
+        if (ly < 0 || ly >= h) continue;
+        const sp = scanRowSpan(d, w, ly, xMin, xMax, centerX);
+        if (sp && sp[1] - sp[0] + 1 <= neckW + 4) {
+          chinY = Math.max(201, Math.min(214, wy - 1));
+          break;
+        }
+      }
+    }
+  } else {
+    chinY = 205;
+  }
+
+  const headH = Math.max(88, chinY - headTopY);
+  const browL: number[] = [];
+  const browR: number[] = [];
+  for (let wy = Math.round(headTopY + headH * 0.28); wy <= Math.round(headTopY + headH * 0.44); wy++) {
+    const ly = wy - offsetY;
+    if (ly < 0 || ly >= h) continue;
+    const sp = scanRowSpan(d, w, ly, xMin, xMax, centerX);
+    if (sp) {
+      browL.push(sp[0] + offsetX);
+      browR.push(sp[1] + offsetX);
+    }
+  }
+  const medL = browL.length ? medianNum(browL) : ref.headCx - ref.headRx;
+  const medR = browR.length ? medianNum(browR) : ref.headCx + ref.headRx;
+  const headCx = Math.round((medL + medR) / 2);
+  const headRx = Math.max(28, Math.round((medR - medL) / 2));
+  const headCy = Math.round((headTopY + chinY) / 2);
+  const headRy = Math.round(headH / 2);
+  const eyeY = Math.round(headTopY + headH * 0.515);
+  const noseY = Math.round(headTopY + headH * 0.698);
+  const mouthY = Math.round(headTopY + headH * 0.849);
+  const faceShiftX = Math.round(ref.faceShiftX * (headRx / Math.max(28, ref.headRx)));
+  const cropX0 = Math.round(neckCx - OVERLAY_HEAD_W / 2);
+
+  return {
+    headCx,
+    headCy,
+    headRx,
+    headRy,
+    faceShiftX,
+    eyeY,
+    noseY,
+    mouthY,
+    chinY,
+    neckY: 230,
+    neckL,
+    neckR,
+    neckAttachX: space === "overlay-220x280" ? Math.round(neckCx - offsetX) : Math.round(neckCx - cropX0),
+    neckAttachY: 230 - OVERLAY_HEAD_CROP_Y0,
+  };
+}
+
+/**
+ * Extracts a standalone transparent 220x280 Head+Neck overlay sprite from a 480x1000 body canvas,
+ * feathering cleanly at the collarbone base so it transfers seamlessly onto any other body.
+ */
+export function extractHeadNeckFromBodyCanvas(
+  bodyCanvas: HTMLCanvasElement,
+  angle: Angle2D,
+): { overlayCanvas: HTMLCanvasElement; anchors: HeadAngleAnchors2D } {
+  const anchors = measureHeadAnchorsFromCanvas(bodyCanvas, angle, "body-480x1000");
+  const neckCx = (anchors.neckL + anchors.neckR) / 2;
+  const neckW = Math.max(36, anchors.neckR - anchors.neckL);
+  const cropX0 = Math.round(neckCx - OVERLAY_HEAD_W / 2);
+
+  const out = document.createElement("canvas");
+  out.width = OVERLAY_HEAD_W;
+  out.height = OVERLAY_HEAD_H;
+  const octx = out.getContext("2d")!;
+  octx.drawImage(
+    bodyCanvas,
+    cropX0,
+    OVERLAY_HEAD_CROP_Y0,
+    OVERLAY_HEAD_W,
+    OVERLAY_HEAD_H,
+    0,
+    0,
+    OVERLAY_HEAD_W,
+    OVERLAY_HEAD_H,
+  );
+
+  const img = octx.getImageData(0, 0, OVERLAY_HEAD_W, OVERLAY_HEAD_H);
+  const d = img.data;
+  for (let oy = 0; oy < OVERLAY_HEAD_H; oy++) {
+    const y480 = oy + OVERLAY_HEAD_CROP_Y0;
+    const pastChin = y480 - (anchors.chinY + 8);
+    const halfKeepW = neckW * 0.5 + 7 + Math.max(0, y480 - (anchors.chinY + 4)) * 0.22;
+    for (let ox = 0; ox < OVERLAY_HEAD_W; ox++) {
+      const x480 = ox + cropX0;
+      const i = (oy * OVERLAY_HEAD_W + ox) * 4;
+      let a = d[i + 3] ?? 0;
+      if (a === 0) continue;
+
+      if (y480 >= 250) {
+        d[i + 3] = 0;
+        continue;
+      }
+      if (pastChin > 0) {
+        const distX = Math.abs(x480 - neckCx);
+        if (distX > halfKeepW) {
+          d[i + 3] = 0;
+          continue;
+        }
+        if (distX > halfKeepW - 3) {
+          a = Math.round(a * ((halfKeepW - distX) / 3));
+        }
+      }
+      if (y480 > anchors.neckY + 4) {
+        const vFade = Math.max(0, Math.min(1, (250 - y480) / 16));
+        a = Math.round(a * vFade);
+      }
+      d[i + 3] = a;
+    }
+  }
+  octx.putImageData(img, 0, 0);
+  return { overlayCanvas: out, anchors };
+}
+
+function buildHeadThumbDataUrl(overlayCanvas: HTMLCanvasElement, a: HeadAngleAnchors2D): string {
+  const thumb = document.createElement("canvas");
+  thumb.width = 128;
+  thumb.height = 128;
+  const ctx = thumb.getContext("2d")!;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  const topY = Math.max(0, a.headCy - a.headRy - 14 - OVERLAY_HEAD_CROP_Y0);
+  const win = Math.max(140, Math.round(a.headRy * 2 + 52));
+  const sx = Math.max(0, Math.round(a.neckAttachX - win / 2));
+  ctx.drawImage(overlayCanvas, sx, topY, Math.min(OVERLAY_HEAD_W - sx, win), Math.min(OVERLAY_HEAD_H - topY, win), 0, 0, 128, 128);
+  return encodeCanvasPreferWebp(thumb, 0.94);
+}
+
+/**
+ * Slices a user-uploaded head image (`single`, `1x5`, or `1x8`) — either dedicated head+neck art
+ * OR full-body turnaround sheets — into a reusable 8-angle `HeadPack2D` draft ready to save.
+ */
+export function sliceHeadTurnaroundSheet(
+  source: HTMLImageElement | HTMLCanvasElement,
+  mode: HeadPack2D["sheetMode"],
+  removeWhiteBg = true,
+  attachToBaseModelId?: string,
+): {
+  thumbnail: string;
+  overlayFrames: Record<Angle2D, string>;
+  bodyVariants?: Record<string, Record<Angle2D, string>>;
+  anchors: Record<Angle2D, HeadAngleAnchors2D>;
+} {
+  const w = source instanceof HTMLImageElement ? source.naturalWidth || source.width : source.width;
+  const h = source instanceof HTMLImageElement ? source.naturalHeight || source.height : source.height;
+  if (!w || !h) throw new Error("Image has zero dimensions.");
+
+  const srcCanvas = document.createElement("canvas");
+  srcCanvas.width = w;
+  srcCanvas.height = h;
+  const sctx = srcCanvas.getContext("2d");
+  if (!sctx) throw new Error("Canvas 2D unavailable.");
+  sctx.drawImage(source, 0, 0);
+
+  const raw = sctx.getImageData(0, 0, w, h);
+  let segs = mode === "single" ? [[0, w - 1] as [number, number]] : detectHorizontalSegments(raw.data, w, h);
+  const expected = mode === "sheet-8" ? 8 : mode === "sheet-5" ? 5 : 1;
+  if (segs.length !== expected) {
+    segs = Array.from({ length: expected }, (_, i) => [
+      Math.floor((w * i) / expected),
+      Math.floor((w * (i + 1)) / expected) - 1,
+    ]);
+  }
+
+  // Inspect first segment content aspect ratio to distinguish full-body vs head+neck-only uploads
+  const cleanCrops: Array<{ canvas: HTMLCanvasElement; ax0: number; ax1: number; ay0: number; ay1: number }> = [];
+  for (let i = 0; i < expected; i++) {
+    const [rx0, rx1] = segs[i]!;
+    const cx0 = Math.max(0, rx0 - 4);
+    const cx1 = Math.min(w - 1, rx1 + 4);
+    const cw = cx1 - cx0 + 1;
+    const crop = document.createElement("canvas");
+    crop.width = cw;
+    crop.height = h;
+    const cctx = crop.getContext("2d")!;
+    cctx.drawImage(srcCanvas, cx0, 0, cw, h, 0, 0, cw, h);
+    const cropImg = cctx.getImageData(0, 0, cw, h);
+    if (removeWhiteBg) {
+      knockOutWhiteBackgroundFloodFill(cropImg);
+      cctx.putImageData(cropImg, 0, 0);
+    }
+    let ax0 = cw;
+    let ax1 = 0;
+    let ay0 = h;
+    let ay1 = 0;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < cw; x++) {
+        if ((cropImg.data[(y * cw + x) * 4 + 3] ?? 0) > 20) {
+          if (x < ax0) ax0 = x;
+          if (x > ax1) ax1 = x;
+          if (y < ay0) ay0 = y;
+          if (y > ay1) ay1 = y;
+        }
+      }
+    }
+    cleanCrops.push({ canvas: crop, ax0, ax1, ay0, ay1 });
+  }
+
+  const first = cleanCrops[0]!;
+  const firstW = Math.max(1, first.ax1 - first.ax0 + 1);
+  const firstH = Math.max(1, first.ay1 - first.ay0 + 1);
+  const isFullBodySheet = mode !== "single" && firstH / firstW > 2.2;
+
+  const targetAngles: readonly Angle2D[] =
+    mode === "sheet-8" ? ANGLES_2D : mode === "sheet-5" ? ([0, 45, 90, 135, 180] as const) : ([0] as const);
+
+  const overlayCanvases = {} as Record<Angle2D, HTMLCanvasElement>;
+  const bodyCanvases = {} as Record<Angle2D, HTMLCanvasElement>;
+  const anchors = {} as Record<Angle2D, HeadAngleAnchors2D>;
+
+  targetAngles.forEach((angle, idx) => {
+    const item = cleanCrops[idx]!;
+    if (item.ax1 <= item.ax0 || item.ay1 <= item.ay0) {
+      const blank = document.createElement("canvas");
+      blank.width = OVERLAY_HEAD_W;
+      blank.height = OVERLAY_HEAD_H;
+      overlayCanvases[angle] = blank;
+      anchors[angle] = measureHeadAnchorsFromCanvas(blank, angle, "overlay-220x280");
+      return;
+    }
+    const figW = item.ax1 - item.ax0 + 1;
+    const figH = item.ay1 - item.ay0 + 1;
+
+    if (isFullBodySheet) {
+      const bodyCanvas = document.createElement("canvas");
+      bodyCanvas.width = CHAR2D_W;
+      bodyCanvas.height = CHAR2D_H;
+      const bctx = bodyCanvas.getContext("2d")!;
+      bctx.imageSmoothingEnabled = true;
+      bctx.imageSmoothingQuality = "high";
+      const scale = Math.min((CHAR2D_W * 0.92) / figW, 870 / figH);
+      const drawW = figW * scale;
+      const drawH = figH * scale;
+      bctx.drawImage(
+        item.canvas,
+        item.ax0,
+        item.ay0,
+        figW,
+        figH,
+        (CHAR2D_W - drawW) / 2,
+        950 - drawH,
+        drawW,
+        drawH,
+      );
+      bodyCanvases[angle] = bodyCanvas;
+      const extracted = extractHeadNeckFromBodyCanvas(bodyCanvas, angle);
+      overlayCanvases[angle] = extracted.overlayCanvas;
+      anchors[angle] = extracted.anchors;
+    } else {
+      // Dedicated Head+Neck upload: normalize so bottom of neck lands cleanly around y=214 in 220x280
+      const ov = document.createElement("canvas");
+      ov.width = OVERLAY_HEAD_W;
+      ov.height = OVERLAY_HEAD_H;
+      const octx = ov.getContext("2d")!;
+      octx.imageSmoothingEnabled = true;
+      octx.imageSmoothingQuality = "high";
+      const targetH = 166;
+      const scale = Math.min(156 / figW, targetH / figH);
+      const drawW = figW * scale;
+      const drawH = figH * scale;
+      const neckBotInOv = 250 - OVERLAY_HEAD_CROP_Y0; // 214
+      const dx = (OVERLAY_HEAD_W - drawW) / 2;
+      const dy = Math.max(12, neckBotInOv - drawH);
+      octx.drawImage(item.canvas, item.ax0, item.ay0, figW, figH, dx, dy, drawW, drawH);
+
+      // Feather bottom 16px linearly at neck base
+      const imgData = octx.getImageData(0, 0, OVERLAY_HEAD_W, OVERLAY_HEAD_H);
+      for (let oy = 198; oy < OVERLAY_HEAD_H; oy++) {
+        const fade = oy >= 214 ? 0 : (214 - oy) / 16;
+        for (let ox = 0; ox < OVERLAY_HEAD_W; ox++) {
+          const i = (oy * OVERLAY_HEAD_W + ox) * 4;
+          imgData.data[i + 3] = Math.round((imgData.data[i + 3] ?? 0) * fade);
+        }
+      }
+      octx.putImageData(imgData, 0, 0);
+      overlayCanvases[angle] = ov;
+      anchors[angle] = measureHeadAnchorsFromCanvas(ov, angle, "overlay-220x280");
+    }
+  });
+
+  if (mode === "sheet-5") {
+    for (const [srcAng, mirAng] of MIRROR_PAIRS_2D) {
+      overlayCanvases[mirAng] = mirrorCanvasHorizontally(overlayCanvases[srcAng]);
+      anchors[mirAng] = measureHeadAnchorsFromCanvas(overlayCanvases[mirAng], mirAng, "overlay-220x280");
+      if (isFullBodySheet && bodyCanvases[srcAng]) {
+        bodyCanvases[mirAng] = mirrorCanvasHorizontally(bodyCanvases[srcAng]);
+      }
+    }
+  } else if (mode === "single") {
+    const front = overlayCanvases[0];
+    const frontA = anchors[0];
+    for (const ang of ANGLES_2D) {
+      if (ang === 0) continue;
+      const useMirror = ang === 225 || ang === 270 || ang === 315;
+      overlayCanvases[ang] = useMirror ? mirrorCanvasHorizontally(front) : front;
+      const ref = defaultAnchorsForAngle(ang);
+      anchors[ang] = {
+        ...frontA,
+        faceShiftX: Math.round(ref.faceShiftX * (frontA.headRx / Math.max(28, ref.headRx))),
+      };
+    }
+  }
+
+  const overlayFrames = {} as Record<Angle2D, string>;
+  for (const ang of ANGLES_2D) {
+    overlayFrames[ang] = encodeCanvasPreferWebp(overlayCanvases[ang], 0.94);
+  }
+
+  let bodyVariants: Record<string, Record<Angle2D, string>> | undefined;
+  if (isFullBodySheet && attachToBaseModelId) {
+    const variantFrames = {} as Record<Angle2D, string>;
+    for (const ang of ANGLES_2D) {
+      variantFrames[ang] = encodeCanvasPreferWebp(bodyCanvases[ang], 0.94);
+    }
+    bodyVariants = { [attachToBaseModelId]: variantFrames };
+  }
+
+  const thumbnail = buildHeadThumbDataUrl(overlayCanvases[0], anchors[0]);
+  return { thumbnail, overlayFrames, bodyVariants, anchors };
 }

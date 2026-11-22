@@ -65,6 +65,45 @@ export interface BodyAngleAnchors {
   footLength: number;
 }
 
+export interface HeadAngleAnchors2D {
+  headCx: number;
+  headCy: number;
+  headRx: number;
+  headRy: number;
+  faceShiftX: number;
+  eyeY: number;
+  noseY: number;
+  mouthY: number;
+  chinY: number;
+  neckY: number;
+  neckL: number;
+  neckR: number;
+  /** Pivot X/Y inside the standalone 220x280 overlay sprite where the neck meets the body. */
+  neckAttachX: number;
+  neckAttachY: number;
+}
+
+export interface HeadFit2D {
+  scale: number; // 0.85..1.15
+  offsetY: number; // -16..16 px
+}
+
+export interface HeadPack2D {
+  id: string;
+  name: string;
+  subtitle?: string;
+  builtIn: boolean;
+  sheetMode: "sheet-8" | "sheet-5" | "single";
+  createdAt: number;
+  thumbnail: string;
+  /** Standalone transparent head+neck sprites per 45° angle (for attaching onto ANY body). */
+  overlayFrames: Record<Angle2D, string>;
+  /** Optional body-matched seamless full-body frames keyed by baseModelId -> angle -> src. */
+  bodyVariants?: Record<string, Record<Angle2D, string>>;
+  /** Measured 480x1000 head landmarks & overlay neck attach pivot per angle. */
+  anchors: Record<Angle2D, HeadAngleAnchors2D>;
+}
+
 export interface BaseModel2D {
   id: string;
   name: string;
@@ -137,6 +176,8 @@ export interface Character2D {
   id: string;
   name: string;
   baseModelId: string;
+  headShapeId?: string;
+  headFit?: HeadFit2D;
   createdAt: number;
   updatedAt: number;
   angle: Angle2D;
@@ -312,6 +353,8 @@ export function createDefaultCharacter2D(name = "Hero #1"): Character2D {
     id: `char2d-${now}-${Math.random().toString(36).slice(2, 6)}`,
     name,
     baseModelId: "male-athletic-v1",
+    headShapeId: "classic-oval",
+    headFit: { scale: 1, offsetY: 0 },
     createdAt: now,
     updatedAt: now,
     angle: 0,

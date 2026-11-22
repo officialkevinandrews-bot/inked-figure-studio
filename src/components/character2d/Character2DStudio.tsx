@@ -55,31 +55,42 @@ import {
   type FaceFx2D,
   type FootwearStyle2D,
   type HairStyle2D,
+  type HeadPack2D,
   type MouthStyle2D,
   type NoseStyle2D,
   type RenderMode2D,
   type Source2DMetadata,
   type TopStyle2D,
 } from "@/lib/character2d-types";
+import {
+  BUILTIN_HEAD_PACKS_2D,
+  resolveHeadPack2D,
+} from "@/lib/character2d-heads";
 import { BUILTIN_MODEL_MALE_ATHLETIC_V1 } from "@/lib/character2d-model1";
 import {
   deleteUploadedBaseModel2D,
   deleteUploadedCustomPart2D,
+  deleteUploadedHeadPack2D,
   ensureCharacters2DInitialized,
   loadCustomBaseModels2D,
+  loadCustomHeads2D,
   loadCustomParts2D,
+  loadImageElement2D,
   removeCharacter2D,
   resolveBaseModel2D,
   saveUploadedBaseModel2D,
   saveUploadedCustomPart2D,
+  saveUploadedHeadPack2D,
   upsertCharacter2D,
 } from "@/lib/character2d-store";
 import {
   prepareSinglePartImage,
+  sliceHeadTurnaroundSheet,
   sliceTurnaroundSheet,
 } from "@/lib/character2d-slicer";
 import {
   exportCharacter2DPng,
+  isUsingSeamlessHeadVariant,
   preloadCharacter2DImages,
   renderCharacter2DSync,
   resolveEffectiveAnchors,
@@ -154,6 +165,33 @@ function loadImageFile(file: File): Promise<HTMLImageElement> {
   });
 }
 
+function HeadThumbImg({ src, alt }: { src: string; alt: string }) {
+  const [resolved, setResolved] = useState<string>(() =>
+    src && !src.startsWith("idb://") ? src : "",
+  );
+  useEffect(() => {
+    if (!src) {
+      setResolved("");
+      return;
+    }
+    if (!src.startsWith("idb://")) {
+      setResolved(src);
+      return;
+    }
+    let alive = true;
+    loadImageElement2D(src).then((img) => {
+      if (alive && img?.src) setResolved(img.src);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [src]);
+  if (!resolved) {
+    return <div className="h-12 w-12 rounded-xs bg-muted animate-pulse" />;
+  }
+  return <img src={resolved} alt={alt} className="h-12 w-12 object-contain mx-auto" />;
+}
+
 export function Character2DStudio({
   panels,
   elementCount,
@@ -170,8 +208,9 @@ export function Character2DStudio({
     return ensureCharacters2DInitialized()[0]?.id ?? "";
   });
   const [customModels, setCustomModels] = useState<BaseModel2D[]>(() => loadCustomBaseModels2D());
+  const [customHeads, setCustomHeads] = useState<HeadPack2D[]>(() => loadCustomHeads2D());
   const [customParts, setCustomParts] = useState<CustomPartAsset2D[]>(() => loadCustomParts2D());
-  const [inspectorTab, setInspectorTab] = useState<InspectorTab2D>("clothes");
+  const [inspectorTab, setInspectorTab] = useState<InspectorTab2D>("face");
   const [backdrop, setBackdrop] = useState<"checker" | "paper" | "dark">("checker");
   const [cameraZoom, setCameraZoom] = useState<"full" | "face">("full");
   const [targetPanelId, setTargetPanelId] = useState<string>(() => panels[0]?.id ?? "");
@@ -190,6 +229,17 @@ export function Character2DStudio({
   } | null>(null);
   const [modelUploadBusy, setModelUploadBusy] = useState(false);
   const [modelUploadErr, setModelUploadErr] = useState<string | null>(null);
+
+  // Custom Head Upload Wizard State
+  const [headUploadOpen, setHeadUploadOpen] = useState(false);
+  const [headUploadMode, setHeadUploadMode] = useState<HeadPack2D["sheetMode"]>("sheet-8");
+  const [headUploadName, setHeadUploadName] = useState("");
+  const [headUploadRemoveBg, setHeadUploadRemoveBg] = useState(true);
+  const [headPreview, setHeadPreview] = useState<ReturnType<typeof sliceHeadTurnaroundSheet> | null>(
+    null,
+  );
+  const [headUploadBusy, setHeadUploadBusy] = useState(false);
+  const [headUploadErr, setHeadUploadErr] = useState<string | null>(null);
 
   // Custom Part Upload Wizard State
   const [partUploadMode, setPartUploadMode] = useState<CustomPartAsset2D["kind"]>("single");
@@ -252,6 +302,14 @@ export function Character2DStudio({
     () => resolveBaseModel2D(activeChar.baseModelId, customModels),
     [activeChar.baseModelId, customModels],
   );
+  const allHeadPacks = useMemo(
+    () => [...BUILTIN_HEAD_PACKS_2D, ...customHeads],
+    [customHeads],
+  );
+  const activeHeadPack = useMemo(
+    () => resolveHeadPack2D(activeChar.headShapeId, customHeads),
+    [activeChar.headShapeId, customHeads],
+  );
 
   const updateActiveChar = (updater: (cur: Character2D) => Character2D) => {
     setCharacters((prev) => {
@@ -260,11 +318,16 @@ export function Character2DStudio({
     });
   };
 
-  // Render preview canvas whenever character/model/parts/zoom change
+  // Render preview canvas whenever character/model/head/parts/zoom change
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const imageMap = await preloadCharacter2DImages(activeChar, activeBaseModel, customParts);
+      const imageMap = await preloadCharacter2DImages(
+        activeChar,
+        activeBaseModel,
+        customParts,
+        activeHeadPack,
+      );
       if (cancelled) return;
       const canvas = canvasRef.current;
       if (!canvas) return;
@@ -284,20 +347,32 @@ export function Character2DStudio({
       ctx.scale(dpr, dpr);
 
       if (cameraZoom === "face") {
-        const anchors = resolveEffectiveAnchors(activeBaseModel, activeChar, activeChar.angle);
+        const anchors = resolveEffectiveAnchors(
+          activeBaseModel,
+          activeChar,
+          activeChar.angle,
+          activeHeadPack,
+        );
         const z = 2.65;
         ctx.translate(CHAR2D_W / 2, CHAR2D_H * 0.44);
         ctx.scale(z, z);
         ctx.translate(-anchors.headCx, -(anchors.headCy + 28));
       }
 
-      renderCharacter2DSync(ctx, activeChar, activeBaseModel, customParts, imageMap);
+      renderCharacter2DSync(
+        ctx,
+        activeChar,
+        activeBaseModel,
+        customParts,
+        imageMap,
+        activeHeadPack,
+      );
       ctx.restore();
     })();
     return () => {
       cancelled = true;
     };
-  }, [activeChar, activeBaseModel, customParts, cameraZoom]);
+  }, [activeChar, activeBaseModel, activeHeadPack, customParts, cameraZoom]);
 
   const handleCreateCharacter = () => {
     const fresh = createDefaultCharacter2D(`Character ${characters.length + 1}`);
@@ -348,7 +423,13 @@ export function Character2DStudio({
   const handleStamp = async () => {
     setExportBusy(true);
     try {
-      const png = await exportCharacter2DPng(activeChar, activeBaseModel, customParts, 2);
+      const png = await exportCharacter2DPng(
+        activeChar,
+        activeBaseModel,
+        customParts,
+        2,
+        activeHeadPack,
+      );
       if (!png) return;
       if (editingTarget) {
         onUpdatePanelElement(editingTarget.elementId, png, buildSourceMetadata());
@@ -363,7 +444,13 @@ export function Character2DStudio({
   const handleDownloadPng = async () => {
     setExportBusy(true);
     try {
-      const png = await exportCharacter2DPng(activeChar, activeBaseModel, customParts, 2);
+      const png = await exportCharacter2DPng(
+        activeChar,
+        activeBaseModel,
+        customParts,
+        2,
+        activeHeadPack,
+      );
       if (!png) return;
       const a = document.createElement("a");
       a.href = png;
@@ -409,6 +496,55 @@ export function Character2DStudio({
       setModelUploadName("");
     } finally {
       setModelUploadBusy(false);
+    }
+  };
+
+  const handleHeadFilePick = async (file: File | undefined) => {
+    if (!file) return;
+    setHeadUploadBusy(true);
+    setHeadUploadErr(null);
+    try {
+      const img = await loadImageFile(file);
+      const sliced = sliceHeadTurnaroundSheet(
+        img,
+        headUploadMode,
+        headUploadRemoveBg,
+        activeBaseModel.id,
+      );
+      setHeadPreview(sliced);
+      if (!headUploadName.trim()) {
+        setHeadUploadName(file.name.replace(/\.[^.]+$/, ""));
+      }
+    } catch (err) {
+      setHeadUploadErr(err instanceof Error ? err.message : "Failed to slice head sheet.");
+    } finally {
+      setHeadUploadBusy(false);
+    }
+  };
+
+  const handleCommitCustomHead = async () => {
+    if (!headPreview) return;
+    setHeadUploadBusy(true);
+    try {
+      const saved = await saveUploadedHeadPack2D({
+        name: headUploadName || `Custom Head ${customHeads.length + 1}`,
+        sheetMode: headUploadMode,
+        thumbnail: headPreview.thumbnail,
+        overlayFrames: headPreview.overlayFrames,
+        bodyVariants: headPreview.bodyVariants,
+        anchors: headPreview.anchors,
+      });
+      setCustomHeads((prev) => [...prev, saved]);
+      updateActiveChar((c) => ({
+        ...c,
+        headShapeId: saved.id,
+        headFit: { scale: 1, offsetY: 0 },
+      }));
+      setHeadPreview(null);
+      setHeadUploadName("");
+      setHeadUploadOpen(false);
+    } finally {
+      setHeadUploadBusy(false);
     }
   };
 
@@ -511,7 +647,20 @@ export function Character2DStudio({
         : "bg-[radial-gradient(#cbd5e1_1px,transparent_1px)] [background-size:16px_16px] bg-slate-100";
 
   const isRearAngle = isBackFacingAngle2D(activeChar.angle);
-  const currentAnchors = resolveEffectiveAnchors(activeBaseModel, activeChar, activeChar.angle);
+  const currentAnchors = resolveEffectiveAnchors(
+    activeBaseModel,
+    activeChar,
+    activeChar.angle,
+    activeHeadPack,
+  );
+  const isSeamlessHeadMode = isUsingSeamlessHeadVariant(
+    activeBaseModel,
+    activeChar,
+    activeChar.angle,
+    activeHeadPack,
+  );
+  const headFitScale = activeChar.headFit?.scale ?? 1;
+  const headFitOffsetY = activeChar.headFit?.offsetY ?? 0;
 
   return (
     <div
@@ -872,6 +1021,242 @@ export function Character2DStudio({
                     Rear view ({activeChar.angle}°) hides facial features. Rotate to 0°, 45°, 90°, 270°, or 315° to preview edits.
                   </div>
                 )}
+
+                {/* Head & Neck Shape Picker */}
+                <div className="space-y-2 border-b border-border pb-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-bold">Head &amp; Neck Shape ({allHeadPacks.length})</span>
+                    <span
+                      className={`rounded-xs border px-1.5 py-0.5 text-[10px] font-bold ${isSeamlessHeadMode ? "border-emerald-600/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" : "border-blue-600/40 bg-blue-500/10 text-blue-700 dark:text-blue-300"}`}
+                      title={
+                        isSeamlessHeadMode
+                          ? "Using full body-matched variant for this body"
+                          : "Compositing Head+Neck unit cleanly onto active body collarbone"
+                      }
+                    >
+                      {isSeamlessHeadMode ? "Seamless Body Fit" : "Head+Neck Attached"}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-4 gap-1.5">
+                    {allHeadPacks.map((head) => {
+                      const sel = activeHeadPack.id === head.id;
+                      return (
+                        <div key={head.id} className="relative group">
+                          <button
+                            type="button"
+                            data-testid={`char2d-head-${head.id}`}
+                            onClick={() =>
+                              updateActiveChar((c) => ({
+                                ...c,
+                                headShapeId: head.id,
+                              }))
+                            }
+                            title={`${head.name}${head.subtitle ? ` — ${head.subtitle}` : ""}`}
+                            className={`w-full rounded-xs border p-1 text-center transition-colors ${sel ? "border-primary bg-primary/15 ring-1 ring-primary" : "border-border bg-white/95 hover:border-foreground dark:bg-slate-900/90"}`}
+                          >
+                            <div className="rounded-xs bg-white p-0.5">
+                              <HeadThumbImg src={head.thumbnail} alt={head.name} />
+                            </div>
+                            <span className="mt-1 block truncate text-[10px] font-bold text-foreground">
+                              {head.name}
+                            </span>
+                          </button>
+                          {!head.builtIn && (
+                            <button
+                              type="button"
+                              aria-label={`Delete ${head.name}`}
+                              onClick={async () => {
+                                const next = await deleteUploadedHeadPack2D(head);
+                                setCustomHeads(next);
+                                if (activeChar.headShapeId === head.id) {
+                                  updateActiveChar((c) => ({
+                                    ...c,
+                                    headShapeId: "classic-oval",
+                                  }));
+                                }
+                              }}
+                              className="absolute -top-1 -right-1 rounded-full border border-foreground bg-destructive p-0.5 text-white opacity-90 hover:opacity-100"
+                            >
+                              <Trash2 className="h-2.5 w-2.5" />
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Cross-body Head+Neck Fit Adjustment Sliders */}
+                  <div className="rounded-xs border border-border bg-muted/25 p-2 space-y-1.5">
+                    <div className="flex items-center justify-between text-[10px] font-bold">
+                      <span>Head+Neck Fit (For Other Bodies)</span>
+                      {(headFitScale !== 1 || headFitOffsetY !== 0) && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            updateActiveChar((c) => ({
+                              ...c,
+                              headFit: { scale: 1, offsetY: 0 },
+                            }))
+                          }
+                          className="text-primary hover:underline"
+                        >
+                          Reset
+                        </button>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 text-[10px]">
+                      <label>
+                        <span className="flex justify-between">
+                          <span>Head Size</span>
+                          <span className="font-mono">{Math.round(headFitScale * 100)}%</span>
+                        </span>
+                        <input
+                          type="range"
+                          min={0.85}
+                          max={1.15}
+                          step={0.01}
+                          value={headFitScale}
+                          onChange={(e) =>
+                            updateActiveChar((c) => ({
+                              ...c,
+                              headFit: {
+                                scale: +e.target.value,
+                                offsetY: c.headFit?.offsetY ?? 0,
+                              },
+                            }))
+                          }
+                          className="w-full accent-primary"
+                        />
+                      </label>
+                      <label>
+                        <span className="flex justify-between">
+                          <span>Neck Height</span>
+                          <span className="font-mono">{headFitOffsetY}px</span>
+                        </span>
+                        <input
+                          type="range"
+                          min={-16}
+                          max={16}
+                          step={1}
+                          value={headFitOffsetY}
+                          onChange={(e) =>
+                            updateActiveChar((c) => ({
+                              ...c,
+                              headFit: {
+                                scale: c.headFit?.scale ?? 1,
+                                offsetY: +e.target.value,
+                              },
+                            }))
+                          }
+                          className="w-full accent-primary"
+                        />
+                      </label>
+                    </div>
+                  </div>
+
+                  {/* Custom Head Uploader */}
+                  <div className="rounded-xs border border-border bg-background">
+                    <button
+                      type="button"
+                      onClick={() => setHeadUploadOpen((v) => !v)}
+                      className="flex w-full items-center justify-between px-2.5 py-1.5 text-[11px] font-bold hover:bg-muted/40"
+                    >
+                      <span className="flex items-center gap-1.5">
+                        <Upload className="h-3.5 w-3.5 text-primary" />
+                        <span>Upload Custom Head + Neck</span>
+                      </span>
+                      <span className="text-[10px] text-muted-foreground">
+                        {headUploadOpen ? "Hide" : "1×8 / 1×5 / Single"}
+                      </span>
+                    </button>
+                    {headUploadOpen && (
+                      <div className="space-y-2 border-t border-border p-2.5">
+                        <div className="grid grid-cols-3 gap-1">
+                          {(
+                            [
+                              { id: "sheet-8", label: "1×8 Sheet" },
+                              { id: "sheet-5", label: "1×5 Mirror" },
+                              { id: "single", label: "Single Head" },
+                            ] as const
+                          ).map((m) => (
+                            <button
+                              key={m.id}
+                              type="button"
+                              onClick={() => setHeadUploadMode(m.id)}
+                              className={`rounded-xs border py-1 text-[10px] font-bold ${headUploadMode === m.id ? "border-foreground bg-foreground text-background" : "border-border bg-background"}`}
+                            >
+                              {m.label}
+                            </button>
+                          ))}
+                        </div>
+                        <input
+                          type="text"
+                          placeholder="Head name (e.g. Demon Jaw / Stoic)"
+                          value={headUploadName}
+                          onChange={(e) => setHeadUploadName(e.target.value)}
+                          className="w-full rounded-xs border border-input bg-background px-2 py-1 text-[11px]"
+                        />
+                        <label className="flex items-center gap-1.5 text-[10px]">
+                          <input
+                            type="checkbox"
+                            checked={headUploadRemoveBg}
+                            onChange={(e) => setHeadUploadRemoveBg(e.target.checked)}
+                            className="accent-primary"
+                          />
+                          <span>Auto-remove white paper background</span>
+                        </label>
+                        <label className="flex cursor-pointer items-center justify-center gap-1.5 rounded-xs border-2 border-dashed border-foreground/50 bg-muted/20 py-1.5 text-[11px] font-semibold hover:border-primary">
+                          <Upload className="h-3.5 w-3.5 text-primary" />
+                          <span>
+                            {headUploadBusy
+                              ? "Extracting Head+Neck…"
+                              : "Choose Head+Neck or Turnaround Image"}
+                          </span>
+                          <input
+                            type="file"
+                            accept="image/*"
+                            data-testid="char2d-upload-head-input"
+                            className="hidden"
+                            onChange={(e) => {
+                              void handleHeadFilePick(e.target.files?.[0]);
+                              e.target.value = "";
+                            }}
+                          />
+                        </label>
+                        {headUploadErr && (
+                          <p className="text-[10px] text-destructive">{headUploadErr}</p>
+                        )}
+                        {headPreview && (
+                          <div className="space-y-1.5 pt-1">
+                            <div className="grid grid-cols-4 gap-1 rounded-xs border border-border bg-white p-1">
+                              {ANGLES_2D.map((ang) => (
+                                <div key={ang} className="text-center">
+                                  <img
+                                    src={headPreview.overlayFrames[ang]}
+                                    alt={`${ang}° head`}
+                                    className="mx-auto h-12 object-contain"
+                                  />
+                                  <span className="font-mono text-[9px] text-slate-600">
+                                    {ang}°
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                            <button
+                              type="button"
+                              disabled={headUploadBusy}
+                              onClick={handleCommitCustomHead}
+                              className="w-full rounded-xs border-2 border-foreground bg-primary py-1.5 text-[11px] font-bold text-primary-foreground"
+                            >
+                              Save &amp; Equip Head
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
 
                 <div className="space-y-1.5">
                   <span className="font-bold block">Expression Presets</span>
@@ -1291,6 +1676,20 @@ export function Character2DStudio({
                       );
                     })}
                   </div>
+                </div>
+
+                <div className="flex items-center justify-between gap-2 rounded-xs border border-border bg-muted/25 px-2.5 py-1.5 text-[11px]">
+                  <div className="min-w-0">
+                    <span className="text-muted-foreground block text-[10px]">Active Head Shape</span>
+                    <span className="font-bold truncate block">{activeHeadPack.name}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setInspectorTab("face")}
+                    className="shrink-0 rounded-xs border border-foreground bg-background px-2 py-1 text-[10px] font-bold hover:border-primary"
+                  >
+                    Change Head Shape →
+                  </button>
                 </div>
 
                 <div className="space-y-1.5 border-t border-border pt-3">

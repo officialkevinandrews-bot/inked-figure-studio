@@ -9,15 +9,20 @@ import {
   stepAngle2D,
 } from "./character2d-types";
 import { BUILTIN_MODEL_MALE_ATHLETIC_V1, MODEL1_ANCHORS } from "./character2d-model1";
+import { BUILTIN_HEAD_PACKS_2D, DEFAULT_HEAD_SHAPE_ID, resolveHeadPack2D } from "./character2d-heads";
+import { resolveEffectiveAnchors } from "./character2d-draw";
 import {
   BASE_MODELS_2D_STORAGE_KEY,
   CHAR2D_STORAGE_KEY,
+  HEADS_2D_STORAGE_KEY,
   PARTS_2D_STORAGE_KEY,
   ensureCharacters2DInitialized,
   loadCharacters2D,
+  loadCustomHeads2D,
   removeCharacter2D,
   resolveBaseModel2D,
   saveCustomBaseModels2D,
+  saveCustomHeads2D,
   saveCustomParts2D,
   upsertCharacter2D,
 } from "./character2d-store";
@@ -90,7 +95,78 @@ describe("2D Character Creator Studio data model & Model #1", () => {
     expect(afterRemove).toHaveLength(1);
 
     saveCustomBaseModels2D([]);
+    saveCustomHeads2D([]);
     saveCustomParts2D([]);
     expect(resolveBaseModel2D("non-existent").id).toBe("male-athletic-v1");
+  });
+
+  it("exposes all 8 built-in head+neck packs, adapts neck/jaw landmarks, and supports cross-body fit", () => {
+    expect(LEGACY_EXACT_KEYS).toContain(HEADS_2D_STORAGE_KEY);
+    expect(BUILTIN_HEAD_PACKS_2D).toHaveLength(8);
+    expect(DEFAULT_HEAD_SHAPE_ID).toBe("classic-oval");
+
+    const ids = BUILTIN_HEAD_PACKS_2D.map((h) => h.id);
+    expect(ids).toEqual([
+      "classic-oval",
+      "slim-tapered",
+      "soft-oval",
+      "round-youthful",
+      "angular-chiseled",
+      "long-slender",
+      "strong-square",
+      "sharp-v",
+    ]);
+
+    for (const pack of BUILTIN_HEAD_PACKS_2D) {
+      expect(pack.builtIn).toBe(true);
+      expect(pack.thumbnail).toBe(`/characters/heads/${pack.id}/thumb.webp`);
+      for (const angle of ANGLES_2D) {
+        expect(pack.overlayFrames[angle]).toBe(`/characters/heads/${pack.id}/angle-${angle}.webp`);
+        const expectedBodyVar =
+          pack.id === "classic-oval"
+            ? `/characters/male-athletic-v1/angle-${angle}.png`
+            : `/characters/male-athletic-v1/heads/${pack.id}/angle-${angle}.webp`;
+        expect(pack.bodyVariants?.["male-athletic-v1"]?.[angle]).toBe(expectedBodyVar);
+        const ha = pack.anchors[angle];
+        expect(ha.headRx).toBeGreaterThan(24);
+        expect(ha.chinY).toBeGreaterThan(190);
+        expect(ha.neckAttachX).toBe(110);
+      }
+    }
+
+    const baseChar = createDefaultCharacter2D("Head Tester");
+    const classicA = resolveEffectiveAnchors(BUILTIN_MODEL_MALE_ATHLETIC_V1, baseChar, 0);
+    const squareA = resolveEffectiveAnchors(BUILTIN_MODEL_MALE_ATHLETIC_V1, {
+      ...baseChar,
+      headShapeId: "strong-square",
+    }, 0);
+    expect(squareA.neckR - squareA.neckL).toBeGreaterThan(classicA.neckR - classicA.neckL);
+
+    // Cross-body fit transforms head/face positions relative to collarbone pivot
+    const raisedFitA = resolveEffectiveAnchors(
+      BUILTIN_MODEL_MALE_ATHLETIC_V1,
+      { ...baseChar, headShapeId: "sharp-v", headFit: { scale: 1.1, offsetY: -10 } },
+      0,
+    );
+    const defaultFitA = resolveEffectiveAnchors(
+      BUILTIN_MODEL_MALE_ATHLETIC_V1,
+      { ...baseChar, headShapeId: "sharp-v", headFit: { scale: 1, offsetY: 0 } },
+      0,
+    );
+    expect(raisedFitA.eyeY).toBeLessThan(defaultFitA.eyeY);
+    expect(raisedFitA.headRx).toBeGreaterThan(defaultFitA.headRx);
+
+    // Custom head persistence + graceful fallback for missing/legacy headShapeId
+    const customHead = {
+      ...BUILTIN_HEAD_PACKS_2D[0]!,
+      id: "custom-head-test",
+      name: "Custom Test Head",
+      builtIn: false,
+    };
+    saveCustomHeads2D([customHead]);
+    expect(loadCustomHeads2D()).toHaveLength(1);
+    expect(resolveHeadPack2D(undefined, loadCustomHeads2D()).id).toBe("classic-oval");
+    expect(resolveHeadPack2D("custom-head-test", loadCustomHeads2D()).name).toBe("Custom Test Head");
+    expect(resolveHeadPack2D("unknown-head-id", loadCustomHeads2D()).id).toBe("classic-oval");
   });
 });

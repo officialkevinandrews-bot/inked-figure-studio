@@ -14,10 +14,17 @@ import {
   type CustomLayerInstance2D,
   type CustomPartAsset2D,
   type EyeStyle2D,
+  type HeadAngleAnchors2D,
+  type HeadPack2D,
   type MouthStyle2D,
   type NoseStyle2D,
   type RenderMode2D,
 } from "./character2d-types";
+import {
+  OVERLAY_HEAD_H,
+  OVERLAY_HEAD_W,
+  resolveHeadPack2D,
+} from "./character2d-heads";
 import {
   applySkinToneCanvas,
   extractMangaLineartCanvas,
@@ -38,6 +45,91 @@ function putProcessedCache(key: string, val: HTMLCanvasElement): HTMLCanvasEleme
   }
   PROCESSED_SPRITE_CACHE.set(key, val);
   return val;
+}
+
+export function isUsingSeamlessHeadVariant(
+  baseModel: BaseModel2D,
+  char: Character2D,
+  angle: Angle2D,
+  headPack?: HeadPack2D,
+): boolean {
+  const head = headPack ?? resolveHeadPack2D(char.headShapeId);
+  const scale = char.headFit?.scale ?? 1;
+  const offsetY = char.headFit?.offsetY ?? 0;
+  return (
+    Boolean(head.bodyVariants?.[baseModel.id]?.[angle]) &&
+    Math.abs(scale - 1) < 0.005 &&
+    Math.abs(offsetY) < 0.5
+  );
+}
+
+function getProcessedCompositedBaseSprite(
+  baseImg: HTMLImageElement,
+  baseSrc: string,
+  headOverlayImg: HTMLImageElement | undefined,
+  headSrc: string,
+  baseAnchors: BodyAngleAnchors,
+  headAnchors: HeadAngleAnchors2D | undefined,
+  fitScale: number,
+  fitOffsetY: number,
+  mode: RenderMode2D,
+  skinTone: string | null,
+): HTMLCanvasElement {
+  const key = `comp|${baseSrc}|${headSrc}|${fitScale.toFixed(2)}|${fitOffsetY}|${mode}|${skinTone ?? "orig"}`;
+  const hit = PROCESSED_SPRITE_CACHE.get(key);
+  if (hit) return hit;
+
+  if (!headOverlayImg || !headAnchors) {
+    return getProcessedBaseSprite(baseImg, baseSrc, mode, skinTone);
+  }
+
+  const merged = document.createElement("canvas");
+  merged.width = CHAR2D_W;
+  merged.height = CHAR2D_H;
+  const ctx = merged.getContext("2d")!;
+  ctx.drawImage(baseImg, 0, 0, CHAR2D_W, CHAR2D_H);
+
+  // Erase existing base head+neck strictly inside the neck column so base shoulders/trapezius stay 100% intact
+  const targetNeckCx = (baseAnchors.neckL + baseAnchors.neckR) / 2;
+  const targetNeckY = baseAnchors.neckY + fitOffsetY;
+  const scoopY = Math.min(baseAnchors.neckY + 2, targetNeckY + 4);
+  const neckMinX = baseAnchors.neckL - 3;
+  const neckMaxX = baseAnchors.neckR + 3;
+
+  ctx.save();
+  ctx.globalCompositeOperation = "destination-out";
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.lineTo(CHAR2D_W, 0);
+  ctx.lineTo(CHAR2D_W, baseAnchors.chinY + 2);
+  ctx.lineTo(neckMaxX + 4, baseAnchors.chinY + 4);
+  ctx.quadraticCurveTo(neckMaxX, scoopY - 2, targetNeckCx, scoopY);
+  ctx.quadraticCurveTo(neckMinX, scoopY - 2, neckMinX - 4, baseAnchors.chinY + 4);
+  ctx.lineTo(0, baseAnchors.chinY + 2);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+
+  // Draw standalone Head+Neck overlay aligned onto target collarbone pivot
+  ctx.save();
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  const dx = targetNeckCx - headAnchors.neckAttachX * fitScale;
+  const dy = targetNeckY - headAnchors.neckAttachY * fitScale;
+  ctx.drawImage(
+    headOverlayImg,
+    dx,
+    dy,
+    OVERLAY_HEAD_W * fitScale,
+    OVERLAY_HEAD_H * fitScale,
+  );
+  ctx.restore();
+
+  const processed =
+    mode === "manga"
+      ? extractMangaLineartCanvas(merged, CHAR2D_W, CHAR2D_H)
+      : applySkinToneCanvas(merged, skinTone, CHAR2D_W, CHAR2D_H);
+  return putProcessedCache(key, processed);
 }
 
 function getProcessedBaseSprite(
@@ -223,11 +315,61 @@ export function resolveEffectiveAnchors(
   model: BaseModel2D,
   char: Character2D,
   angle: Angle2D,
+  headPack?: HeadPack2D,
 ): BodyAngleAnchors {
   const base = model.anchors[angle];
+  const head = headPack ?? resolveHeadPack2D(char.headShapeId);
+  const ha = head.anchors[angle];
+  const fitScale = Math.max(0.75, Math.min(1.25, char.headFit?.scale ?? 1));
+  const fitOffsetY = char.headFit?.offsetY ?? 0;
+  const seamless = isUsingSeamlessHeadVariant(model, char, angle, head);
+
+  let merged: BodyAngleAnchors = base;
+  if (ha) {
+    if (seamless) {
+      merged = {
+        ...base,
+        headCx: ha.headCx,
+        headCy: ha.headCy,
+        headRx: ha.headRx,
+        headRy: ha.headRy,
+        faceShiftX: ha.faceShiftX,
+        eyeY: ha.eyeY,
+        noseY: ha.noseY,
+        mouthY: ha.mouthY,
+        chinY: ha.chinY,
+        neckY: ha.neckY,
+        neckL: ha.neckL,
+        neckR: ha.neckR,
+      };
+    } else {
+      const targetNeckCx = (base.neckL + base.neckR) / 2;
+      const targetNeckY = base.neckY + fitOffsetY;
+      const worldNeckCx = (ha.neckL + ha.neckR) / 2;
+      const mapX = (wx: number) => Math.round(targetNeckCx + (wx - worldNeckCx) * fitScale);
+      const mapY = (wy: number) => Math.round(targetNeckY + (wy - ha.neckY) * fitScale);
+      const neckHalfW = Math.round(((ha.neckR - ha.neckL) / 2) * fitScale);
+      merged = {
+        ...base,
+        headCx: mapX(ha.headCx),
+        headCy: mapY(ha.headCy),
+        headRx: Math.round(ha.headRx * fitScale),
+        headRy: Math.round(ha.headRy * fitScale),
+        faceShiftX: Math.round(ha.faceShiftX * fitScale),
+        eyeY: mapY(ha.eyeY),
+        noseY: mapY(ha.noseY),
+        mouthY: mapY(ha.mouthY),
+        chinY: mapY(ha.chinY),
+        neckY: base.neckY,
+        neckL: Math.round(targetNeckCx - neckHalfW),
+        neckR: Math.round(targetNeckCx + neckHalfW),
+      };
+    }
+  }
+
   const ov = char.anchorOverrides?.[angle];
-  if (!ov) return base;
-  return { ...base, ...ov };
+  if (!ov) return merged;
+  return { ...merged, ...ov };
 }
 
 function facingDir(angle: Angle2D): number {
@@ -697,7 +839,7 @@ function drawTop2D(
       const shL = prof ? chestL + 2 : Math.min(chestL, a.armLeft[0].x - 10);
       const shR = prof ? chestR - 2 : Math.max(chestR, a.armRight[0].x + 10);
       ctx.moveTo(a.neckL - 5, collarTopY);
-      ctx.quadraticCurveTo((a.neckL + shL) / 2, collarTopY + 8, shL, deltoidTopY);
+      ctx.quadraticCurveTo((a.neckL + shL) / 2, collarTopY + 2, shL, deltoidTopY);
       ctx.quadraticCurveTo(shL - 5, deltoidTopY + 14, chestL, a.chestY);
       ctx.lineTo(waistL, a.waistY);
       ctx.lineTo(hemL, hemY);
@@ -705,7 +847,7 @@ function drawTop2D(
       ctx.lineTo(waistR, a.waistY);
       ctx.lineTo(chestR, a.chestY);
       ctx.quadraticCurveTo(shR + 5, deltoidTopY + 14, shR, deltoidTopY);
-      ctx.quadraticCurveTo((a.neckR + shR) / 2, collarTopY + 8, a.neckR + 5, collarTopY);
+      ctx.quadraticCurveTo((a.neckR + shR) / 2, collarTopY + 2, a.neckR + 5, collarTopY);
       ctx.quadraticCurveTo((a.neckL + a.neckR) / 2 + dir * 6, back ? collarTopY + 6 : collarTopY + 26, a.neckL - 5, collarTopY);
       ctx.closePath();
     },
@@ -1629,10 +1771,18 @@ export async function preloadCharacter2DImages(
   char: Character2D,
   baseModel: BaseModel2D,
   customParts: CustomPartAsset2D[],
+  headPack?: HeadPack2D,
 ): Promise<Map<string, HTMLImageElement>> {
   const urls = new Set<string>();
-  const baseSrc = baseModel.frames[char.angle] ?? baseModel.frames[0];
+  const head = headPack ?? resolveHeadPack2D(char.headShapeId);
+  const seamless = isUsingSeamlessHeadVariant(baseModel, char, char.angle, head);
+  const variantSrc = seamless ? head.bodyVariants?.[baseModel.id]?.[char.angle] : undefined;
+  const baseSrc = variantSrc ?? baseModel.frames[char.angle] ?? baseModel.frames[0];
   if (baseSrc) urls.add(baseSrc);
+  if (!variantSrc) {
+    const ovSrc = head.overlayFrames[char.angle] ?? head.overlayFrames[0];
+    if (ovSrc) urls.add(ovSrc);
+  }
 
   const partMap = new Map(customParts.map((p) => [p.id, p]));
   for (const layer of char.customLayers) {
@@ -1661,20 +1811,47 @@ export function renderCharacter2DSync(
   baseModel: BaseModel2D,
   customParts: CustomPartAsset2D[],
   imageMap: Map<string, HTMLImageElement>,
+  headPack?: HeadPack2D,
 ) {
   const angle = char.angle;
   const mode = char.renderMode;
-  const anchors = resolveEffectiveAnchors(baseModel, char, angle);
+  const head = headPack ?? resolveHeadPack2D(char.headShapeId);
+  const anchors = resolveEffectiveAnchors(baseModel, char, angle, head);
+  const seamless = isUsingSeamlessHeadVariant(baseModel, char, angle, head);
+  const variantSrc = seamless ? head.bodyVariants?.[baseModel.id]?.[angle] : undefined;
 
   ctx.save();
   drawHairBack2D(ctx, char, anchors, angle, mode);
   drawCustomLayers2D(ctx, char, customParts, "behind", angle, imageMap);
 
-  const baseSrc = baseModel.frames[angle] ?? baseModel.frames[0];
-  const baseImg = baseSrc ? imageMap.get(baseSrc) : undefined;
-  if (baseImg) {
-    const processed = getProcessedBaseSprite(baseImg, baseSrc, mode, char.skinTone);
-    ctx.drawImage(processed, 0, 0, CHAR2D_W, CHAR2D_H);
+  if (variantSrc) {
+    const varImg = imageMap.get(variantSrc);
+    if (varImg) {
+      const processed = getProcessedBaseSprite(varImg, variantSrc, mode, char.skinTone);
+      ctx.drawImage(processed, 0, 0, CHAR2D_W, CHAR2D_H);
+    }
+  } else {
+    const baseSrc = baseModel.frames[angle] ?? baseModel.frames[0];
+    const baseImg = baseSrc ? imageMap.get(baseSrc) : undefined;
+    const headSrc = head.overlayFrames[angle] ?? head.overlayFrames[0];
+    const headImg = headSrc ? imageMap.get(headSrc) : undefined;
+    if (baseImg) {
+      const fitScale = Math.max(0.75, Math.min(1.25, char.headFit?.scale ?? 1));
+      const fitOffsetY = char.headFit?.offsetY ?? 0;
+      const processed = getProcessedCompositedBaseSprite(
+        baseImg,
+        baseSrc,
+        headImg,
+        headSrc,
+        baseModel.anchors[angle],
+        head.anchors[angle] ?? head.anchors[0],
+        fitScale,
+        fitOffsetY,
+        mode,
+        char.skinTone,
+      );
+      ctx.drawImage(processed, 0, 0, CHAR2D_W, CHAR2D_H);
+    }
   }
 
   drawFootwear2D(ctx, char, anchors, angle, mode);
@@ -1691,15 +1868,17 @@ export async function exportCharacter2DPng(
   baseModel: BaseModel2D,
   customParts: CustomPartAsset2D[],
   scale = 2,
+  headPack?: HeadPack2D,
 ): Promise<string> {
-  const imageMap = await preloadCharacter2DImages(char, baseModel, customParts);
+  const resolvedHead = headPack ?? resolveHeadPack2D(char.headShapeId);
+  const imageMap = await preloadCharacter2DImages(char, baseModel, customParts, resolvedHead);
   const full = document.createElement("canvas");
   full.width = Math.round(CHAR2D_W * scale);
   full.height = Math.round(CHAR2D_H * scale);
   const fctx = full.getContext("2d");
   if (!fctx) return "";
   fctx.scale(scale, scale);
-  renderCharacter2DSync(fctx, char, baseModel, customParts, imageMap);
+  renderCharacter2DSync(fctx, char, baseModel, customParts, imageMap, resolvedHead);
 
   const img = fctx.getImageData(0, 0, full.width, full.height);
   const d = img.data;

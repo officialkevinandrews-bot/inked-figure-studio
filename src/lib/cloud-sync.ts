@@ -17,9 +17,10 @@ import { loadCharacters, type Character } from "./characters";
 import {
   loadCharacters2D,
   loadCustomBaseModels2D,
+  loadCustomHeads2D,
   loadCustomParts2D,
 } from "./character2d-store";
-import type { BaseModel2D, Character2D, CustomPartAsset2D } from "./character2d-types";
+import type { BaseModel2D, Character2D, CustomPartAsset2D, HeadPack2D } from "./character2d-types";
 import { loadCustomPropsMeta, type CustomPropMeta } from "./custom-props";
 import { loadCustomTemplates, type SavedCustomTemplate } from "./custom-templates";
 import { loadPacks, type FacePack } from "./face-parts";
@@ -104,6 +105,7 @@ interface WorkspaceCloudDoc {
   characters2d?: Character2D[];
   baseModels: CustomBaseModel[];
   baseModels2d?: BaseModel2D[];
+  heads2d?: HeadPack2D[];
   parts2d?: CustomPartAsset2D[];
   facePacks: FacePack[];
   customPoses: CustomPose[];
@@ -609,6 +611,7 @@ function collectWorkspaceDoc(uid: string, library: MangaLibraryState | null): Wo
     characters2d: loadCharacters2D().slice(0, 500),
     baseModels: loadBaseModels().slice(0, 500),
     baseModels2d: loadCustomBaseModels2D().slice(0, 200),
+    heads2d: loadCustomHeads2D().slice(0, 200),
     parts2d: loadCustomParts2D().slice(0, 500),
     facePacks: loadPacks().slice(0, 500),
     customPoses: loadCustomPoses().slice(0, 500),
@@ -657,6 +660,9 @@ async function applyRemoteStateToLocal(
       userLsSet("koma-base-models", JSON.stringify(remoteWorkspace.baseModels ?? []), "workspace");
       if (Array.isArray(remoteWorkspace.baseModels2d)) {
         userLsSet("koma-base-models-2d", JSON.stringify(remoteWorkspace.baseModels2d), "workspace");
+      }
+      if (Array.isArray(remoteWorkspace.heads2d)) {
+        userLsSet("koma-heads-2d", JSON.stringify(remoteWorkspace.heads2d), "workspace");
       }
       if (Array.isArray(remoteWorkspace.parts2d)) {
         userLsSet("koma-parts-2d", JSON.stringify(remoteWorkspace.parts2d), "workspace");
@@ -1282,6 +1288,7 @@ export async function buildFullAccountBackup(
   const characters2d = loadCharacters2D();
   const baseModels = loadBaseModels();
   const baseModels2d = loadCustomBaseModels2D();
+  const heads2d = loadCustomHeads2D();
   const parts2d = loadCustomParts2D();
   const facePacks = loadPacks();
   const customPoses = loadCustomPoses();
@@ -1329,6 +1336,7 @@ export async function buildFullAccountBackup(
     characters2d,
     baseModels,
     baseModels2d,
+    heads2d,
     parts2d,
     facePacks,
     customPoses,

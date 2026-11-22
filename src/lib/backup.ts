@@ -26,6 +26,7 @@ export interface StudioBackup {
   characters2d?: import("./character2d-types").Character2D[];
   baseModels?: CustomBaseModel[];
   baseModels2d?: import("./character2d-types").BaseModel2D[];
+  heads2d?: import("./character2d-types").HeadPack2D[];
   parts2d?: import("./character2d-types").CustomPartAsset2D[];
   facePacks: FacePack[];
   customPoses?: CustomPose[];

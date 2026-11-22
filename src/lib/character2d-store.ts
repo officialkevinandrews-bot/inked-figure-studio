@@ -5,13 +5,16 @@ import {
   type BaseModel2D,
   type Character2D,
   type CustomPartAsset2D,
+  type HeadPack2D,
 } from "./character2d-types";
+import { BUILTIN_HEAD_PACKS_2D, resolveHeadPack2D } from "./character2d-heads";
 import { BUILTIN_MODEL_MALE_ATHLETIC_V1, MODEL1_ANCHORS } from "./character2d-model1";
 import { deleteFile, getFile, putFile } from "./file-store";
 import { userLsGet, userLsSet } from "./user-storage";
 
 export const CHAR2D_STORAGE_KEY = "koma-characters-2d";
 export const BASE_MODELS_2D_STORAGE_KEY = "koma-base-models-2d";
+export const HEADS_2D_STORAGE_KEY = "koma-heads-2d";
 export const PARTS_2D_STORAGE_KEY = "koma-parts-2d";
 
 const IDB_PREFIX = "idb://";
@@ -82,6 +85,32 @@ export function resolveBaseModel2D(id: string, customModels?: BaseModel2D[]): Ba
   };
 }
 
+export function loadCustomHeads2D(): HeadPack2D[] {
+  try {
+    const raw = userLsGet(HEADS_2D_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveCustomHeads2D(heads: HeadPack2D[]): boolean {
+  return userLsSet(HEADS_2D_STORAGE_KEY, JSON.stringify(heads), "workspace");
+}
+
+export function getAllHeadPacks2D(): HeadPack2D[] {
+  return [...BUILTIN_HEAD_PACKS_2D, ...loadCustomHeads2D()];
+}
+
+export function resolveCharacterHeadPack2D(
+  headShapeId?: string,
+  customHeads?: HeadPack2D[],
+): HeadPack2D {
+  return resolveHeadPack2D(headShapeId, customHeads ?? loadCustomHeads2D());
+}
+
 export function loadCustomParts2D(): CustomPartAsset2D[] {
   try {
     const raw = userLsGet(PARTS_2D_STORAGE_KEY);
@@ -111,7 +140,8 @@ export async function persistAssetImage2D(
   if (!dataUrl || !dataUrl.startsWith("data:")) return dataUrl;
   try {
     const blob = await dataUrlToPngBlob(dataUrl);
-    await putFile(fileId, blob, `${fileId}.png`, slot);
+    const ext = dataUrl.startsWith("data:image/webp") ? "webp" : "png";
+    await putFile(fileId, blob, `${fileId}.${ext}`, slot);
     return `${IDB_PREFIX}${fileId}`;
   } catch {
     return dataUrl;
@@ -208,6 +238,84 @@ export async function deleteUploadedCustomPart2D(asset: CustomPartAsset2D): Prom
   }
   const next = loadCustomParts2D().filter((p) => p.id !== asset.id);
   saveCustomParts2D(next);
+  return next;
+}
+
+export async function saveUploadedHeadPack2D(input: {
+  name: string;
+  subtitle?: string;
+  sheetMode: HeadPack2D["sheetMode"];
+  thumbnail: string;
+  overlayFrames: Record<Angle2D, string>;
+  bodyVariants?: Record<string, Record<Angle2D, string>>;
+  anchors: HeadPack2D["anchors"];
+}): Promise<HeadPack2D> {
+  const id = `head2d-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  const overlayFrames = {} as Record<Angle2D, string>;
+  const seenSrcToIdb = new Map<string, string>();
+  const persistDedup = async (raw: string, keySuffix: string): Promise<string> => {
+    const hit = seenSrcToIdb.get(raw);
+    if (hit) return hit;
+    const ref = await persistAssetImage2D(`${id}-${keySuffix}`, raw, "char2d-head");
+    seenSrcToIdb.set(raw, ref);
+    return ref;
+  };
+
+  const thumbnail = await persistDedup(input.thumbnail, "thumb");
+  for (const angle of ANGLES_2D) {
+    overlayFrames[angle] = await persistDedup(input.overlayFrames[angle], `ov-a${angle}`);
+  }
+
+  let bodyVariants: Record<string, Record<Angle2D, string>> | undefined;
+  if (input.bodyVariants) {
+    bodyVariants = {};
+    for (const [modelId, framesMap] of Object.entries(input.bodyVariants)) {
+      const storedMap = {} as Record<Angle2D, string>;
+      for (const angle of ANGLES_2D) {
+        storedMap[angle] = await persistDedup(framesMap[angle], `bv-${modelId}-a${angle}`);
+      }
+      bodyVariants[modelId] = storedMap;
+    }
+  }
+
+  const headPack: HeadPack2D = {
+    id,
+    name: input.name.trim() || "Custom Head",
+    subtitle: input.subtitle?.trim() || "Custom Upload",
+    builtIn: false,
+    sheetMode: input.sheetMode,
+    createdAt: Date.now(),
+    thumbnail,
+    overlayFrames,
+    bodyVariants,
+    anchors: input.anchors,
+  };
+  const next = [...loadCustomHeads2D(), headPack];
+  saveCustomHeads2D(next);
+  return headPack;
+}
+
+export async function deleteUploadedHeadPack2D(head: HeadPack2D): Promise<HeadPack2D[]> {
+  if (head.builtIn) return loadCustomHeads2D();
+  const refs = new Set<string>();
+  if (head.thumbnail?.startsWith(IDB_PREFIX)) refs.add(head.thumbnail);
+  for (const angle of ANGLES_2D) {
+    const ov = head.overlayFrames[angle];
+    if (ov?.startsWith(IDB_PREFIX)) refs.add(ov);
+  }
+  if (head.bodyVariants) {
+    for (const framesMap of Object.values(head.bodyVariants)) {
+      for (const angle of ANGLES_2D) {
+        const bv = framesMap[angle];
+        if (bv?.startsWith(IDB_PREFIX)) refs.add(bv);
+      }
+    }
+  }
+  for (const ref of refs) {
+    await deleteFile(ref.slice(IDB_PREFIX.length)).catch(() => {});
+  }
+  const next = loadCustomHeads2D().filter((h) => h.id !== head.id);
+  saveCustomHeads2D(next);
   return next;
 }
 
