@@ -42,7 +42,10 @@ service cloud.firestore {
     //      - activeCharacterId: string | null (optional, <= 128 chars)
     //      - activePageIndex: int | null (optional, 0..1000)
     //      - characters: list (optional, <= 500 items)
+    //      - characters2d: list (optional, <= 500 items)
     //      - baseModels: list (optional, <= 500 items)
+    //      - baseModels2d: list (optional, <= 500 items)
+    //      - parts2d: list (optional, <= 500 items)
     //      - facePacks: list (optional, <= 500 items)
     //      - customPoses: list (optional, <= 500 items)
     //      - customProps: list (optional, <= 500 items)
@@ -320,10 +323,11 @@ service cloud.firestore {
       let allowed = [
         'updatedAt', 'version', 'schemaVersion', 'deviceId',
         'activeProjectId', 'activeCharacterId', 'activePageIndex',
-        'characters', 'baseModels', 'facePacks', 'customPoses',
-        'customProps', 'customTemplates', 'roster', 'sceneCast',
-        'handPoses', 'pages', 'faceConfigs', 'faceCalibrations',
-        'wardrobeOutfits', 'preferences', 'lighting', 'camera'
+        'characters', 'characters2d', 'baseModels', 'baseModels2d',
+        'parts2d', 'facePacks', 'customPoses', 'customProps',
+        'customTemplates', 'roster', 'sceneCast', 'handPoses', 'pages',
+        'faceConfigs', 'faceCalibrations', 'wardrobeOutfits',
+        'preferences', 'lighting', 'camera'
       ];
       return hasOnlyAllowedFields(data, allowed) &&
              hasRequiredFields(data, ['updatedAt']) &&
@@ -336,7 +340,10 @@ service cloud.firestore {
              isValidOptionalNullableString(data, 'activeCharacterId', 0, 128) &&
              isValidOptionalNullableInt(data, 'activePageIndex', 0, 1000) &&
              isValidOptionalList(data, 'characters', 500) &&
+             isValidOptionalList(data, 'characters2d', 500) &&
              isValidOptionalList(data, 'baseModels', 500) &&
+             isValidOptionalList(data, 'baseModels2d', 500) &&
+             isValidOptionalList(data, 'parts2d', 500) &&
              isValidOptionalList(data, 'facePacks', 500) &&
              isValidOptionalList(data, 'customPoses', 500) &&
              isValidOptionalList(data, 'customProps', 500) &&
