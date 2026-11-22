@@ -136,6 +136,10 @@ export interface PanelStudioProps {
   layout: PageLayout;
   onUpdateLayout: (updated: PageLayout) => void;
   onOpenCreateCharacter?: () => void;
+  onEdit2DCharacter?: (
+    elementId: string,
+    source2d: import("@/lib/character2d-types").Source2DMetadata,
+  ) => void;
   onOpen3dStudio: () => void;
   onRePoseIn3D?: (source3d: NonNullable<PlacedElement["source3d"]>) => void;
   allPages?: PageLayout[];
@@ -173,6 +177,7 @@ export function PanelStudio({
   layout,
   onUpdateLayout,
   onOpenCreateCharacter,
+  onEdit2DCharacter,
   onOpen3dStudio,
   onRePoseIn3D,
   allPages,
@@ -3519,6 +3524,22 @@ export function PanelStudio({
                     </button>
                   </div>
                 </>
+              )}
+
+              {/* Non-Destructive Re-Edit 2D Character Angle / Look */}
+              {selectedElement.source2d && onEdit2DCharacter && (
+                <button
+                  type="button"
+                  data-testid="panel-edit-2d-char-btn"
+                  onClick={() =>
+                    selectedElement.source2d &&
+                    onEdit2DCharacter(selectedElement.id, selectedElement.source2d)
+                  }
+                  className="w-full flex items-center justify-center gap-1.5 rounded border-2 border-foreground bg-primary/15 py-1.5 font-bold shadow-ink text-xs hover:bg-primary/25 transition-transform hover:-translate-y-0.5"
+                >
+                  <User className="h-3.5 w-3.5 text-primary" />
+                  Edit 2D Angle / Look ({selectedElement.source2d.angle}°)
+                </button>
               )}
 
               {/* Non-Destructive Re-Pose in 3D Button */}

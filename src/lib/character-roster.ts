@@ -11,6 +11,7 @@ export interface RosterCharacter {
     hipsDrop?: number;
     fov?: number;
   };
+  source2d?: import("./character2d-types").Source2DMetadata;
 }
 
 /** Built-in Manga Character Archetypes ready to stamp */

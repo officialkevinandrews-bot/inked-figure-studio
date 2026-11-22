@@ -21,10 +21,17 @@ test.describe("Mandatory Google / Allowlist Auth Gate & Public Landing Page", ()
     // Switch through all 4 gallery tabs and verify every rendered landing screenshot loads cleanly
     for (const tabId of ["panels", "importer", "webtoon", "export"]) {
       await page.getByTestId(`gallery-tab-${tabId}`).click();
-      const loaded = await page.evaluate(() =>
-        Array.from(document.querySelectorAll("img")).every((img) => img.complete && img.naturalWidth > 0),
-      );
-      expect(loaded).toBe(true);
+      await expect
+        .poll(
+          () =>
+            page.evaluate(() =>
+              Array.from(document.querySelectorAll("img")).every(
+                (img) => img.complete && img.naturalWidth > 0,
+              ),
+            ),
+          { timeout: 10_000 },
+        )
+        .toBe(true);
     }
 
     // Confirm upcoming 3D section says Coming Soon with zero 3D showcase images

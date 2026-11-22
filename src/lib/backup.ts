@@ -23,7 +23,10 @@ export interface StudioBackup {
   exported: number;
   accountEmail?: string | null;
   characters: Character[];
+  characters2d?: import("./character2d-types").Character2D[];
   baseModels?: CustomBaseModel[];
+  baseModels2d?: import("./character2d-types").BaseModel2D[];
+  parts2d?: import("./character2d-types").CustomPartAsset2D[];
   facePacks: FacePack[];
   customPoses?: CustomPose[];
   customProps?: CustomPropMeta[];

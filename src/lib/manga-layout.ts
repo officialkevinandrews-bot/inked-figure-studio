@@ -69,6 +69,8 @@ export interface PlacedElement {
     activeActorId?: string;
     cast?: SerializedActorPose[];
   };
+  /** Optional 2D character creator recipe so stamped characters can spin/re-edit cleanly. */
+  source2d?: import("./character2d-types").Source2DMetadata;
 }
 
 export interface PageFormat {

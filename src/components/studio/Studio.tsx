@@ -143,6 +143,11 @@ import {
 const PanelStudio = lazy(() =>
   import("@/components/panels/PanelStudio").then((m) => ({ default: m.PanelStudio })),
 );
+const Character2DStudio = lazy(() =>
+  import("@/components/character2d/Character2DStudio").then((m) => ({
+    default: m.Character2DStudio,
+  })),
+);
 import {
   type PageLayout,
   type PlacedElement,
@@ -344,13 +349,18 @@ export function Studio() {
     if (outfitModelRef.current === modelName && modelName && !charRef.current) saveOutfit(modelName, outfit);
   }, [outfit, modelName]);
   const [activeTab, setActiveTab] = useState<"create" | "pose" | "panels">("panels");
+  const [createSubMode, setCreateSubMode] = useState<"2d" | "3d">("2d");
+  const [editing2DTarget, setEditing2DTarget] = useState<{
+    elementId: string;
+    source2d: import("@/lib/character2d-types").Source2DMetadata;
+  } | null>(null);
   const [hasMounted3d, setHasMounted3d] = useState(false);
   const preservePoseOnInitRef = useRef(false);
   useEffect(() => {
-    if (activeTab !== "panels") {
+    if (activeTab === "pose" || (activeTab === "create" && createSubMode === "3d")) {
       setHasMounted3d(true);
     }
-  }, [activeTab]);
+  }, [activeTab, createSubMode]);
   const [chapterHist, setChapterHist] = useState<HistoryState<{ pages: PageLayout[]; activePageIndex: number }>>(() =>
     createHistory({ pages: createDefaultPages(), activePageIndex: 0 }),
   );
@@ -789,10 +799,12 @@ export function Studio() {
   }, [activeTab, leftTab, activeChar]);
 
   const goTab = useCallback((t: "create" | "pose" | "panels") => {
-    // Returning to the creator restores the character's saved master look (pose-only tweaks are dropped).
-    if (t === "create" && activeTab !== "create" && activeChar) showCharacter(activeChar);
+    // Returning to the 3D legacy creator restores the character's saved master look.
+    if (t === "create" && activeTab !== "create" && createSubMode === "3d" && activeChar) {
+      showCharacter(activeChar);
+    }
     setActiveTab(t);
-  }, [activeTab, activeChar, showCharacter]);
+  }, [activeTab, createSubMode, activeChar, showCharacter]);
 
   const feedback = useOptionalFeedback();
   useEffect(() => {
@@ -1661,7 +1673,16 @@ export function Studio() {
       <PanelStudio
         layout={currentPageLayout}
         onUpdateLayout={handleUpdateCurrentPage}
-        onOpenCreateCharacter={() => goTab("create")}
+        onOpenCreateCharacter={() => {
+          setEditing2DTarget(null);
+          setCreateSubMode("2d");
+          goTab("create");
+        }}
+        onEdit2DCharacter={(elementId, source2d) => {
+          setEditing2DTarget({ elementId, source2d });
+          setCreateSubMode("2d");
+          goTab("create");
+        }}
         onOpen3dStudio={() => goTab("pose")}
         onRePoseIn3D={(source3d) => {
           if (!loadedModelKey.current) {
@@ -1740,10 +1761,106 @@ export function Studio() {
       </Suspense>
   );
 
+  const character2dView = activeTab === "create" && createSubMode === "2d" && (
+    <Suspense
+      fallback={
+        <div className="flex h-dvh items-center justify-center text-sm font-semibold">
+          Loading 2D Character Studio…
+        </div>
+      }
+    >
+      <Character2DStudio
+        panels={currentPageLayout.panels}
+        elementCount={currentPageLayout.elements.length}
+        editingTarget={editing2DTarget}
+        onCancelEditingTarget={() => setEditing2DTarget(null)}
+        onGoTab={goTab}
+        onSwitchTo3DLegacy={() => {
+          setCreateSubMode("3d");
+          if (activeChar) void showCharacter(activeChar);
+        }}
+        onStampToPanel={async (panelId, dataUrl, source2d) => {
+          const targetPanel =
+            currentPageLayout.panels.find((p) => p.id === panelId) || currentPageLayout.panels[0];
+          const bounds = getPanelPixelBounds(
+            targetPanel,
+            currentPageLayout.format.width,
+            currentPageLayout.format.height,
+            currentPageLayout.format.margin,
+            currentPageLayout.format.gutter,
+          );
+          const dim = await new Promise<{ w: number; h: number }>((resolve) => {
+            const im = new Image();
+            im.onload = () => resolve({ w: im.naturalWidth || 480, h: im.naturalHeight || 1000 });
+            im.onerror = () => resolve({ w: 480, h: 1000 });
+            im.src = dataUrl;
+          });
+          const fitH = Math.min(bounds.height * 0.86, 360);
+          const fitW = Math.max(44, Math.round((fitH * dim.w) / Math.max(1, dim.h)));
+          const newEl: PlacedElement = {
+            id: `el-${Date.now()}`,
+            panelId: targetPanel.id,
+            type: "character",
+            imageUrl: dataUrl,
+            x: bounds.minX + Math.max(8, (bounds.width - fitW) / 2),
+            y: bounds.minY + Math.max(8, (bounds.height - fitH) / 2),
+            width: fitW,
+            height: fitH,
+            rotation: 0,
+            flipX: false,
+            flipY: false,
+            zIndex: currentPageLayout.elements.length + 1,
+            breakout: false,
+            source2d,
+          };
+          saveRosterItem({
+            id: `roster-${Date.now()}`,
+            name: `${source2d.characterName} (${source2d.angle}°)`,
+            role: source2d.renderMode === "manga" ? "2D Manga Lineart" : "2D Character",
+            previewUrl: dataUrl,
+            source2d,
+          });
+          handleUpdateCurrentPage({
+            ...currentPageLayout,
+            elements: [...currentPageLayout.elements, newEl],
+          });
+          setEditing2DTarget(null);
+          setActiveTab("panels");
+        }}
+        onUpdatePanelElement={async (elementId, dataUrl, source2d) => {
+          const dim = await new Promise<{ w: number; h: number }>((resolve) => {
+            const im = new Image();
+            im.onload = () => resolve({ w: im.naturalWidth || 480, h: im.naturalHeight || 1000 });
+            im.onerror = () => resolve({ w: 480, h: 1000 });
+            im.src = dataUrl;
+          });
+          handleUpdateCurrentPage({
+            ...currentPageLayout,
+            elements: currentPageLayout.elements.map((el) => {
+              if (el.id !== elementId) return el;
+              const nextW = Math.max(40, Math.round((el.height * dim.w) / Math.max(1, dim.h)));
+              const cx = el.x + el.width / 2;
+              return {
+                ...el,
+                x: cx - nextW / 2,
+                width: nextW,
+                imageUrl: dataUrl,
+                source2d,
+              };
+            }),
+          });
+          setEditing2DTarget(null);
+          setActiveTab("panels");
+        }}
+      />
+    </Suspense>
+  );
+
   return (
     <>
     {panelsView}
-    <div className={`${activeTab === "panels" ? "hidden" : "flex"} h-dvh flex-col bg-background text-foreground select-none overflow-hidden`}>
+    {character2dView}
+    <div className={`${activeTab === "panels" || (activeTab === "create" && createSubMode === "2d") ? "hidden" : "flex"} h-dvh flex-col bg-background text-foreground select-none overflow-hidden`}>
       {/* Top Bar */}
       <header className="flex flex-wrap items-center gap-x-2 gap-y-1.5 border-b-2 border-foreground px-2.5 sm:px-4 py-1.5 sm:py-2 bg-card safe-pt shrink-0">
         <h1 className="font-display text-base sm:text-xl tracking-wide shrink-0">
@@ -1766,6 +1883,21 @@ export function Studio() {
             </button>
           ))}
         </nav>
+
+        {activeTab === "create" && (
+          <div className="flex items-center rounded-sm border border-border bg-background p-0.5 text-[11px] font-semibold shrink-0">
+            <button
+              type="button"
+              onClick={() => setCreateSubMode("2d")}
+              className="rounded-xs px-2 py-0.5 text-muted-foreground hover:text-foreground"
+            >
+              2D Studio
+            </button>
+            <span className="rounded-xs bg-primary px-2 py-0.5 text-primary-foreground">
+              3D Legacy
+            </span>
+          </div>
+        )}
 
         {activeTab === "pose" && (
           <div className="flex items-center gap-1.5 text-xs max-w-full overflow-x-auto" data-testid="pose-character-picker">
