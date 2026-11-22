@@ -90,13 +90,13 @@ export const ILLUSTRATED_HAIR_PACKS_2D: IllustratedHairPack2D[] = [
     id: "spiky",
     name: "Spiky Anime",
     frontFrames: angleMap("/characters/parts/hair/spiky", "front", ALL8),
-    backFrames: {},
+    backFrames: angleMap("/characters/parts/hair/spiky", "back", ALL8),
     canvasW: 280,
     canvasH: 280,
     pivotX: 140,
     pivotY: 148,
-    refHeadRx: 69,
-    refHeadRy: 94.5,
+    refHeadRx: 46,
+    refHeadRy: 61,
   },
 ];
 

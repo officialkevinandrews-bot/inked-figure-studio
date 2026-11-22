@@ -613,45 +613,106 @@ export function recolorIllustratedPartCanvas(
   const [ar, ag, ab] = parseHexRgb(opts.accentHex ?? primaryHex);
   const depth = opts.shadingDepth ?? "cel";
 
-  for (let p = 0; p < w * h; p++) {
+  const len = w * h;
+  const lumArr = new Float32Array(len);
+  const alphaArr = new Uint8Array(len);
+  for (let p = 0; p < len; p++) {
     const i = p * 4;
-    const a = d[i + 3] ?? 0;
-    if (a < 8) continue;
+    alphaArr[p] = d[i + 3] ?? 0;
+    lumArr[p] = 0.299 * (d[i] ?? 255) + 0.587 * (d[i + 1] ?? 255) + 0.114 * (d[i + 2] ?? 255);
+  }
 
-    const r = d[i] ?? 255;
-    const g = d[i + 1] ?? 255;
-    const b = d[i + 2] ?? 255;
-    const l = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  const liftDarkColor = (r: number, g: number, b: number): [number, number, number] => {
+    const mx = Math.max(r, g, b);
+    if (mx >= 92) return [r, g, b];
+    // Lift very dark charcoal/navy RGB fills just enough that black ink lines & deep cel shadows remain readable
+    const lift = (92 - mx) * 0.46;
+    return [
+      Math.min(255, Math.round(r + lift * 0.88)),
+      Math.min(255, Math.round(g + lift * 0.94)),
+      Math.min(255, Math.round(b + lift * 1.08)),
+    ];
+  };
 
-    const m = maskData ? (maskData[i + 3] ?? 0) / 255 : 0;
-    const tr = pr + (ar - pr) * m;
-    const tg = pg + (ag - pg) * m;
-    const tb = pb + (ab - pb) * m;
+  for (let y = 0; y < h; y++) {
+    const y0 = Math.max(0, y - 2);
+    const y1 = Math.min(h - 1, y + 2);
+    for (let x = 0; x < w; x++) {
+      const p = y * w + x;
+      const a = alphaArr[p]!;
+      if (a < 8) continue;
 
-    // 1. Preserve dark ink outlines cleanly without muddying pastel/bright RGBs
-    const inkBlend = Math.max(0, Math.min(1, (l - 0.25) / 0.19));
-    const inkR = Math.min(26, Math.round(tr * 0.11 + 8));
-    const inkG = Math.min(28, Math.round(tg * 0.11 + 9));
-    const inkB = Math.min(36, Math.round(tb * 0.12 + 12));
+      const i = p * 4;
+      const L = lumArr[p]!;
+      let localMax = L;
+      const x0 = Math.max(0, x - 2);
+      const x1 = Math.min(w - 1, x + 2);
+      for (let ny = y0; ny <= y1; ny++) {
+        const rowOff = ny * w;
+        for (let nx = x0; nx <= x1; nx++) {
+          const np = rowOff + nx;
+          if (alphaArr[np]! >= 48 && lumArr[np]! > localMax) {
+            localMax = lumArr[np]!;
+          }
+        }
+      }
 
-    // 2. Remap mid/lit luminance with selectable Shading Depth & cool anime shadow shift
-    const tTone = Math.max(0, Math.min(1, (l - 0.42) / 0.54));
-    const shadeFactor =
-      depth === "flat"
-        ? 0.9 + 0.1 * tTone
-        : depth === "dramatic"
-          ? 0.44 + 0.56 * Math.pow(tTone, 1.15)
-          : 0.64 + 0.36 * Math.pow(tTone, 0.94);
+      const m = maskData ? (maskData[i + 3] ?? 0) / 255 : 0;
+      const rawR = pr + (ar - pr) * m;
+      const rawG = pg + (ag - pg) * m;
+      const rawB = pb + (ab - pb) * m;
+      const isNearWhite = rawR >= 236 && rawG >= 236 && rawB >= 236;
 
-    const coolBoost = (1 - tTone) * (depth === "flat" ? 4 : 13);
-    const hiLift = l > 0.96 ? ((l - 0.96) / 0.04) * 16 : 0;
-    const fillR = Math.min(255, tr * shadeFactor + hiLift);
-    const fillG = Math.min(255, tg * (shadeFactor * 0.99) + hiLift);
-    const fillB = Math.min(255, tb * Math.min(1.04, shadeFactor * 1.02) + coolBoost + hiLift);
+      if (isNearWhite) {
+        // Near-white / original art mode: preserve original linework and cool-gray cel shadows directly
+        const scaleR = rawR / 255;
+        const scaleG = rawG / 255;
+        const scaleB = rawB / 255;
+        const localDrop = Math.max(0, localMax - L);
+        const lineBoost = localDrop > 8 && L < 220 ? Math.min(24, (localDrop - 8) * 0.45) : 0;
+        const effL = Math.max(12, L - lineBoost);
+        const cool = effL < 232 && effL > 140 ? (232 - effL) * 0.08 : 0;
+        d[i] = Math.max(0, Math.min(255, Math.round((effL - cool * 0.6) * scaleR)));
+        d[i + 1] = Math.max(0, Math.min(255, Math.round((effL - cool * 0.2) * scaleG)));
+        d[i + 2] = Math.max(0, Math.min(255, Math.round(Math.min(255, effL + cool) * scaleB)));
+        continue;
+      }
 
-    d[i] = Math.round(inkR + (fillR - inkR) * inkBlend);
-    d[i + 1] = Math.round(inkG + (fillG - inkG) * inkBlend);
-    d[i + 2] = Math.round(inkB + (fillB - inkB) * inkBlend);
+      const [tr, tg, tb] = liftDarkColor(rawR, rawG, rawB);
+
+      // 1. Local-contrast + global dark lineart detection (preserves thin gray hair strands, seams, & laces)
+      const localDrop = Math.max(0, localMax - L);
+      const globalInk = Math.max(0, Math.min(1, (148 - L) / 92));
+      const detailInk = L < 222 ? Math.max(0, Math.min(1, (localDrop - 10) / 44)) : 0;
+      const lineStrength = Math.max(globalInk, detailInk * 0.86);
+
+      const inkR = Math.min(22, Math.round(rawR * 0.09 + 6));
+      const inkG = Math.min(24, Math.round(rawG * 0.09 + 7));
+      const inkB = Math.min(32, Math.round(rawB * 0.11 + 10));
+
+      // 2. Crisp 3-stop anime cel-shading transfer (lit plane vs distinct cool cel shadow)
+      const tLinear = Math.max(0, Math.min(1, (L - 160) / 88));
+      const tStep = Math.max(0, Math.min(1, (L - 210) / 22));
+      const tSmoothStep = tStep * tStep * (3 - 2 * tStep);
+      const tTone = 0.45 * tLinear + 0.55 * tSmoothStep;
+
+      const shadeFactor =
+        depth === "flat"
+          ? 0.88 + 0.12 * tTone
+          : depth === "dramatic"
+            ? 0.48 + 0.52 * tTone
+            : 0.66 + 0.34 * tTone;
+
+      const coolBoost = (1 - tTone) * (depth === "flat" ? 3 : 11);
+      const hiLift = L > 245 ? ((L - 245) / 10) * 14 : 0;
+      const fillR = Math.min(255, tr * shadeFactor + hiLift);
+      const fillG = Math.min(255, tg * (shadeFactor * 0.99) + hiLift);
+      const fillB = Math.min(255, tb * Math.min(1.04, shadeFactor * 1.02) + coolBoost + hiLift);
+
+      d[i] = Math.round(fillR * (1 - lineStrength) + inkR * lineStrength);
+      d[i + 1] = Math.round(fillG * (1 - lineStrength) + inkG * lineStrength);
+      d[i + 2] = Math.round(fillB * (1 - lineStrength) + inkB * lineStrength);
+    }
   }
 
   ctx.putImageData(img, 0, 0);
