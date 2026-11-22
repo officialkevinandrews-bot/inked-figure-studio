@@ -148,6 +148,11 @@ const Character2DStudio = lazy(() =>
     default: m.Character2DStudio,
   })),
 );
+const Scene2DStudio = lazy(() =>
+  import("@/components/scene2d/Scene2DStudio").then((m) => ({
+    default: m.Scene2DStudio,
+  })),
+);
 import {
   type PageLayout,
   type PlacedElement,
@@ -348,11 +353,15 @@ export function Studio() {
   useEffect(() => {
     if (outfitModelRef.current === modelName && modelName && !charRef.current) saveOutfit(modelName, outfit);
   }, [outfit, modelName]);
-  const [activeTab, setActiveTab] = useState<"create" | "pose" | "panels">("panels");
+  const [activeTab, setActiveTab] = useState<"create" | "scenes" | "pose" | "panels">("panels");
   const [createSubMode, setCreateSubMode] = useState<"2d" | "3d">("2d");
   const [editing2DTarget, setEditing2DTarget] = useState<{
     elementId: string;
     source2d: import("@/lib/character2d-types").Source2DMetadata;
+  } | null>(null);
+  const [editingScene2DTarget, setEditingScene2DTarget] = useState<{
+    elementId: string;
+    sourceScene2d: import("@/lib/scene2d-types").SourceScene2DMetadata;
   } | null>(null);
   const [hasMounted3d, setHasMounted3d] = useState(false);
   const preservePoseOnInitRef = useRef(false);
@@ -798,7 +807,7 @@ export function Studio() {
     if (activeTab === "pose" && activeChar && leftTab === "outfit") setLeftTab("poses");
   }, [activeTab, leftTab, activeChar]);
 
-  const goTab = useCallback((t: "create" | "pose" | "panels") => {
+  const goTab = useCallback((t: "create" | "scenes" | "pose" | "panels") => {
     // Returning to the 3D legacy creator restores the character's saved master look.
     if (t === "create" && activeTab !== "create" && createSubMode === "3d" && activeChar) {
       showCharacter(activeChar);
@@ -814,12 +823,18 @@ export function Studio() {
         ? "Manga Panels"
         : activeTab === "create"
         ? "Create Character"
-        : "3D Pose Studio";
+        : activeTab === "scenes"
+        ? "Scene Builder"
+        : "Pose & Stage";
     feedback.setActiveArea(area);
     feedback.registerCaptureHandler(async () => {
       if (activeTab === "panels") {
         const { exportPageAsImage } = await import("@/lib/export");
         return exportPageAsImage(currentPageLayout, { scale: 1, format: "jpeg" });
+      }
+      if (activeTab === "scenes") {
+        const canvas = document.querySelector<HTMLCanvasElement>('[data-testid="scene2d-canvas"]');
+        return canvas ? canvas.toDataURL("image/jpeg", 0.85) : null;
       }
       return viewportRef.current?.captureSnapshot({ pixelRatio: 1 })?.dataUrl ?? null;
     });
@@ -1683,6 +1698,14 @@ export function Studio() {
           setCreateSubMode("2d");
           goTab("create");
         }}
+        onOpenScenes={() => {
+          setEditingScene2DTarget(null);
+          goTab("scenes");
+        }}
+        onEditScene2D={(elementId, sourceScene2d) => {
+          setEditingScene2DTarget({ elementId, sourceScene2d });
+          goTab("scenes");
+        }}
         onOpen3dStudio={() => goTab("pose")}
         onRePoseIn3D={(source3d) => {
           if (!loadedModelKey.current) {
@@ -1856,11 +1879,80 @@ export function Studio() {
     </Suspense>
   );
 
+  const scene2dView = activeTab === "scenes" && (
+    <Suspense
+      fallback={
+        <div className="flex h-dvh items-center justify-center text-sm font-semibold">
+          Loading 2D Scene Builder…
+        </div>
+      }
+    >
+      <Scene2DStudio
+        panels={currentPageLayout.panels}
+        elementCount={currentPageLayout.elements.length}
+        editingTarget={editingScene2DTarget}
+        onCancelEditingTarget={() => setEditingScene2DTarget(null)}
+        onGoTab={goTab}
+        onStampToPanel={async (panelId, dataUrl, sourceScene2d) => {
+          const targetPanel =
+            currentPageLayout.panels.find((p) => p.id === panelId) || currentPageLayout.panels[0];
+          const bounds = getPanelPixelBounds(
+            targetPanel,
+            currentPageLayout.format.width,
+            currentPageLayout.format.height,
+            currentPageLayout.format.margin,
+            currentPageLayout.format.gutter,
+          );
+          const newEl: PlacedElement = {
+            id: `el-${Date.now()}`,
+            panelId: targetPanel.id,
+            type: "background",
+            imageUrl: dataUrl,
+            x: bounds.minX,
+            y: bounds.minY,
+            width: bounds.width,
+            height: bounds.height,
+            rotation: 0,
+            flipX: false,
+            flipY: false,
+            fitMode: "fill-panel",
+            zIndex: 2,
+            breakout: false,
+            sourceScene2d,
+          };
+          handleUpdateCurrentPage({
+            ...currentPageLayout,
+            elements: [...currentPageLayout.elements, newEl],
+          });
+          setEditingScene2DTarget(null);
+          setActiveTab("panels");
+        }}
+        onUpdatePanelElement={async (elementId, dataUrl, sourceScene2d) => {
+          handleUpdateCurrentPage({
+            ...currentPageLayout,
+            elements: currentPageLayout.elements.map((el) =>
+              el.id === elementId
+                ? {
+                    ...el,
+                    imageUrl: dataUrl,
+                    sourceScene2d,
+                  }
+                : el,
+            ),
+          });
+          setEditingScene2DTarget(null);
+          setActiveTab("panels");
+        }}
+      />
+    </Suspense>
+  );
+
   return (
     <>
     {panelsView}
     {character2dView}
-    <div className={`${activeTab === "panels" || (activeTab === "create" && createSubMode === "2d") ? "hidden" : "flex"} h-dvh flex-col bg-background text-foreground select-none overflow-hidden`}>
+    {scene2dView}
+    <div className={`${activeTab === "panels" || activeTab === "scenes" || (activeTab === "create" && createSubMode === "2d") ? "hidden" : "flex"} h-dvh flex-col bg-background text-foreground select-none overflow-hidden`}>
       {/* Top Bar */}
       <header className="flex flex-wrap items-center gap-x-2 gap-y-1.5 border-b-2 border-foreground px-2.5 sm:px-4 py-1.5 sm:py-2 bg-card safe-pt shrink-0">
         <h1 className="font-display text-base sm:text-xl tracking-wide shrink-0">
@@ -1876,7 +1968,7 @@ export function Studio() {
           >
             Manga Panels {currentPageLayout.elements.length > 0 && `(${currentPageLayout.elements.length})`}
           </button>
-          {([["create", "Create Character"], ["pose", "3D Pose Studio"]] as const).map(([t, label]) => (
+          {([["create", "Create Character"], ["scenes", "Scenes"], ["pose", "Pose & Stage"]] as const).map(([t, label]) => (
             <button key={t} type="button" onClick={() => goTab(t)} aria-pressed={activeTab === t}
               className={`whitespace-nowrap rounded-sm px-2 sm:px-3 py-1 font-semibold transition-colors ${activeTab === t ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground"}`}>
               {label}

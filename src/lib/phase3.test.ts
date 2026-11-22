@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   generateBalloonPath,
   generateRadialSpeedLines,
+  SFX_CATEGORIES,
   SFX_PRESETS,
   COMIC_MARK_PRESETS,
 } from "./manga-effects";
@@ -38,12 +39,19 @@ describe("Phase 3: Comic Marks & SFX Presets", () => {
     expect(types).toContain("sparkles");
   });
 
-  it("provides iconic Katakana and English onomatopoeia stamps", () => {
+  it("provides 200+ categorized English onomatopoeia stamps with zero Japanese characters", () => {
+    expect(SFX_PRESETS.length).toBeGreaterThanOrEqual(200);
     const texts = SFX_PRESETS.map((s) => s.text);
-    expect(texts).toContain("ドドド");
-    expect(texts).toContain("ゴゴゴ");
+    for (const s of SFX_PRESETS) {
+      expect(/[\u3040-\u30ff]/.test(s.text)).toBe(false);
+    }
+    for (const cat of SFX_CATEGORIES) {
+      expect(SFX_PRESETS.some((s) => s.category === cat.id)).toBe(true);
+    }
     expect(texts).toContain("BOOM!");
     expect(texts).toContain("SLASH!");
+    expect(texts).toContain("WHOOSH!");
+    expect(texts).toContain("GASP!");
+    expect(texts).toContain("BA-DUMP");
   });
 });
-

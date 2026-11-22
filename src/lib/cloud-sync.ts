@@ -21,6 +21,11 @@ import {
   loadCustomParts2D,
 } from "./character2d-store";
 import type { BaseModel2D, Character2D, CustomPartAsset2D, HeadPack2D } from "./character2d-types";
+import {
+  loadCustomSceneObjects2D,
+  loadScenes2D,
+} from "./scene2d-store";
+import type { Scene2D, SceneObjectAsset2D } from "./scene2d-types";
 import { loadCustomPropsMeta, type CustomPropMeta } from "./custom-props";
 import { loadCustomTemplates, type SavedCustomTemplate } from "./custom-templates";
 import { loadPacks, type FacePack } from "./face-parts";
@@ -107,6 +112,8 @@ interface WorkspaceCloudDoc {
   baseModels2d?: BaseModel2D[];
   heads2d?: HeadPack2D[];
   parts2d?: CustomPartAsset2D[];
+  scenes2d?: Scene2D[];
+  sceneObjects2d?: SceneObjectAsset2D[];
   facePacks: FacePack[];
   customPoses: CustomPose[];
   customProps: CustomPropMeta[];
@@ -613,6 +620,8 @@ function collectWorkspaceDoc(uid: string, library: MangaLibraryState | null): Wo
     baseModels2d: loadCustomBaseModels2D().slice(0, 200),
     heads2d: loadCustomHeads2D().slice(0, 200),
     parts2d: loadCustomParts2D().slice(0, 500),
+    scenes2d: loadScenes2D().slice(0, 200),
+    sceneObjects2d: loadCustomSceneObjects2D().slice(0, 500),
     facePacks: loadPacks().slice(0, 500),
     customPoses: loadCustomPoses().slice(0, 500),
     customProps: loadCustomPropsMeta().slice(0, 500),
@@ -666,6 +675,16 @@ async function applyRemoteStateToLocal(
       }
       if (Array.isArray(remoteWorkspace.parts2d)) {
         userLsSet("koma-parts-2d", JSON.stringify(remoteWorkspace.parts2d), "workspace");
+      }
+      if (Array.isArray(remoteWorkspace.scenes2d)) {
+        userLsSet("koma-scenes-2d", JSON.stringify(remoteWorkspace.scenes2d), "workspace");
+      }
+      if (Array.isArray(remoteWorkspace.sceneObjects2d)) {
+        userLsSet(
+          "koma-scene-objects-2d",
+          JSON.stringify(remoteWorkspace.sceneObjects2d),
+          "workspace",
+        );
       }
       userLsSet("koma-face-packs", JSON.stringify(remoteWorkspace.facePacks ?? []), "workspace");
       userLsSet(
@@ -1290,6 +1309,8 @@ export async function buildFullAccountBackup(
   const baseModels2d = loadCustomBaseModels2D();
   const heads2d = loadCustomHeads2D();
   const parts2d = loadCustomParts2D();
+  const scenes2d = loadScenes2D();
+  const sceneObjects2d = loadCustomSceneObjects2D();
   const facePacks = loadPacks();
   const customPoses = loadCustomPoses();
   const customProps = loadCustomPropsMeta();
@@ -1338,6 +1359,8 @@ export async function buildFullAccountBackup(
     baseModels2d,
     heads2d,
     parts2d,
+    scenes2d,
+    sceneObjects2d,
     facePacks,
     customPoses,
     customProps,

@@ -71,6 +71,8 @@ export interface PlacedElement {
   };
   /** Optional 2D character creator recipe so stamped characters can spin/re-edit cleanly. */
   source2d?: import("./character2d-types").Source2DMetadata;
+  /** Optional 2D scene builder recipe so stamped scenes can be reopened & edited cleanly. */
+  sourceScene2d?: import("./scene2d-types").SourceScene2DMetadata;
 }
 
 export interface PageFormat {

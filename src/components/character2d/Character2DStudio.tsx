@@ -101,7 +101,7 @@ export interface Character2DStudioProps {
   elementCount: number;
   editingTarget?: { elementId: string; source2d: Source2DMetadata } | null;
   onCancelEditingTarget?: () => void;
-  onGoTab: (tab: "panels" | "create" | "pose") => void;
+  onGoTab: (tab: "panels" | "create" | "scenes" | "pose") => void;
   onSwitchTo3DLegacy: () => void;
   onStampToPanel: (panelId: string, dataUrl: string, source2d: Source2DMetadata) => void;
   onUpdatePanelElement: (elementId: string, dataUrl: string, source2d: Source2DMetadata) => void;
@@ -694,10 +694,17 @@ export function Character2DStudio({
           </button>
           <button
             type="button"
+            onClick={() => onGoTab("scenes")}
+            className="whitespace-nowrap rounded-sm px-2 sm:px-3 py-1 font-semibold text-muted-foreground hover:text-foreground transition-colors"
+          >
+            Scenes
+          </button>
+          <button
+            type="button"
             onClick={() => onGoTab("pose")}
             className="whitespace-nowrap rounded-sm px-2 sm:px-3 py-1 font-semibold text-muted-foreground hover:text-foreground transition-colors"
           >
-            3D Pose Studio
+            Pose & Stage
           </button>
         </nav>
 

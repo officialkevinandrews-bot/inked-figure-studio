@@ -33,8 +33,11 @@ import {
   type ComicMark,
   type SpeedLinesEffect,
   type SFXStamp,
+  SFX_CATEGORIES,
   SFX_PRESETS,
   SFX_STYLES,
+  type SFXCategory,
+  type SFXPreset,
   addBalloonTail,
   balloonPatchWithTails,
   defaultCurveControlForTail,
@@ -46,6 +49,9 @@ import { VECTOR_MARKS, markPath } from "@/lib/manga-marks";
 import { MANGA_FONTS, fontStack } from "@/lib/manga-fonts";
 import { MANGA_BACKGROUNDS, getMangaBackgroundDataUrl, type MangaBackground } from "@/lib/manga-backgrounds";
 import { PRESET_ROSTER, loadSavedRoster, type RosterCharacter } from "@/lib/character-roster";
+import { ensureScenes2DInitialized, loadCustomSceneObjects2D, loadScenes2D } from "@/lib/scene2d-store";
+import { exportScene2DPng } from "@/lib/scene2d-draw";
+import type { Scene2D, SourceScene2DMetadata } from "@/lib/scene2d-types";
 import { PageCanvas, type CanvasTool } from "./PageCanvas";
 import {
   GRID_TEMPLATES,
@@ -140,6 +146,11 @@ export interface PanelStudioProps {
     elementId: string,
     source2d: import("@/lib/character2d-types").Source2DMetadata,
   ) => void;
+  onOpenScenes?: () => void;
+  onEditScene2D?: (
+    elementId: string,
+    sourceScene2d: import("@/lib/scene2d-types").SourceScene2DMetadata,
+  ) => void;
   onOpen3dStudio: () => void;
   onRePoseIn3D?: (source3d: NonNullable<PlacedElement["source3d"]>) => void;
   allPages?: PageLayout[];
@@ -178,6 +189,8 @@ export function PanelStudio({
   onUpdateLayout,
   onOpenCreateCharacter,
   onEdit2DCharacter,
+  onOpenScenes,
+  onEditScene2D,
   onOpen3dStudio,
   onRePoseIn3D,
   allPages,
@@ -218,7 +231,16 @@ export function PanelStudio({
   const [mobilePreviewOpen, setMobilePreviewOpen] = useState(false);
   const [leftTab, setLeftTab] = useState<LeftTrayTab>("panels");
   const [bgCategory, setBgCategory] = useState<"scenery" | "action" | "mood" | "screentone">("scenery");
-  const [customSfxText, setCustomSfxText] = useState("ドンッ!!");
+  const [customSfxText, setCustomSfxText] = useState("BOOM!!");
+  const [sfxCategory, setSfxCategory] = useState<"all" | SFXCategory>("all");
+  const [sfxSearch, setSfxSearch] = useState("");
+  const [savedScenes, setSavedScenes] = useState<Scene2D[]>(() => ensureScenes2DInitialized());
+  const [sceneStampBusy, setSceneStampBusy] = useState(false);
+  useEffect(() => {
+    if (leftTab === "backgrounds") {
+      setSavedScenes(ensureScenes2DInitialized());
+    }
+  }, [leftTab]);
   const [filterModalOpen, setFilterModalOpen] = useState(false);
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [exportInitialTab, setExportInitialTab] = useState<"image" | "pdf" | "webtoon">("image");
@@ -1070,7 +1092,7 @@ export function PanelStudio({
     setSelectedItemId(newLines.id);
   };
 
-  const handleAddSFX = (text: string) => {
+  const handleAddSFX = (text: string, styleHint?: SFXPreset["styleHint"]) => {
     if (!selectedPanel) return;
     const bounds = getPanelPixelBounds(
       selectedPanel,
@@ -1080,18 +1102,30 @@ export function PanelStudio({
       layout.format.gutter
     );
 
+    const styleMap: Record<
+      NonNullable<SFXPreset["styleHint"]>,
+      { fontSize: number; fillColor: string; strokeColor: string; strokeWidth: number; rotation: number; skewX: number }
+    > = {
+      impact: { fontSize: 54, fillColor: "#ffffff", strokeColor: "#000000", strokeWidth: 4.5, rotation: -12, skewX: -12 },
+      dramatic: { fontSize: 48, fillColor: "#000000", strokeColor: "#ffffff", strokeWidth: 3, rotation: -6, skewX: -8 },
+      quiet: { fontSize: 34, fillColor: "#000000", strokeColor: "#ffffff", strokeWidth: 1.5, rotation: 0, skewX: 0 },
+      energy: { fontSize: 50, fillColor: "#facc15", strokeColor: "#000000", strokeWidth: 4, rotation: -10, skewX: -10 },
+      horror: { fontSize: 44, fillColor: "#dc2626", strokeColor: "#000000", strokeWidth: 4, rotation: -4, skewX: -6 },
+    };
+    const s = styleHint ? styleMap[styleHint] : styleMap.impact;
+
     const newSFX: SFXStamp = {
       id: `sfx-${Date.now()}`,
       panelId: selectedPanel.id,
       text,
       x: bounds.minX + bounds.width * 0.25,
       y: bounds.minY + bounds.height * 0.35,
-      fontSize: 50,
-      fillColor: "#ffffff",
-      strokeColor: "#000000",
-      strokeWidth: 4.5,
-      rotation: -12,
-      skewX: -10,
+      fontSize: s.fontSize,
+      fillColor: s.fillColor,
+      strokeColor: s.strokeColor,
+      strokeWidth: s.strokeWidth,
+      rotation: s.rotation,
+      skewX: s.skewX,
       zIndex: 80,
     };
 
@@ -1100,6 +1134,73 @@ export function PanelStudio({
       sfxStamps: [...(layout.sfxStamps ?? []), newSFX],
     });
     setSelectedItemId(newSFX.id);
+  };
+
+  // Stamp a saved 2D Scene Builder composition into the active panel (or page)
+  const handleStampSavedScene = async (sc: Scene2D) => {
+    setSceneStampBusy(true);
+    try {
+      const dataUrl = await exportScene2DPng(sc, loadCustomSceneObjects2D(), 1.5);
+      if (!dataUrl) return;
+      const sourceScene2d: SourceScene2DMetadata = {
+        sceneId: sc.id,
+        sceneName: sc.name,
+        renderMode: sc.renderMode,
+        snapshot: sc,
+      };
+      if (selectedPanel) {
+        const b = panelBounds(selectedPanel, layout.format);
+        const newBg: PlacedElement = {
+          id: `bg-${Date.now()}`,
+          panelId: selectedPanel.id,
+          type: "background",
+          fitMode: "fill-panel",
+          imageUrl: dataUrl,
+          x: Math.round(b.minX),
+          y: Math.round(b.minY),
+          width: Math.max(1, Math.round(b.width)),
+          height: Math.max(1, Math.round(b.height)),
+          rotation: 0,
+          flipX: false,
+          flipY: false,
+          zIndex: 1,
+          breakout: false,
+          sourceScene2d,
+        };
+        onUpdateLayout({
+          ...layout,
+          elements: [
+            newBg,
+            ...layout.elements.filter((el) => !(el.panelId === selectedPanel.id && el.type === "background")),
+          ],
+        });
+        setSelectedItemId(newBg.id);
+        return;
+      }
+
+      const freeBg: PlacedElement = {
+        id: `bg-${Date.now()}`,
+        panelId: PAGE_LAYER_ID,
+        type: "background",
+        fitMode: "free",
+        pageLayer: { kind: "behind" },
+        imageUrl: dataUrl,
+        x: Math.round((layout.format.width - 640) / 2),
+        y: Math.round((layout.format.height - 400) / 2),
+        width: 640,
+        height: 400,
+        rotation: 0,
+        flipX: false,
+        flipY: false,
+        zIndex: 1,
+        breakout: false,
+        sourceScene2d,
+      };
+      onUpdateLayout({ ...layout, elements: [freeBg, ...layout.elements] });
+      setSelectedItemId(freeBg.id);
+    } finally {
+      setSceneStampBusy(false);
+    }
   };
 
   // Stamp a Manga Background Plate into the Active Panel
@@ -1459,14 +1560,24 @@ export function PanelStudio({
               <span className="sm:hidden">Character</span>
             </button>
           )}
+          {onOpenScenes && (
+            <button
+              type="button"
+              onClick={onOpenScenes}
+              aria-pressed={false}
+              className="whitespace-nowrap rounded-sm px-2 sm:px-2.5 py-1 font-semibold text-muted-foreground hover:text-foreground transition-colors"
+            >
+              Scenes
+            </button>
+          )}
           <button
             type="button"
             onClick={onOpen3dStudio}
             aria-pressed={false}
             className="whitespace-nowrap rounded-sm px-2 sm:px-2.5 py-1 font-semibold text-muted-foreground hover:text-foreground transition-colors"
           >
-            <span className="hidden sm:inline">3D Pose Studio</span>
-            <span className="sm:hidden">3D Pose</span>
+            <span className="hidden sm:inline">Pose & Stage</span>
+            <span className="sm:hidden">Pose</span>
           </button>
         </nav>
 
@@ -2342,6 +2453,47 @@ export function PanelStudio({
                 </div>
               </div>
 
+              {/* Saved 2D Scenes from Scene Builder */}
+              <div className="space-y-1.5 rounded border border-border bg-muted/25 p-2" data-testid="saved-scenes-tray">
+                <div className="flex items-center justify-between gap-1">
+                  <span className="font-bold text-[11px]">My Saved 2D Scenes</span>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setSavedScenes(ensureScenes2DInitialized())}
+                      className="text-[10px] font-semibold text-muted-foreground hover:text-foreground underline"
+                    >
+                      Refresh
+                    </button>
+                    {onOpenScenes && (
+                      <button
+                        type="button"
+                        onClick={onOpenScenes}
+                        className="text-[10px] font-semibold text-primary underline"
+                      >
+                        Open Builder
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 gap-1 max-h-40 overflow-y-auto pr-0.5">
+                  {savedScenes.map((sc) => (
+                    <button
+                      key={sc.id}
+                      type="button"
+                      disabled={sceneStampBusy}
+                      onClick={() => void handleStampSavedScene(sc)}
+                      className="flex items-center justify-between gap-2 rounded border border-border bg-card px-2 py-1 text-left hover:border-foreground hover:bg-accent disabled:opacity-50"
+                    >
+                      <span className="truncate font-semibold text-[11px]">{sc.name}</span>
+                      <span className="shrink-0 rounded bg-muted px-1 py-0.5 text-[9px] font-bold uppercase text-muted-foreground">
+                        {sc.renderMode === "manga" ? "Ink" : "Color"} · {sc.objects.length}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               {/* Photo-to-Manga Filter Hero Button */}
               <button
                 onClick={() => setFilterModalOpen(true)}
@@ -2524,17 +2676,74 @@ export function PanelStudio({
               </div>
 
               {/* SFX Stamps */}
-              <div className="border-t border-border pt-3">
-                <h2 className="font-display text-sm flex items-center gap-1.5 mb-2">
-                  <Volume2 className="h-4 w-4 text-primary" /> Onomatopoeia SFX
-                </h2>
-                <div className="grid grid-cols-2 gap-1.5">
-                  {SFX_PRESETS.map((sfx) => (
+              <div className="border-t border-border pt-3 space-y-2" data-testid="sfx-library-section">
+                <div className="flex items-center justify-between gap-1">
+                  <h2 className="font-display text-sm flex items-center gap-1.5">
+                    <Volume2 className="h-4 w-4 text-primary" /> English SFX Library
+                  </h2>
+                  <span className="text-[10px] font-semibold text-muted-foreground">
+                    {SFX_PRESETS.length} words
+                  </span>
+                </div>
+
+                <input
+                  type="search"
+                  data-testid="sfx-search-input"
+                  value={sfxSearch}
+                  onChange={(e) => setSfxSearch(e.target.value)}
+                  placeholder="Search SFX (e.g. boom, slash, gasp)..."
+                  className="w-full rounded border border-input bg-background px-2 py-1 text-xs"
+                />
+
+                <div className="flex flex-wrap gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setSfxCategory("all")}
+                    className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                      sfxCategory === "all"
+                        ? "bg-foreground text-background"
+                        : "bg-muted text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    All
+                  </button>
+                  {SFX_CATEGORIES.map((cat) => (
                     <button
-                      key={sfx.text}
+                      key={cat.id}
+                      type="button"
+                      onClick={() => setSfxCategory(cat.id)}
+                      className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                        sfxCategory === cat.id
+                          ? "bg-foreground text-background"
+                          : "bg-muted text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      {cat.label}
+                    </button>
+                  ))}
+                </div>
+
+                <div
+                  className="grid grid-cols-2 gap-1.5 max-h-64 overflow-y-auto pr-0.5"
+                  data-testid="sfx-preset-grid"
+                >
+                  {SFX_PRESETS.filter((sfx) => {
+                    if (sfxCategory !== "all" && sfx.category !== sfxCategory) return false;
+                    const q = sfxSearch.trim().toLowerCase();
+                    if (!q) return true;
+                    return (
+                      sfx.text.toLowerCase().includes(q) ||
+                      sfx.label.toLowerCase().includes(q) ||
+                      sfx.category.toLowerCase().includes(q)
+                    );
+                  }).map((sfx) => (
+                    <button
+                      key={`${sfx.category}:${sfx.text}`}
+                      type="button"
                       disabled={!selectedPanel}
-                      onClick={() => handleAddSFX(sfx.text)}
-                      className="rounded-sm border border-border py-1 text-xs font-black italic hover:border-foreground hover:bg-accent disabled:opacity-40"
+                      title={`${sfx.label} (${sfx.category})`}
+                      onClick={() => handleAddSFX(sfx.text, sfx.styleHint)}
+                      className="truncate rounded-sm border border-border px-1.5 py-1 text-xs font-black italic hover:border-foreground hover:bg-accent disabled:opacity-40"
                     >
                       {sfx.text}
                     </button>
@@ -3539,6 +3748,22 @@ export function PanelStudio({
                 >
                   <User className="h-3.5 w-3.5 text-primary" />
                   Edit 2D Angle / Look ({selectedElement.source2d.angle}°)
+                </button>
+              )}
+
+              {/* Non-Destructive Re-Edit 2D Scene */}
+              {selectedElement.sourceScene2d && onEditScene2D && (
+                <button
+                  type="button"
+                  data-testid="panel-edit-2d-scene-btn"
+                  onClick={() =>
+                    selectedElement.sourceScene2d &&
+                    onEditScene2D(selectedElement.id, selectedElement.sourceScene2d)
+                  }
+                  className="w-full flex items-center justify-center gap-1.5 rounded border-2 border-foreground bg-primary/15 py-1.5 font-bold shadow-ink text-xs hover:bg-primary/25 transition-transform hover:-translate-y-0.5"
+                >
+                  <ImageIcon className="h-3.5 w-3.5 text-primary" />
+                  Edit Scene in Scene Builder
                 </button>
               )}
 

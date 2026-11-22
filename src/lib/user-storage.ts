@@ -21,6 +21,8 @@ export const LEGACY_EXACT_KEYS = [
   "koma-base-models-2d",
   "koma-heads-2d",
   "koma-parts-2d",
+  "koma-scenes-2d",
+  "koma-scene-objects-2d",
   "koma-face-packs",
   "inked_figure_studio_custom_poses_v1",
   "koma-custom-props-v1",
