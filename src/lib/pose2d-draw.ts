@@ -474,6 +474,8 @@ export function buildCharacterRigSlices(
               profileForearmCutout.canvas,
               profileForearmCutout.x,
               profileForearmCutout.y,
+              profileForearmCutout.w,
+              profileForearmCutout.h,
             );
             return c;
           })()

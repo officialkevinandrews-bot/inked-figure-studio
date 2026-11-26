@@ -71,10 +71,7 @@ import {
   resolveIllustratedHairPack2D,
   resolveIllustratedTopPack2D,
 } from "@/lib/character2d-catalog";
-import {
-  BUILTIN_HEAD_PACKS_2D,
-  resolveHeadPack2D,
-} from "@/lib/character2d-heads";
+import { BUILTIN_HEAD_PACKS_2D, resolveHeadPack2D } from "@/lib/character2d-heads";
 import { BUILTIN_MODEL_MALE_ATHLETIC_V1 } from "@/lib/character2d-model1";
 import {
   deleteUploadedBaseModel2D,
@@ -211,7 +208,9 @@ export function Character2DStudio({
   onStampToPanel,
   onUpdatePanelElement,
 }: Character2DStudioProps) {
-  const [characters, setCharacters] = useState<Character2D[]>(() => ensureCharacters2DInitialized());
+  const [characters, setCharacters] = useState<Character2D[]>(() =>
+    ensureCharacters2DInitialized(),
+  );
   const [activeId, setActiveId] = useState<string>(() => {
     if (editingTarget?.source2d?.characterId) return editingTarget.source2d.characterId;
     return ensureCharacters2DInitialized()[0]?.id ?? "";
@@ -249,9 +248,9 @@ export function Character2DStudio({
   const [headUploadMode, setHeadUploadMode] = useState<HeadPack2D["sheetMode"]>("sheet-8");
   const [headUploadName, setHeadUploadName] = useState("");
   const [headUploadRemoveBg, setHeadUploadRemoveBg] = useState(true);
-  const [headPreview, setHeadPreview] = useState<ReturnType<typeof sliceHeadTurnaroundSheet> | null>(
-    null,
-  );
+  const [headPreview, setHeadPreview] = useState<ReturnType<
+    typeof sliceHeadTurnaroundSheet
+  > | null>(null);
   const [headUploadBusy, setHeadUploadBusy] = useState(false);
   const [headUploadErr, setHeadUploadErr] = useState<string | null>(null);
 
@@ -316,10 +315,7 @@ export function Character2DStudio({
     () => resolveBaseModel2D(activeChar.baseModelId, customModels),
     [activeChar.baseModelId, customModels],
   );
-  const allHeadPacks = useMemo(
-    () => [...BUILTIN_HEAD_PACKS_2D, ...customHeads],
-    [customHeads],
-  );
+  const allHeadPacks = useMemo(() => [...BUILTIN_HEAD_PACKS_2D, ...customHeads], [customHeads]);
   const activeHeadPack = useMemo(
     () => resolveHeadPack2D(activeChar.headShapeId, customHeads),
     [activeChar.headShapeId, customHeads],
@@ -348,7 +344,7 @@ export function Character2DStudio({
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
 
-      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      const dpr = Math.max(2, Math.min(3, window.devicePixelRatio || 1));
       const outW = CHAR2D_W * dpr;
       const outH = CHAR2D_H * dpr;
       if (canvas.width !== outW || canvas.height !== outH) {
@@ -950,7 +946,9 @@ export function Character2DStudio({
       {/* Main Content Split */}
       <div className="flex flex-1 min-h-0 flex-col md:flex-row overflow-hidden">
         {/* Left/Center: 2D Character Turntable Canvas */}
-        <section className={`relative flex flex-1 min-h-[250px] flex-col items-center justify-between overflow-hidden ${stageBgClass}`}>
+        <section
+          className={`relative flex flex-1 min-h-[250px] flex-col items-center justify-between overflow-hidden ${stageBgClass}`}
+        >
           <div className="absolute top-2.5 left-2.5 z-10 flex items-center gap-1 rounded-sm border border-border bg-card/90 p-1 text-[10px] font-semibold backdrop-blur-xs">
             {(["checker", "paper", "dark"] as const).map((bg) => (
               <button
@@ -1070,7 +1068,8 @@ export function Character2DStudio({
               <>
                 {isRearAngle && (
                   <div className="rounded-sm border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-[11px] text-amber-800 dark:text-amber-200">
-                    Rear view ({activeChar.angle}°) hides facial features. Rotate to 0°, 45°, 90°, 270°, or 315° to preview edits.
+                    Rear view ({activeChar.angle}°) hides facial features. Rotate to 0°, 45°, 90°,
+                    270°, or 315° to preview edits.
                   </div>
                 )}
 
@@ -1407,7 +1406,8 @@ export function Character2DStudio({
                       value={
                         activeChar.face.mouthStyle === "none"
                           ? "none"
-                          : (resolveIllustratedFacePack2D(activeChar.face.mouthStyle)?.id ?? "sharp")
+                          : (resolveIllustratedFacePack2D(activeChar.face.mouthStyle)?.id ??
+                            "sharp")
                       }
                       onChange={(e) =>
                         updateActiveChar((c) => ({
@@ -1573,161 +1573,164 @@ export function Character2DStudio({
               </>
             )}
 
-            {inspectorTab === "clothes" && (() => {
-              const activeTopPack = resolveIllustratedTopPack2D(activeChar.clothes.top);
-              const activeTopId = activeTopPack?.id ?? "none";
-              const activeBottomPack = resolveIllustratedBottomPack2D(activeChar.clothes.bottom);
-              const activeBottomId = activeBottomPack?.id ?? "none";
-              const activeFootwearPack = resolveIllustratedFootwearPack2D(
-                activeChar.clothes.footwear,
-              );
-              const activeFootwearId = activeFootwearPack?.id ?? "none";
+            {inspectorTab === "clothes" &&
+              (() => {
+                const activeTopPack = resolveIllustratedTopPack2D(activeChar.clothes.top);
+                const activeTopId = activeTopPack?.id ?? "none";
+                const activeBottomPack = resolveIllustratedBottomPack2D(activeChar.clothes.bottom);
+                const activeBottomId = activeBottomPack?.id ?? "none";
+                const activeFootwearPack = resolveIllustratedFootwearPack2D(
+                  activeChar.clothes.footwear,
+                );
+                const activeFootwearId = activeFootwearPack?.id ?? "none";
 
-              return (
-                <>
-                  <div className="space-y-2">
-                    <span className="font-bold block">Tops &amp; Outerwear (8 Angles)</span>
-                    <div className="grid grid-cols-2 gap-1.5">
-                      {(Object.keys(TOP_STYLE_LABELS_2D) as TopStyle2D[]).map((topId) => (
-                        <button
-                          key={topId}
-                          type="button"
-                          onClick={() =>
-                            updateActiveChar((c) => ({
-                              ...c,
-                              clothes: { ...c.clothes, top: topId },
-                            }))
-                          }
-                          className={`rounded-xs border px-2 py-1.5 text-left font-semibold ${activeTopId === topId ? "border-foreground bg-primary text-primary-foreground" : "border-border bg-background hover:border-foreground"}`}
-                        >
-                          {TOP_STYLE_LABELS_2D[topId]}
-                        </button>
-                      ))}
-                    </div>
-                    {activeTopPack && (
-                      <div className="space-y-2 rounded-sm border border-border bg-background p-2.5">
-                        <ColorRgbControl
-                          label={activeTopPack.primaryLabel}
-                          value={activeChar.clothes.topColor}
-                          onChange={(hex) =>
-                            updateActiveChar((c) => ({
-                              ...c,
-                              clothes: { ...c.clothes, topColor: hex },
-                            }))
-                          }
-                        />
-                        {activeTopPack.accentLabel && (
+                return (
+                  <>
+                    <div className="space-y-2">
+                      <span className="font-bold block">Tops &amp; Outerwear (8 Angles)</span>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        {(Object.keys(TOP_STYLE_LABELS_2D) as TopStyle2D[]).map((topId) => (
+                          <button
+                            key={topId}
+                            type="button"
+                            onClick={() =>
+                              updateActiveChar((c) => ({
+                                ...c,
+                                clothes: { ...c.clothes, top: topId },
+                              }))
+                            }
+                            className={`rounded-xs border px-2 py-1.5 text-left font-semibold ${activeTopId === topId ? "border-foreground bg-primary text-primary-foreground" : "border-border bg-background hover:border-foreground"}`}
+                          >
+                            {TOP_STYLE_LABELS_2D[topId]}
+                          </button>
+                        ))}
+                      </div>
+                      {activeTopPack && (
+                        <div className="space-y-2 rounded-sm border border-border bg-background p-2.5">
                           <ColorRgbControl
-                            label={activeTopPack.accentLabel}
-                            value={activeChar.clothes.topAccentColor}
+                            label={activeTopPack.primaryLabel}
+                            value={activeChar.clothes.topColor}
                             onChange={(hex) =>
                               updateActiveChar((c) => ({
                                 ...c,
-                                clothes: { ...c.clothes, topAccentColor: hex },
+                                clothes: { ...c.clothes, topColor: hex },
                               }))
                             }
                           />
-                        )}
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="space-y-2 border-t border-border pt-3">
-                    <span className="font-bold block">Bottoms</span>
-                    <div className="grid grid-cols-2 gap-1.5">
-                      {(Object.keys(BOTTOM_STYLE_LABELS_2D) as BottomStyle2D[]).map((botId) => (
-                        <button
-                          key={botId}
-                          type="button"
-                          onClick={() =>
-                            updateActiveChar((c) => ({
-                              ...c,
-                              clothes: { ...c.clothes, bottom: botId },
-                            }))
-                          }
-                          className={`rounded-xs border px-2 py-1.5 text-left font-semibold ${activeBottomId === botId ? "border-foreground bg-primary text-primary-foreground" : "border-border bg-background hover:border-foreground"}`}
-                        >
-                          {BOTTOM_STYLE_LABELS_2D[botId]}
-                        </button>
-                      ))}
+                          {activeTopPack.accentLabel && (
+                            <ColorRgbControl
+                              label={activeTopPack.accentLabel}
+                              value={activeChar.clothes.topAccentColor}
+                              onChange={(hex) =>
+                                updateActiveChar((c) => ({
+                                  ...c,
+                                  clothes: { ...c.clothes, topAccentColor: hex },
+                                }))
+                              }
+                            />
+                          )}
+                        </div>
+                      )}
                     </div>
-                    {activeBottomPack && (
-                      <div className="space-y-2 rounded-sm border border-border bg-background p-2.5">
-                        <ColorRgbControl
-                          label={activeBottomPack.primaryLabel}
-                          value={activeChar.clothes.bottomColor}
-                          onChange={(hex) =>
-                            updateActiveChar((c) => ({
-                              ...c,
-                              clothes: { ...c.clothes, bottomColor: hex },
-                            }))
-                          }
-                        />
-                        {activeBottomPack.accentLabel && (
+
+                    <div className="space-y-2 border-t border-border pt-3">
+                      <span className="font-bold block">Bottoms</span>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        {(Object.keys(BOTTOM_STYLE_LABELS_2D) as BottomStyle2D[]).map((botId) => (
+                          <button
+                            key={botId}
+                            type="button"
+                            onClick={() =>
+                              updateActiveChar((c) => ({
+                                ...c,
+                                clothes: { ...c.clothes, bottom: botId },
+                              }))
+                            }
+                            className={`rounded-xs border px-2 py-1.5 text-left font-semibold ${activeBottomId === botId ? "border-foreground bg-primary text-primary-foreground" : "border-border bg-background hover:border-foreground"}`}
+                          >
+                            {BOTTOM_STYLE_LABELS_2D[botId]}
+                          </button>
+                        ))}
+                      </div>
+                      {activeBottomPack && (
+                        <div className="space-y-2 rounded-sm border border-border bg-background p-2.5">
                           <ColorRgbControl
-                            label={activeBottomPack.accentLabel}
-                            value={activeChar.clothes.bottomAccentColor}
+                            label={activeBottomPack.primaryLabel}
+                            value={activeChar.clothes.bottomColor}
                             onChange={(hex) =>
                               updateActiveChar((c) => ({
                                 ...c,
-                                clothes: { ...c.clothes, bottomAccentColor: hex },
+                                clothes: { ...c.clothes, bottomColor: hex },
                               }))
                             }
                           />
+                          {activeBottomPack.accentLabel && (
+                            <ColorRgbControl
+                              label={activeBottomPack.accentLabel}
+                              value={activeChar.clothes.bottomAccentColor}
+                              onChange={(hex) =>
+                                updateActiveChar((c) => ({
+                                  ...c,
+                                  clothes: { ...c.clothes, bottomAccentColor: hex },
+                                }))
+                              }
+                            />
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="space-y-2 border-t border-border pt-3">
+                      <span className="font-bold block">Footwear</span>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        {(Object.keys(FOOTWEAR_STYLE_LABELS_2D) as FootwearStyle2D[]).map(
+                          (fwId) => (
+                            <button
+                              key={fwId}
+                              type="button"
+                              onClick={() =>
+                                updateActiveChar((c) => ({
+                                  ...c,
+                                  clothes: { ...c.clothes, footwear: fwId },
+                                }))
+                              }
+                              className={`rounded-xs border px-2 py-1.5 text-left font-semibold ${activeFootwearId === fwId ? "border-foreground bg-primary text-primary-foreground" : "border-border bg-background hover:border-foreground"}`}
+                            >
+                              {FOOTWEAR_STYLE_LABELS_2D[fwId]}
+                            </button>
+                          ),
                         )}
                       </div>
-                    )}
-                  </div>
-
-                  <div className="space-y-2 border-t border-border pt-3">
-                    <span className="font-bold block">Footwear</span>
-                    <div className="grid grid-cols-2 gap-1.5">
-                      {(Object.keys(FOOTWEAR_STYLE_LABELS_2D) as FootwearStyle2D[]).map((fwId) => (
-                        <button
-                          key={fwId}
-                          type="button"
-                          onClick={() =>
-                            updateActiveChar((c) => ({
-                              ...c,
-                              clothes: { ...c.clothes, footwear: fwId },
-                            }))
-                          }
-                          className={`rounded-xs border px-2 py-1.5 text-left font-semibold ${activeFootwearId === fwId ? "border-foreground bg-primary text-primary-foreground" : "border-border bg-background hover:border-foreground"}`}
-                        >
-                          {FOOTWEAR_STYLE_LABELS_2D[fwId]}
-                        </button>
-                      ))}
-                    </div>
-                    {activeFootwearPack && (
-                      <div className="space-y-2 rounded-sm border border-border bg-background p-2.5">
-                        <ColorRgbControl
-                          label={activeFootwearPack.primaryLabel}
-                          value={activeChar.clothes.footwearColor}
-                          onChange={(hex) =>
-                            updateActiveChar((c) => ({
-                              ...c,
-                              clothes: { ...c.clothes, footwearColor: hex },
-                            }))
-                          }
-                        />
-                        {activeFootwearPack.accentLabel && (
+                      {activeFootwearPack && (
+                        <div className="space-y-2 rounded-sm border border-border bg-background p-2.5">
                           <ColorRgbControl
-                            label={activeFootwearPack.accentLabel}
-                            value={activeChar.clothes.footwearAccentColor}
+                            label={activeFootwearPack.primaryLabel}
+                            value={activeChar.clothes.footwearColor}
                             onChange={(hex) =>
                               updateActiveChar((c) => ({
                                 ...c,
-                                clothes: { ...c.clothes, footwearAccentColor: hex },
+                                clothes: { ...c.clothes, footwearColor: hex },
                               }))
                             }
                           />
-                        )}
-                      </div>
-                    )}
-                  </div>
-                </>
-              );
-            })()}
+                          {activeFootwearPack.accentLabel && (
+                            <ColorRgbControl
+                              label={activeFootwearPack.accentLabel}
+                              value={activeChar.clothes.footwearAccentColor}
+                              onChange={(hex) =>
+                                updateActiveChar((c) => ({
+                                  ...c,
+                                  clothes: { ...c.clothes, footwearAccentColor: hex },
+                                }))
+                              }
+                            />
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </>
+                );
+              })()}
 
             {inspectorTab === "body" && (
               <>
@@ -1769,7 +1772,9 @@ export function Character2DStudio({
 
                 <div className="flex items-center justify-between gap-2 rounded-xs border border-border bg-muted/25 px-2.5 py-1.5 text-[11px]">
                   <div className="min-w-0">
-                    <span className="text-muted-foreground block text-[10px]">Active Head Shape</span>
+                    <span className="text-muted-foreground block text-[10px]">
+                      Active Head Shape
+                    </span>
                     <span className="font-bold truncate block">{activeHeadPack.name}</span>
                   </div>
                   <button
@@ -1793,9 +1798,7 @@ export function Character2DStudio({
                         >
                           <button
                             type="button"
-                            onClick={() =>
-                              updateActiveChar((c) => ({ ...c, baseModelId: m.id }))
-                            }
+                            onClick={() => updateActiveChar((c) => ({ ...c, baseModelId: m.id }))}
                             className="flex-1 text-left truncate"
                           >
                             {m.name} {m.builtIn ? "(Built-In)" : ""}
@@ -1872,7 +1875,9 @@ export function Character2DStudio({
                       }}
                     />
                   </label>
-                  {modelUploadErr && <p className="text-[11px] text-destructive">{modelUploadErr}</p>}
+                  {modelUploadErr && (
+                    <p className="text-[11px] text-destructive">{modelUploadErr}</p>
+                  )}
 
                   {modelPreview && (
                     <div className="space-y-2 pt-1">
@@ -1936,7 +1941,8 @@ export function Character2DStudio({
                       <span className="flex justify-between">
                         <span>Shoulder L / R</span>
                         <span className="font-mono">
-                          {Math.round(currentAnchors.shoulderL)}..{Math.round(currentAnchors.shoulderR)}
+                          {Math.round(currentAnchors.shoulderL)}..
+                          {Math.round(currentAnchors.shoulderR)}
                         </span>
                       </span>
                       <input
@@ -2039,7 +2045,9 @@ export function Character2DStudio({
                     <select
                       aria-label="Custom part category"
                       value={partUploadSlot}
-                      onChange={(e) => setPartUploadSlot(e.target.value as CustomPartAsset2D["slot"])}
+                      onChange={(e) =>
+                        setPartUploadSlot(e.target.value as CustomPartAsset2D["slot"])
+                      }
                       className="rounded-xs border border-input bg-background px-1.5 py-1"
                     >
                       <option value="accessory">Accessory / Prop</option>
@@ -2099,7 +2107,8 @@ export function Character2DStudio({
                   </span>
                   {activeChar.customLayers.length === 0 ? (
                     <p className="text-[11px] text-muted-foreground">
-                      No custom PNG layers equipped yet. Upload a part above or pick from your saved parts library below.
+                      No custom PNG layers equipped yet. Upload a part above or pick from your saved
+                      parts library below.
                     </p>
                   ) : (
                     activeChar.customLayers.map((layer) => {
@@ -2156,7 +2165,9 @@ export function Character2DStudio({
                               onClick={() =>
                                 updateActiveChar((c) => ({
                                   ...c,
-                                  customLayers: c.customLayers.filter((item) => item.id !== layer.id),
+                                  customLayers: c.customLayers.filter(
+                                    (item) => item.id !== layer.id,
+                                  ),
                                 }))
                               }
                               className="rounded-xs p-1 text-destructive hover:bg-destructive/10"
@@ -2275,9 +2286,7 @@ export function Character2DStudio({
                             <div className="flex items-center gap-1.5">
                               <button
                                 type="button"
-                                onClick={() =>
-                                  updateLayerTransform(layer.id, { flipX: !tr.flipX })
-                                }
+                                onClick={() => updateLayerTransform(layer.id, { flipX: !tr.flipX })}
                                 className="inline-flex items-center gap-1 rounded-xs border border-border px-2 py-0.5 text-[10px] font-semibold hover:border-foreground"
                               >
                                 <FlipHorizontal className="h-3 w-3" />
@@ -2301,7 +2310,9 @@ export function Character2DStudio({
                 {/* Reusable Saved Parts Library */}
                 {customParts.length > 0 && (
                   <div className="space-y-1.5 border-t border-border pt-2">
-                    <span className="font-bold block">Saved Parts Library ({customParts.length})</span>
+                    <span className="font-bold block">
+                      Saved Parts Library ({customParts.length})
+                    </span>
                     <div className="space-y-1">
                       {customParts.map((asset) => (
                         <div

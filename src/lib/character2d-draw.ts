@@ -94,10 +94,17 @@ function getProcessedCompositedBaseSprite(
     return getProcessedBaseSprite(baseImg, baseSrc, mode, skinTone);
   }
 
+  const scale = baseImg.naturalWidth >= CHAR2D_W * 2 ? 2 : 1;
+  const tw = CHAR2D_W * scale;
+  const th = CHAR2D_H * scale;
   const merged = document.createElement("canvas");
-  merged.width = CHAR2D_W;
-  merged.height = CHAR2D_H;
+  merged.width = tw;
+  merged.height = th;
   const ctx = merged.getContext("2d")!;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.save();
+  ctx.scale(scale, scale);
   ctx.drawImage(baseImg, 0, 0, CHAR2D_W, CHAR2D_H);
 
   // Erase existing base head+neck strictly inside the neck column so base shoulders/trapezius stay 100% intact
@@ -129,11 +136,12 @@ function getProcessedCompositedBaseSprite(
   const dy = targetNeckY - headAnchors.neckAttachY * fitScale;
   ctx.drawImage(headOverlayImg, dx, dy, OVERLAY_HEAD_W * fitScale, OVERLAY_HEAD_H * fitScale);
   ctx.restore();
+  ctx.restore();
 
   const processed =
     mode === "manga"
-      ? extractMangaLineartCanvas(merged, CHAR2D_W, CHAR2D_H)
-      : applySkinToneCanvas(merged, skinTone, CHAR2D_W, CHAR2D_H);
+      ? extractMangaLineartCanvas(merged, tw, th)
+      : applySkinToneCanvas(merged, skinTone, tw, th);
   return putProcessedCache(key, processed);
 }
 
@@ -146,10 +154,13 @@ function getProcessedBaseSprite(
   const key = `base|${srcKey}|${mode}|${skinTone ?? "orig"}`;
   const hit = PROCESSED_SPRITE_CACHE.get(key);
   if (hit) return hit;
+  const scale = img.naturalWidth >= CHAR2D_W * 2 ? 2 : 1;
+  const tw = CHAR2D_W * scale;
+  const th = CHAR2D_H * scale;
   const processed =
     mode === "manga"
-      ? extractMangaLineartCanvas(img, CHAR2D_W, CHAR2D_H)
-      : applySkinToneCanvas(img, skinTone, CHAR2D_W, CHAR2D_H);
+      ? extractMangaLineartCanvas(img, tw, th)
+      : applySkinToneCanvas(img, skinTone, tw, th);
   return putProcessedCache(key, processed);
 }
 
@@ -270,14 +281,20 @@ function analyzeBaseHeadSilhouette(
   const cached = HEAD_SILHOUETTE_CACHE.get(cacheKey);
   if (cached) return cached;
 
-  const ctx = processedBase.getContext("2d")!;
+  const s = processedBase.width / CHAR2D_W;
   const x0 = 140;
   const x1 = 340;
   const y0 = 55;
   const y1 = 255;
   const rw = x1 - x0;
   const rh = y1 - y0;
-  const data = ctx.getImageData(x0, y0, rw, rh).data;
+  // Probe at logical 1x for fast landmark measurement regardless of 1x vs 2x backing canvas
+  const probe = document.createElement("canvas");
+  probe.width = rw;
+  probe.height = rh;
+  const pctx = probe.getContext("2d")!;
+  pctx.drawImage(processedBase, x0 * s, y0 * s, rw * s, rh * s, 0, 0, rw, rh);
+  const data = pctx.getImageData(0, 0, rw, rh).data;
 
   const rowSpan = (wy: number): [number, number] | null => {
     const ly = Math.round(wy) - y0;
@@ -364,31 +381,38 @@ function analyzeBaseHeadSilhouette(
   const neckCx = (neckL + neckR) / 2;
   const neckW = neckR - neckL + 1;
 
-  // Build per-pixel eroded interior head mask canvas so zero face pixels can float outside head outline
+  // Build per-pixel eroded interior head mask canvas at native sprite scale so zero face pixels float outside head outline
+  const maskScale = Math.max(1, Math.round(s));
+  const mrw = rw * maskScale;
+  const mrh = rh * maskScale;
   const headMaskCanvas = document.createElement("canvas");
-  headMaskCanvas.width = rw;
-  headMaskCanvas.height = rh;
+  headMaskCanvas.width = mrw;
+  headMaskCanvas.height = mrh;
   const hmCtx = headMaskCanvas.getContext("2d")!;
-  const hmId = hmCtx.createImageData(rw, rh);
+  const srcMaskData =
+    maskScale === 1
+      ? data
+      : processedBase.getContext("2d")!.getImageData(x0 * maskScale, y0 * maskScale, mrw, mrh).data;
+  const hmId = hmCtx.createImageData(mrw, mrh);
   const hmd = hmId.data;
-  const maxMaskY = Math.min(rh - 1, chinY - 2 - y0);
-  const minMaskY = Math.max(0, topY + 2 - y0);
+  const maxMaskY = Math.min(mrh - 1, (chinY - 2 - y0) * maskScale);
+  const minMaskY = Math.max(0, (topY + 2 - y0) * maskScale);
   const alphaAt = (lx: number, ly: number) =>
-    lx >= 0 && lx < rw && ly >= 0 && ly < rh ? (data[(ly * rw + lx) * 4 + 3] ?? 0) : 0;
+    lx >= 0 && lx < mrw && ly >= 0 && ly < mrh ? (srcMaskData[(ly * mrw + lx) * 4 + 3] ?? 0) : 0;
   for (let ly = minMaskY; ly <= maxMaskY; ly++) {
-    const wy = y0 + ly;
+    const wy = y0 + ly / maskScale;
     const inEyeBand = Math.abs(wy - eyeY) <= 15;
-    const marginL = inEyeBand && angle === 315 ? 1 : 2;
-    const marginR = inEyeBand && angle === 45 ? 1 : 2;
-    for (let lx = 0; lx < rw; lx++) {
+    const marginL = (inEyeBand && angle === 315 ? 1 : 2) * maskScale;
+    const marginR = (inEyeBand && angle === 45 ? 1 : 2) * maskScale;
+    for (let lx = 0; lx < mrw; lx++) {
       if (
         alphaAt(lx, ly) >= 200 &&
         alphaAt(lx - marginL, ly) >= 160 &&
         alphaAt(lx + marginR, ly) >= 160 &&
-        alphaAt(lx, ly - 1) >= 180 &&
-        alphaAt(lx, ly + 1) >= 180
+        alphaAt(lx, ly - maskScale) >= 180 &&
+        alphaAt(lx, ly + maskScale) >= 180
       ) {
-        const p = (ly * rw + lx) * 4;
+        const p = (ly * mrw + lx) * 4;
         hmd[p] = 0;
         hmd[p + 1] = 0;
         hmd[p + 2] = 0;
@@ -435,42 +459,49 @@ function getNeckFittedTopSprite(
   neckCx: number,
 ): HTMLCanvasElement {
   if (extraL <= 2 && extraR <= 2) return baseSprite;
-  const key = `neckwarp2|${srcKey}|${Math.round(extraL)}|${Math.round(extraR)}|${Math.round(neckCx)}`;
+  const w = baseSprite.width;
+  const h = baseSprite.height;
+  const s = w / CHAR2D_W;
+  const key = `neckwarp2|${srcKey}|${w}x${h}|${Math.round(extraL)}|${Math.round(extraR)}|${Math.round(neckCx)}`;
   const hit = PROCESSED_SPRITE_CACHE.get(key);
   if (hit) return hit;
 
   const out = document.createElement("canvas");
-  out.width = CHAR2D_W;
-  out.height = CHAR2D_H;
+  out.width = w;
+  out.height = h;
   const octx = out.getContext("2d")!;
   octx.drawImage(baseSprite, 0, 0);
 
-  const yMin = 205;
-  const yMax = 286;
-  const srcId = baseSprite.getContext("2d")!.getImageData(0, yMin, CHAR2D_W, yMax - yMin).data;
-  const dstId = octx.getImageData(0, yMin, CHAR2D_W, yMax - yMin);
+  const yMin = Math.round(205 * s);
+  const yMax = Math.round(286 * s);
+  const bandH = yMax - yMin;
+  const srcId = baseSprite.getContext("2d")!.getImageData(0, yMin, w, bandH).data;
+  const dstId = octx.getImageData(0, yMin, w, bandH);
   const dd = dstId.data;
-  const shiftL = Math.min(15, extraL * 0.95);
-  const shiftR = Math.min(15, extraR * 0.95);
+  const shiftL = Math.min(15, extraL * 0.95) * s;
+  const shiftR = Math.min(15, extraR * 0.95) * s;
+  const neckCxPx = neckCx * s;
+  const xScanMin = Math.round(136 * s);
+  const xScanMax = Math.round(344 * s);
 
-  for (let ly = 0; ly < yMax - yMin; ly++) {
+  for (let ly = 0; ly < bandH; ly++) {
     const wy = yMin + ly;
-    const yFac = Math.pow(1 - (wy - yMin) / (yMax - yMin), 1.5);
+    const yFac = Math.pow(1 - (wy - yMin) / bandH, 1.5);
     if (yFac <= 0.01) continue;
-    for (let x = 136; x < 344; x++) {
-      const dx = x - neckCx;
+    for (let x = xScanMin; x < xScanMax; x++) {
+      const dx = x - neckCxPx;
       const absDx = Math.abs(dx);
-      if (absDx < 2 || absDx > 72) continue;
+      if (absDx < 2 * s || absDx > 72 * s) continue;
       const sideShift = dx < 0 ? shiftL : shiftR;
       if (sideShift <= 0.2) continue;
-      const hEnv = Math.exp(-Math.pow(Math.max(0, absDx - 18) / 26, 2));
-      const shift = Math.sign(dx) * sideShift * yFac * hEnv * Math.min(1, absDx / 12);
+      const hEnv = Math.exp(-Math.pow(Math.max(0, absDx - 18 * s) / (26 * s), 2));
+      const shift = Math.sign(dx) * sideShift * yFac * hEnv * Math.min(1, absDx / (12 * s));
       const sx = x - shift;
-      const x0 = Math.max(0, Math.min(CHAR2D_W - 2, Math.floor(sx)));
+      const x0 = Math.max(0, Math.min(w - 2, Math.floor(sx)));
       const f = sx - x0;
-      const i0 = (ly * CHAR2D_W + x0) * 4;
+      const i0 = (ly * w + x0) * 4;
       const i1 = i0 + 4;
-      const oi = (ly * CHAR2D_W + x) * 4;
+      const oi = (ly * w + x) * 4;
       dd[oi] = Math.round((srcId[i0] ?? 0) * (1 - f) + (srcId[i1] ?? 0) * f);
       dd[oi + 1] = Math.round((srcId[i0 + 1] ?? 0) * (1 - f) + (srcId[i1 + 1] ?? 0) * f);
       dd[oi + 2] = Math.round((srcId[i0 + 2] ?? 0) * (1 - f) + (srcId[i1 + 2] ?? 0) * f);
@@ -514,26 +545,30 @@ function getClothingMaskedBaseCanvas(
   hasFootwear: boolean,
 ): HTMLCanvasElement {
   if (!hasHair && !hasTop && !hasBottom && !hasFootwear) return processedBase;
-  const key = `cmask|${silKey}|${angle}|${hasHair ? 1 : 0}${hasTop ? 1 : 0}${hasBottom ? 1 : 0}${hasFootwear ? 1 : 0}`;
+  const w = processedBase.width;
+  const h = processedBase.height;
+  const s = w / CHAR2D_W;
+  const key = `cmask|${silKey}|${w}x${h}|${angle}|${hasHair ? 1 : 0}${hasTop ? 1 : 0}${hasBottom ? 1 : 0}${hasFootwear ? 1 : 0}`;
   const hit = PROCESSED_SPRITE_CACHE.get(key);
   if (hit) return hit;
 
   const out = document.createElement("canvas");
-  out.width = CHAR2D_W;
-  out.height = CHAR2D_H;
+  out.width = w;
+  out.height = h;
   const octx = out.getContext("2d")!;
   octx.drawImage(processedBase, 0, 0);
-  const img = octx.getImageData(0, 0, CHAR2D_W, CHAR2D_H);
+  const img = octx.getImageData(0, 0, w, h);
   const d = img.data;
 
   // 1. Hide bald top-of-skull black outline underneath illustrated hair dome
   if (hasHair && sil) {
-    const maxScalpY = Math.min(126, sil.topY + 32);
-    const xL = Math.max(0, sil.skullL - 2);
-    const xR = Math.min(CHAR2D_W - 1, sil.skullR + 2);
-    for (let y = Math.max(0, sil.topY - 2); y <= maxScalpY; y++) {
+    const y0 = Math.max(0, Math.floor((sil.topY - 2) * s));
+    const y1 = Math.min(h - 1, Math.ceil(Math.min(126, sil.topY + 32) * s));
+    const xL = Math.max(0, Math.floor((sil.skullL - 2) * s));
+    const xR = Math.min(w - 1, Math.ceil((sil.skullR + 2) * s));
+    for (let y = y0; y <= y1; y++) {
       for (let x = xL; x <= xR; x++) {
-        d[(y * CHAR2D_W + x) * 4 + 3] = 0;
+        d[(y * w + x) * 4 + 3] = 0;
       }
     }
   }
@@ -543,53 +578,74 @@ function getClothingMaskedBaseCanvas(
     const neckCx = sil ? sil.neckCx : (anchors.neckL + anchors.neckR) / 2;
     const isFrontV = angle === 0 || angle === 45 || angle === 315;
     const isProf = angle === 90 || angle === 270;
-    for (let y = 248; y <= 322; y++) {
-      const vHalfW = isFrontV ? Math.max(0, 22 - (y - 246) * 0.75) : 0;
-      const vCx = neckCx + (angle === 45 ? 5 : angle === 315 ? -5 : 0);
-      for (let x = 128; x <= 352; x++) {
-        if (vHalfW > 0 && Math.abs(x - vCx) <= vHalfW) continue;
-        d[(y * CHAR2D_W + x) * 4 + 3] = 0;
+    const yTop0 = Math.floor(234 * s);
+    const yTop1 = Math.ceil(334 * s);
+    const xTop0 = Math.floor(124 * s);
+    const xTop1 = Math.ceil(356 * s);
+    for (let y = yTop0; y <= yTop1; y++) {
+      const ly = y / s;
+      const vHalfW = isFrontV ? Math.max(0, 26 - Math.max(0, ly - 236) * 0.68) : 0;
+      const vCx = neckCx + (angle === 45 ? 4 : angle === 315 ? -4 : 0);
+      for (let x = xTop0; x <= xTop1; x++) {
+        const lx = x / s;
+        if (vHalfW > 0 && Math.abs(lx - vCx) <= vHalfW) continue;
+        d[(y * w + x) * 4 + 3] = 0;
       }
     }
-    const torsoClearL = isProf ? 155 : Math.round(anchors.waistL + 6);
-    const torsoClearR = isProf ? 325 : Math.round(anchors.waistR - 6);
-    for (let y = 323; y <= 468; y++) {
+    const torsoClearL = Math.floor((isProf ? 155 : anchors.waistL + 6) * s);
+    const torsoClearR = Math.ceil((isProf ? 325 : anchors.waistR - 6) * s);
+    const yMid0 = Math.floor(335 * s);
+    const yMid1 = Math.ceil(476 * s);
+    for (let y = yMid0; y <= yMid1; y++) {
       for (let x = torsoClearL; x <= torsoClearR; x++) {
-        d[(y * CHAR2D_W + x) * 4 + 3] = 0;
+        d[(y * w + x) * 4 + 3] = 0;
       }
     }
   }
 
-  // 3. Hide neutral dark briefs at hips (preserving bare hands at sides) + bare lower legs below fingertips (y = 584..846)
+  // 3. Hide neutral dark briefs at hips (preserving bare hands at sides) + bare lower legs below fingertips
   if (hasBottom) {
-    for (let y = 436; y <= 583; y++) {
-      const hipCoreL = Math.round(anchors.hipL + 6);
-      const hipCoreR = Math.round(anchors.hipR - 6);
-      for (let x = 135; x <= 345; x++) {
-        const i = (y * CHAR2D_W + x) * 4;
+    const hipCoreL = Math.floor((anchors.hipL + 6) * s);
+    const hipCoreR = Math.ceil((anchors.hipR - 6) * s);
+    const yB0 = Math.floor(432 * s);
+    const yB1 = Math.ceil(584 * s);
+    const xB0 = Math.floor(135 * s);
+    const xB1 = Math.ceil(345 * s);
+    for (let y = yB0; y <= yB1; y++) {
+      const ly = y / s;
+      for (let x = xB0; x <= xB1; x++) {
+        const i = (y * w + x) * 4;
         if ((d[i + 3] ?? 0) < 10) continue;
         const r = d[i] ?? 0;
         const g = d[i + 1] ?? 0;
         const b = d[i + 2] ?? 0;
         const maxDiff = Math.max(Math.abs(r - g), Math.abs(g - b), Math.abs(r - b));
-        const isNeutralBriefs = maxDiff <= 14 && r < 185;
-        if (isNeutralBriefs || (x >= hipCoreL && x <= hipCoreR && y >= 468)) {
+        const isNeutralBriefs = maxDiff <= 15 && r < 185;
+        if (isNeutralBriefs || (x >= hipCoreL && x <= hipCoreR && ly >= 468)) {
           d[i + 3] = 0;
         }
       }
     }
-    for (let y = 584; y <= 846; y++) {
-      for (let x = 105; x <= 375; x++) {
-        d[(y * CHAR2D_W + x) * 4 + 3] = 0;
+    const yL0 = Math.floor(584 * s);
+    const yL1 = Math.ceil(846 * s);
+    const xL0 = Math.floor(105 * s);
+    const xL1 = Math.ceil(375 * s);
+    for (let y = yL0; y <= yL1; y++) {
+      for (let x = xL0; x <= xL1; x++) {
+        d[(y * w + x) * 4 + 3] = 0;
       }
     }
   }
 
-  // 4. Hide bare ankles, heels, and toes under equipped footwear (y = 845..965)
+  // 4. Hide bare ankles, heels, and toes under equipped footwear
   if (hasFootwear) {
-    for (let y = 845; y <= 965; y++) {
-      for (let x = 95; x <= 385; x++) {
-        d[(y * CHAR2D_W + x) * 4 + 3] = 0;
+    const yF0 = Math.floor(844 * s);
+    const yF1 = Math.min(h - 1, Math.ceil(970 * s));
+    const xF0 = Math.floor(95 * s);
+    const xF1 = Math.ceil(385 * s);
+    for (let y = yF0; y <= yF1; y++) {
+      for (let x = xF0; x <= xF1; x++) {
+        d[(y * w + x) * 4 + 3] = 0;
       }
     }
   }
@@ -2722,8 +2778,6 @@ function drawIllustratedClothing2D(
     maskImg,
     maskSrc,
     accentHex,
-    CHAR2D_W,
-    CHAR2D_H,
   );
   if (pack.slot === "top" && neckFit && (neckFit.extraL > 2 || neckFit.extraR > 2)) {
     const sk = `ill|${src}|${maskSrc ?? "nomask"}|${mode}|${shadingDepth}|${primaryHex}|${accentHex}`;
@@ -2740,7 +2794,7 @@ function getProfileSkinForearmCanvas(
   angle: Angle2D,
   mode: RenderMode2D,
   skinTone: string | null,
-): { canvas: HTMLCanvasElement; x: number; y: number } {
+): { canvas: HTMLCanvasElement; x: number; y: number; w: number; h: number } {
   const arm = angle === 90 ? a.armLeft : a.armRight;
   const elbow = arm[1];
   const wrist = arm[2];
@@ -2751,24 +2805,28 @@ function getProfileSkinForearmCanvas(
   const by1 = Math.min(CHAR2D_H - 1, Math.round(wrist.y + 84));
   const bw = bx1 - bx0 + 1;
   const bh = by1 - by0 + 1;
+  const s = processedBase.width / CHAR2D_W;
+  const pbw = Math.round(bw * s);
+  const pbh = Math.round(bh * s);
 
-  const key = `prof-arm-v3|${rawBaseSrc}|${angle}|${mode}|${skinTone ?? "orig"}|${bx0},${by0},${bw},${bh}`;
+  const key = `prof-arm-v4|${rawBaseSrc}|${pbw}x${pbh}|${angle}|${mode}|${skinTone ?? "orig"}|${bx0},${by0},${bw},${bh}`;
   const hit = PROCESSED_SPRITE_CACHE.get(key);
-  if (hit) return { canvas: hit, x: bx0, y: by0 };
+  if (hit) return { canvas: hit, x: bx0, y: by0, w: bw, h: bh };
 
+  const rawS = (rawBaseImg.naturalWidth || rawBaseImg.width || CHAR2D_W) / CHAR2D_W;
   const rawC = document.createElement("canvas");
-  rawC.width = bw;
-  rawC.height = bh;
+  rawC.width = pbw;
+  rawC.height = pbh;
   const rawCtx = rawC.getContext("2d")!;
-  rawCtx.drawImage(rawBaseImg, bx0, by0, bw, bh, 0, 0, bw, bh);
-  const rawD = rawCtx.getImageData(0, 0, bw, bh).data;
+  rawCtx.drawImage(rawBaseImg, bx0 * rawS, by0 * rawS, bw * rawS, bh * rawS, 0, 0, pbw, pbh);
+  const rawD = rawCtx.getImageData(0, 0, pbw, pbh).data;
 
   const outC = document.createElement("canvas");
-  outC.width = bw;
-  outC.height = bh;
+  outC.width = pbw;
+  outC.height = pbh;
   const outCtx = outC.getContext("2d")!;
-  outCtx.drawImage(processedBase, bx0, by0, bw, bh, 0, 0, bw, bh);
-  const outId = outCtx.getImageData(0, 0, bw, bh);
+  outCtx.drawImage(processedBase, bx0 * s, by0 * s, bw * s, bh * s, 0, 0, pbw, pbh);
+  const outId = outCtx.getImageData(0, 0, pbw, pbh);
   const od = outId.data;
 
   // Tapered anatomical arm+hand envelope calibrated to Model #1 90° / 270° contours
@@ -2813,9 +2871,9 @@ function getProfileSkinForearmCanvas(
     return null;
   };
 
-  const keepMask = new Uint8Array(bw * bh);
-  for (let y = 0; y < bh; y++) {
-    const wy = by0 + y;
+  const keepMask = new Uint8Array(pbw * pbh);
+  for (let py = 0; py < pbh; py++) {
+    const wy = by0 + py / s;
     const span = evalSpan(wy);
     if (!span) continue;
     let [elx, erx] = span;
@@ -2824,16 +2882,17 @@ function getProfileSkinForearmCanvas(
     if (wy >= 432 && wy <= 504) {
       let sl = -1;
       let sr = -1;
-      for (let wx = Math.round(elx) - 3; wx <= Math.round(erx) + 3; wx++) {
-        const x = wx - bx0;
-        if (x < 0 || x >= bw) continue;
-        const i = (y * bw + x) * 4;
+      const scanL = Math.max(0, Math.floor((elx - 3 - bx0) * s));
+      const scanR = Math.min(pbw - 1, Math.ceil((erx + 3 - bx0) * s));
+      for (let px = scanL; px <= scanR; px++) {
+        const i = (py * pbw + px) * 4;
         if ((rawD[i + 3] ?? 0) < 40) continue;
         const r = rawD[i] ?? 0;
         const g = rawD[i + 1] ?? 0;
         const b = rawD[i + 2] ?? 0;
         const lum = 0.299 * r + 0.587 * g + 0.114 * b;
         if (r > g + 4 && r - b >= 14 && lum > 118) {
+          const wx = bx0 + px / s;
           if (sl < 0) sl = wx;
           sr = wx;
         }
@@ -2844,20 +2903,20 @@ function getProfileSkinForearmCanvas(
       }
     }
 
-    const xStart = Math.max(0, Math.round(elx) - bx0);
-    const xEnd = Math.min(bw - 1, Math.round(erx) - bx0);
-    for (let x = xStart; x <= xEnd; x++) {
-      const i = (y * bw + x) * 4;
-      if ((rawD[i + 3] ?? 0) > 40) keepMask[y * bw + x] = 1;
+    const xStart = Math.max(0, Math.floor((elx - bx0) * s));
+    const xEnd = Math.min(pbw - 1, Math.ceil((erx - bx0) * s));
+    for (let px = xStart; px <= xEnd; px++) {
+      const i = (py * pbw + px) * 4;
+      if ((rawD[i + 3] ?? 0) > 40) keepMask[py * pbw + px] = 1;
     }
   }
 
-  for (let p = 0; p < bw * bh; p++) {
+  for (let p = 0; p < pbw * pbh; p++) {
     if (!keepMask[p]) od[p * 4 + 3] = 0;
   }
   outCtx.putImageData(outId, 0, 0);
   putProcessedCache(key, outC);
-  return { canvas: outC, x: bx0, y: by0 };
+  return { canvas: outC, x: bx0, y: by0, w: bw, h: bh };
 }
 
 export function extractProfileForearmForPose2D(
@@ -2867,7 +2926,7 @@ export function extractProfileForearmForPose2D(
   mode: RenderMode2D,
   imageMap: Map<string, HTMLImageElement>,
   headPack?: HeadPack2D,
-): { canvas: HTMLCanvasElement; x: number; y: number } | null {
+): { canvas: HTMLCanvasElement; x: number; y: number; w: number; h: number } | null {
   if (angle !== 90 && angle !== 270) return null;
   const head = headPack ?? resolveHeadPack2D(char.headShapeId);
   const anchors = resolveEffectiveAnchors(baseModel, char, angle, head);
@@ -2929,7 +2988,7 @@ function drawForegroundProfileArm2D(
     mode,
     skinTone,
   );
-  ctx.drawImage(sprite.canvas, sprite.x, sprite.y);
+  ctx.drawImage(sprite.canvas, sprite.x, sprite.y, sprite.w, sprite.h);
 }
 
 function drawSingleClosedEye2D(
@@ -3153,15 +3212,17 @@ function drawIllustratedFace2D(
 
   const angAssets = facePack?.angles[angle];
   if (facePack && angAssets) {
-    // Render all facial parts onto a 200x200 offscreen canvas and intersect with active eroded head mask
+    // Render all facial parts onto a 400x400 (2x Hi-Res) offscreen canvas and intersect with active eroded head mask
     const x0 = 140;
     const y0 = 55;
+    const fRes = 2;
     const fc = document.createElement("canvas");
-    fc.width = 200;
-    fc.height = 200;
+    fc.width = 200 * fRes;
+    fc.height = 200 * fRes;
     const fctx = fc.getContext("2d")!;
     fctx.imageSmoothingEnabled = true;
     fctx.imageSmoothingQuality = "high";
+    fctx.scale(fRes, fRes);
     fctx.translate(-x0, -y0);
 
     const drawCenteredSprite = (
@@ -3354,11 +3415,11 @@ function drawIllustratedFace2D(
       fctx.save();
       fctx.setTransform(1, 0, 0, 1, 0, 0);
       fctx.globalCompositeOperation = "destination-in";
-      fctx.drawImage(sil.headMaskCanvas, 0, 0);
+      fctx.drawImage(sil.headMaskCanvas, 0, 0, fc.width, fc.height);
       fctx.restore();
     }
 
-    ctx.drawImage(fc, x0, y0);
+    ctx.drawImage(fc, x0, y0, 200, 200);
   }
 
   if (pass === "full") {
