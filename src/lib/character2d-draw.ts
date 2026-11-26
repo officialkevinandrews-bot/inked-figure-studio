@@ -2736,17 +2736,22 @@ function drawIllustratedHair2D(
     char.shadingDepth ?? "cel",
   );
   const skullCx = sil ? sil.skullCx : a.headCx;
-  const eyeAnchorY = sil ? sil.eyeY - 1 : a.eyeY - 1;
+  const crownH = sil ? Math.max(46, sil.eyeY - sil.topY) : 61;
+  const refCrownH = 61;
+  const eyeAnchorY = (sil ? sil.eyeY : a.eyeY) - 1 + (crownH - refCrownH) * 0.14;
   const refW = M1_REF_SKULL_W[angle];
-  const wRatio = sil ? Math.max(0.92, Math.min(1.18, sil.skullW / refW)) : a.headRx / 46;
-  // Strictly uniform 1:1 scale so bust hair spikes, bangs, and sideburns are never vertically squashed
-  const scale = (46 / pack.refHeadRx) * wRatio;
+  const wRatio = sil ? Math.max(0.93, Math.min(1.16, sil.skullW / refW)) : a.headRx / 46;
+  const hRatio = Math.max(0.94, Math.min(1.14, crownH / refCrownH));
+  const baseScale = 46 / pack.refHeadRx;
+  const scaleX = baseScale * wRatio;
+  // Adapt vertically to each head shape's true crown-to-eye height while clamping aspect ratio so spikes never distort
+  const scaleY = Math.max(scaleX * 0.91, Math.min(scaleX * 1.09, baseScale * hRatio));
 
   ctx.save();
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "high";
   ctx.translate(skullCx, eyeAnchorY);
-  ctx.scale(scale, scale);
+  ctx.scale(scaleX, scaleY);
   ctx.drawImage(sprite, -pack.pivotX, -pack.pivotY, pack.canvasW, pack.canvasH);
   ctx.restore();
 }
@@ -2801,7 +2806,7 @@ function getProfileSkinForearmCanvas(
   const shiftX = angle === 90 ? 12 : -12;
   const bx0 = Math.max(0, Math.round(Math.min(elbow.x, wrist.x) + shiftX - 30));
   const bx1 = Math.min(CHAR2D_W - 1, Math.round(Math.max(elbow.x, wrist.x) + shiftX + 30));
-  const by0 = Math.max(0, Math.round(elbow.y - 2));
+  const by0 = Math.max(0, Math.round(elbow.y - 34));
   const by1 = Math.min(CHAR2D_H - 1, Math.round(wrist.y + 84));
   const bw = bx1 - bx0 + 1;
   const bh = by1 - by0 + 1;
@@ -2809,7 +2814,7 @@ function getProfileSkinForearmCanvas(
   const pbw = Math.round(bw * s);
   const pbh = Math.round(bh * s);
 
-  const key = `prof-arm-v4|${rawBaseSrc}|${pbw}x${pbh}|${angle}|${mode}|${skinTone ?? "orig"}|${bx0},${by0},${bw},${bh}`;
+  const key = `prof-arm-v5|${rawBaseSrc}|${pbw}x${pbh}|${angle}|${mode}|${skinTone ?? "orig"}|${bx0},${by0},${bw},${bh}`;
   const hit = PROCESSED_SPRITE_CACHE.get(key);
   if (hit) return { canvas: hit, x: bx0, y: by0, w: bw, h: bh };
 
@@ -2830,10 +2835,11 @@ function getProfileSkinForearmCanvas(
   const od = outId.data;
 
   // Tapered anatomical arm+hand envelope calibrated to Model #1 90° / 270° contours
-  // plus edge-snap to dark contour lines so zero stomach, rear thigh, or black briefs leak through.
+  // starting cleanly right below the short-sleeve cuff (y=360) down through elbow, forearm, and hand.
   const keys: ReadonlyArray<readonly [number, number, number]> =
     angle === 90
       ? [
+          [360, 199, 236],
           [392, 200, 235],
           [415, 201, 238],
           [440, 209, 239],
@@ -2846,6 +2852,7 @@ function getProfileSkinForearmCanvas(
           [576, 240, 246],
         ]
       : [
+          [360, 243, 280],
           [392, 243, 279],
           [415, 238, 278],
           [440, 240, 270],
