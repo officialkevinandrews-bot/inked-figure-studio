@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { ANGLES_2D } from "./character2d-types";
-import { MODEL1_ANCHORS } from "./character2d-model1";
+import { ANGLES_2D, createDefaultCharacter2D } from "./character2d-types";
+import { BUILTIN_MODEL_MALE_ATHLETIC_V1, MODEL1_ANCHORS } from "./character2d-model1";
+import { resolveHeadPack2D } from "./character2d-heads";
 import {
   BUILTIN_POSE_PRESETS_2D,
+  BUILTIN_STAGE_COMPOSITIONS_2D,
   DEFAULT_POSE_2D,
   clonePose2D,
   createDefaultStage2D,
@@ -10,11 +12,16 @@ import {
 } from "./pose2d-types";
 import {
   characterToStagePoint,
+  computeActorLocalBounds2D,
   computeForwardKinematics2D,
+  computeFrameActorCamera2D,
+  computeSnapFeetToFloorOffsetY,
   degToRad,
+  solvePinnedFeetHipDrag2D,
   solveTwoBoneIK2D,
   stageToCharacterPoint,
 } from "./pose2d-rig";
+import { hasRequiredCharacterImages2D } from "./pose2d-draw";
 import {
   POSES_2D_STORAGE_KEY,
   STAGES_2D_STORAGE_KEY,
@@ -169,5 +176,90 @@ describe("2D Articulated Pose & Stage Library", () => {
     expect(window.localStorage.getItem(POSES_2D_STORAGE_KEY)).toBeNull();
     removeCustomPose2D(pList, customPose.id);
     expect(loadCustomPoses2D().length).toBe(0);
+  });
+
+  it("refuses to mark character rig ready before required sprites are loaded (prevents blank Color Mode cache)", () => {
+    const ch = createDefaultCharacter2D("Cache Guard Hero");
+    const hp = resolveHeadPack2D(ch.headShapeId);
+    // Empty imageMap must NEVER report images ready
+    expect(hasRequiredCharacterImages2D(ch, BUILTIN_MODEL_MALE_ATHLETIC_V1, hp, new Map())).toBe(
+      false,
+    );
+    // Partial map with only base frame still missing hair/clothes must return false
+    const fakeImg = {
+      naturalWidth: 960,
+      width: 960,
+      complete: true,
+    } as unknown as HTMLImageElement;
+    const partial = new Map<string, HTMLImageElement>([
+      [BUILTIN_MODEL_MALE_ATHLETIC_V1.frames[0], fakeImg],
+    ]);
+    expect(hasRequiredCharacterImages2D(ch, BUILTIN_MODEL_MALE_ATHLETIC_V1, hp, partial)).toBe(
+      false,
+    );
+    // Bald & bare character with loaded base frame & face base reports ready cleanly
+    const bare = {
+      ...ch,
+      hair: { style: "none" as const, color: "#111111" },
+      face: {
+        ...ch.face,
+        eyeStyle: "none" as const,
+        browStyle: "none" as const,
+        noseStyle: "none" as const,
+        mouthStyle: "none" as const,
+      },
+      clothes: {
+        ...ch.clothes,
+        top: "none" as const,
+        bottom: "none" as const,
+        footwear: "none" as const,
+      },
+    };
+    expect(hasRequiredCharacterImages2D(bare, BUILTIN_MODEL_MALE_ATHLETIC_V1, hp, partial)).toBe(
+      true,
+    );
+  });
+
+  it("snaps floating/crouched poses cleanly to floor, pins feet during squats, frames actors, and ships 4 valid 2-char compositions", () => {
+    const a = MODEL1_ANCHORS[0];
+    const jumpPose = BUILTIN_POSE_PRESETS_2D.find((p) => p.id === "midair-jump")!.pose;
+    const snappedRootY = computeSnapFeetToFloorOffsetY(a, jumpPose);
+    const snappedSk = computeForwardKinematics2D(a, { ...jumpPose, rootOffsetY: snappedRootY });
+    const lowestFoot = Math.max(
+      snappedSk.ankleL.y + 34,
+      snappedSk.ankleR.y + 34,
+      snappedSk.toeL.y + 6,
+      snappedSk.toeR.y + 6,
+    );
+    expect(Math.abs(lowestFoot - 940)).toBeLessThan(2);
+
+    // Foot pinning keeps both ankles locked on the floor while bending knees into a squat
+    const startSk = computeForwardKinematics2D(a, DEFAULT_POSE_2D);
+    const squatPose = solvePinnedFeetHipDrag2D(a, DEFAULT_POSE_2D, 95);
+    const squatSk = computeForwardKinematics2D(a, squatPose);
+    expect(
+      Math.hypot(squatSk.ankleL.x - startSk.ankleL.x, squatSk.ankleL.y - startSk.ankleL.y),
+    ).toBeLessThan(2.5);
+    expect(
+      Math.hypot(squatSk.ankleR.x - startSk.ankleR.x, squatSk.ankleR.y - startSk.ankleR.y),
+    ).toBeLessThan(2.5);
+    expect(Math.abs(squatPose.joints.shinL)).toBeGreaterThan(15);
+
+    // Posed bounding box & camera auto-frame
+    const bounds = computeActorLocalBounds2D(squatSk);
+    expect(bounds.maxY).toBeGreaterThan(bounds.minY + 300);
+    const stage = createDefaultStage2D("Frame Test", null, "c1", "Hero");
+    const cam = computeFrameActorCamera2D(stage.actors[0]!, squatSk);
+    expect(cam.zoom).toBeGreaterThanOrEqual(0.6);
+    expect(cam.zoom).toBeLessThanOrEqual(2.4);
+
+    // All 4 built-in 2-character compositions reference valid pose presets
+    expect(BUILTIN_STAGE_COMPOSITIONS_2D).toHaveLength(4);
+    const poseIds = new Set(BUILTIN_POSE_PRESETS_2D.map((p) => p.id));
+    for (const comp of BUILTIN_STAGE_COMPOSITIONS_2D) {
+      expect(comp.slots).toHaveLength(2);
+      expect(poseIds.has(comp.slots[0].poseId)).toBe(true);
+      expect(poseIds.has(comp.slots[1].poseId)).toBe(true);
+    }
   });
 });

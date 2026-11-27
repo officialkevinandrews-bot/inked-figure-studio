@@ -1,6 +1,7 @@
 import {
   CHAR2D_H,
   CHAR2D_W,
+  isBackFacingAngle2D,
   type Angle2D,
   type BaseModel2D,
   type BodyAngleAnchors,
@@ -11,7 +12,15 @@ import {
   type RenderMode2D,
 } from "./character2d-types";
 import {
+  resolveIllustratedBottomPack2D,
+  resolveIllustratedFacePack2D,
+  resolveIllustratedFootwearPack2D,
+  resolveIllustratedHairPack2D,
+  resolveIllustratedTopPack2D,
+} from "./character2d-catalog";
+import {
   extractProfileForearmForPose2D,
+  isUsingSeamlessHeadVariant,
   preloadCharacter2DImages,
   renderCharacter2DSync,
   resolveEffectiveAnchors,
@@ -32,11 +41,14 @@ import {
   type Pose2DState,
   type Stage2D,
   type Stage2DActor,
+  type Stage2DFxOverlay,
 } from "./pose2d-types";
 import { preloadScene2DImages, renderScene2DSync } from "./scene2d-draw";
 import type { Scene2D, SceneDepthLayer, SceneObjectAsset2D } from "./scene2d-types";
 
 type C = CanvasRenderingContext2D;
+
+const RIG_SCALE = 2; // Native 2K (960x2000) rig slicing for razor-sharp close-ups & panel stamps
 
 export type RigPartName2D =
   | "head"
@@ -57,6 +69,8 @@ export type RigPartName2D =
 
 export interface PartSlice2D {
   canvas: HTMLCanvasElement;
+  w: number;
+  h: number;
   pivotX: number;
   pivotY: number;
 }
@@ -81,6 +95,62 @@ export function clearPose2DRigCache(): void {
   RIG_SLICE_CACHE.clear();
 }
 
+function isImageLoaded(img: HTMLImageElement | undefined): boolean {
+  if (!img) return false;
+  return (img.naturalWidth || img.width || 0) > 0;
+}
+
+/**
+ * Verifies that the core sprite images required to render `char` at `char.angle` are loaded in `imageMap`.
+ * Prevents `RIG_SLICE_CACHE` from EVER caching a blank/partial rig while async image preloading is still in flight.
+ */
+export function hasRequiredCharacterImages2D(
+  char: Character2D,
+  baseModel: BaseModel2D,
+  headPack: HeadPack2D,
+  imageMap: Map<string, HTMLImageElement>,
+): boolean {
+  if (imageMap.size === 0) return false;
+  const ang = char.angle;
+  const seamless = isUsingSeamlessHeadVariant(baseModel, char, ang, headPack);
+  const variantSrc = seamless ? headPack.bodyVariants?.[baseModel.id]?.[ang] : undefined;
+  const baseSrc = variantSrc ?? baseModel.frames[ang] ?? baseModel.frames[0];
+  if (baseSrc && !isImageLoaded(imageMap.get(baseSrc))) return false;
+  if (!variantSrc) {
+    const ovSrc = headPack.overlayFrames[ang] ?? headPack.overlayFrames[0];
+    if (ovSrc && !isImageLoaded(imageMap.get(ovSrc))) return false;
+  }
+
+  const hairPack = resolveIllustratedHairPack2D(char.hair.style);
+  if (hairPack?.frontFrames[ang] && !isImageLoaded(imageMap.get(hairPack.frontFrames[ang]))) {
+    return false;
+  }
+  const topPack = resolveIllustratedTopPack2D(char.clothes.top);
+  if (topPack?.frames[ang] && !isImageLoaded(imageMap.get(topPack.frames[ang]))) {
+    return false;
+  }
+  const bottomPack = resolveIllustratedBottomPack2D(char.clothes.bottom);
+  if (bottomPack?.frames[ang] && !isImageLoaded(imageMap.get(bottomPack.frames[ang]))) {
+    return false;
+  }
+  const footwearPack = resolveIllustratedFootwearPack2D(char.clothes.footwear);
+  if (footwearPack?.frames[ang] && !isImageLoaded(imageMap.get(footwearPack.frames[ang]))) {
+    return false;
+  }
+  if (!isBackFacingAngle2D(ang)) {
+    const facePack =
+      resolveIllustratedFacePack2D(char.face.eyeStyle) ??
+      resolveIllustratedFacePack2D(char.face.browStyle) ??
+      resolveIllustratedFacePack2D(char.face.noseStyle) ??
+      resolveIllustratedFacePack2D(char.face.mouthStyle);
+    const faceAng = facePack?.angles[ang];
+    if (faceAng && !isImageLoaded(imageMap.get(faceAng.eyeLeftBase))) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function makeCharRigCacheKey(
   char: Character2D,
   angle: Angle2D,
@@ -90,7 +160,48 @@ function makeCharRigCacheKey(
   const expr = actor.expressionOverride ?? char.face.expression;
   const fx = (actor.fxOverride ?? char.face.fx).join(",");
   const depth = char.shadingDepth ?? "cel";
-  return `${char.id}|${char.updatedAt}|${angle}|${mode}|${depth}|${char.headShapeId ?? ""}|${char.hair.style}|${char.clothes.top}|${char.clothes.bottom}|${char.clothes.footwear}|${expr}|${fx}`;
+  const hairAng = char.hair.perAngle?.[angle];
+  const hairFitSig = `${char.hair.scale ?? 1},${char.hair.offsetY ?? 0},${hairAng?.offsetX ?? 0},${hairAng?.offsetY ?? 0},${hairAng?.scale ?? 1}`;
+  const headFitSig = `${char.headFit?.scale ?? 1},${char.headFit?.offsetY ?? 0}`;
+  const customSig = char.customLayers
+    .map((l) => `${l.id}:${l.assetId}:${l.zLayer}:${l.tintEnabled ? l.tintColor : ""}`)
+    .join(";");
+  return [
+    `v2k`,
+    char.id,
+    char.updatedAt,
+    char.baseModelId,
+    angle,
+    mode,
+    depth,
+    char.skinTone ?? "orig",
+    char.headShapeId ?? "",
+    headFitSig,
+    char.hair.style,
+    char.hair.color,
+    hairFitSig,
+    char.clothes.top,
+    char.clothes.topColor,
+    char.clothes.topAccentColor,
+    char.clothes.bottom,
+    char.clothes.bottomColor,
+    char.clothes.bottomAccentColor,
+    char.clothes.footwear,
+    char.clothes.footwearColor,
+    char.clothes.footwearAccentColor,
+    char.face.eyeStyle,
+    char.face.browStyle,
+    char.face.noseStyle,
+    char.face.mouthStyle,
+    char.face.eyeColor,
+    char.face.browColor,
+    char.face.mouthColor,
+    char.face.scale,
+    char.face.offsetY,
+    expr,
+    fx,
+    customSig,
+  ].join("|");
 }
 
 function isProfileAngle(angle: Angle2D): boolean {
@@ -150,34 +261,35 @@ function inpaintProfileArmStrip(
   if (!ctx) return;
   const w = torsoCanvas.width;
   const h = torsoCanvas.height;
+  const s = w / CHAR2D_W;
   const img = ctx.getImageData(0, 0, w, h);
   const d = img.data;
 
   const armPts = anchors.armLeft;
-  const yStart = Math.max(0, Math.round(anchors.shoulderY + 18));
-  const yEnd = Math.min(h - 1, Math.round(maxY ?? anchors.hemY + 4));
-  const halfArm = Math.max(13, Math.round(anchors.armWidth * 0.44));
+  const yStart = Math.max(0, Math.round((anchors.shoulderY + 18) * s));
+  const yEnd = Math.min(h - 1, Math.round((maxY ?? anchors.hemY + 4) * s));
+  const halfArm = Math.max(Math.round(13 * s), Math.round(anchors.armWidth * 0.44 * s));
 
   for (let y = yStart; y <= yEnd; y++) {
-    // Interpolate arm centerline X along shoulder -> elbow -> wrist
+    const ly = y / s;
     let ax = armPts[0].x;
-    if (y <= armPts[1].y) {
-      const t = (y - armPts[0].y) / Math.max(1, armPts[1].y - armPts[0].y);
+    if (ly <= armPts[1].y) {
+      const t = (ly - armPts[0].y) / Math.max(1, armPts[1].y - armPts[0].y);
       ax = armPts[0].x + (armPts[1].x - armPts[0].x) * Math.max(0, Math.min(1, t));
     } else {
-      const t = (y - armPts[1].y) / Math.max(1, armPts[2].y - armPts[1].y);
+      const t = (ly - armPts[1].y) / Math.max(1, armPts[2].y - armPts[1].y);
       ax = armPts[1].x + (armPts[2].x - armPts[1].x) * Math.max(0, Math.min(1, t));
     }
+    const axPx = ax * s;
+    const x0 = Math.max(2, Math.round(axPx - halfArm));
+    const x1 = Math.min(w - 3, Math.round(axPx + halfArm));
 
-    const x0 = Math.max(2, Math.round(ax - halfArm));
-    const x1 = Math.min(w - 3, Math.round(ax + halfArm));
-
-    // Sample nearest non-dark interior torso pixel left & right of arm strip
     const findCleanSample = (
       startX: number,
       step: number,
     ): [number, number, number, number] | null => {
-      for (let k = 0; k < 14; k++) {
+      const maxSteps = Math.round(14 * s);
+      for (let k = 0; k < maxSteps; k++) {
         const sx = startX + k * step;
         if (sx < 1 || sx >= w - 1) break;
         const idx = (y * w + sx) * 4;
@@ -189,8 +301,9 @@ function inpaintProfileArmStrip(
       return null;
     };
 
-    const leftS = findCleanSample(x0 - 2, -1);
-    const rightS = findCleanSample(x1 + 2, 1);
+    const margin = Math.max(2, Math.round(2 * s));
+    const leftS = findCleanSample(x0 - margin, -1);
+    const rightS = findCleanSample(x1 + margin, 1);
 
     if (leftS && rightS) {
       for (let x = x0; x <= x1; x++) {
@@ -209,14 +322,13 @@ function inpaintProfileArmStrip(
         }
       }
     } else if (leftS || rightS) {
-      const s = (leftS ?? rightS)!;
-      // Only fill pixels inside arm strip that border filled body area
+      const sam = (leftS ?? rightS)!;
       for (let x = x0; x <= x1; x++) {
         const idx = (y * w + x) * 4;
         if ((d[idx + 3] ?? 0) > 120) {
-          d[idx] = mode === "manga" ? 255 : s[0];
-          d[idx + 1] = mode === "manga" ? 255 : s[1];
-          d[idx + 2] = mode === "manga" ? 255 : s[2];
+          d[idx] = mode === "manga" ? 255 : sam[0];
+          d[idx + 1] = mode === "manga" ? 255 : sam[1];
+          d[idx + 2] = mode === "manga" ? 255 : sam[2];
         }
       }
     }
@@ -225,8 +337,8 @@ function inpaintProfileArmStrip(
 }
 
 /**
- * Slices a rendered `480x1000` master character sprite using a custom clip function and pivot
- * into a tight padded slice canvas for fast zero-allocation articulated redraws.
+ * Slices a rendered 2K (`960x2000`) master character sprite using a logical `480x1000` clip function and pivot
+ * into a tight padded 2K slice canvas for razor-sharp zero-allocation articulated redraws.
  */
 function sliceRegion(
   master: HTMLCanvasElement,
@@ -241,10 +353,13 @@ function sliceRegion(
   const bh = Math.max(4, Math.min(CHAR2D_H - by, Math.ceil(bounds.h)));
 
   const out = document.createElement("canvas");
-  out.width = bw;
-  out.height = bh;
+  out.width = Math.max(4, Math.round(bw * RIG_SCALE));
+  out.height = Math.max(4, Math.round(bh * RIG_SCALE));
   const ctx = out.getContext("2d")!;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
   ctx.save();
+  ctx.scale(RIG_SCALE, RIG_SCALE);
   ctx.translate(-bx, -by);
   clipFn(ctx);
   ctx.clip();
@@ -260,14 +375,43 @@ function sliceRegion(
 
   return {
     canvas: out,
+    w: bw,
+    h: bh,
     pivotX: pivot.x - bx,
     pivotY: pivot.y - by,
   };
 }
 
+/** Horizontally mirrors a 2K PartSlice2D (with optional subtle depth darkening) for occluded far-side limbs. */
+function mirrorPartSliceHorizontally(slice: PartSlice2D, dimDarken = 0): PartSlice2D {
+  const out = document.createElement("canvas");
+  out.width = slice.canvas.width;
+  out.height = slice.canvas.height;
+  const ctx = out.getContext("2d")!;
+  ctx.save();
+  ctx.translate(out.width, 0);
+  ctx.scale(-1, 1);
+  ctx.drawImage(slice.canvas, 0, 0);
+  ctx.restore();
+  if (dimDarken > 0) {
+    ctx.save();
+    ctx.globalCompositeOperation = "source-atop";
+    ctx.fillStyle = `rgba(15, 23, 42, ${Math.min(0.42, dimDarken)})`;
+    ctx.fillRect(0, 0, out.width, out.height);
+    ctx.restore();
+  }
+  return {
+    canvas: out,
+    w: slice.w,
+    h: slice.h,
+    pivotX: slice.w - slice.pivotX,
+    pivotY: slice.pivotY,
+  };
+}
+
 /**
  * Computes inner X separator polygon clip for an arm on non-profile angles so arm slices
- * exclude torso/waist/chest interior pixels while preserving natural sleeve & shoulder contours.
+ * exclude torso interior pixels while preserving 100% of bare forearm, wrist, thumb & hand outlines.
  */
 function traceArmOuterRegion(
   ctx: C,
@@ -281,31 +425,32 @@ function traceArmOuterRegion(
   const wr = side === "left" ? a.armLeft[2] : a.armRight[2];
   const sign = side === "left" ? -1 : 1;
 
-  const chestEdge = (side === "left" ? a.torsoL : a.torsoR) + sign * topPad;
-  const waistEdge = (side === "left" ? a.waistL : a.waistR) + sign * topPad;
-  const hipEdge = (side === "left" ? a.hipL : a.hipR) + sign * topPad;
+  // Keep armpit split clean while hugging the naked waist/hip inward so forearms/thumbs are never shaved
+  const chestEdge = (side === "left" ? a.torsoL : a.torsoR) + sign * Math.min(4, topPad * 0.35);
+  const waistEdge = (side === "left" ? a.waistL : a.waistR) - sign * 2;
+  const hipEdge = (side === "left" ? a.hipL : a.hipR) - sign * 2;
 
   const sepTop =
     side === "left"
-      ? Math.min(sh.x + elbowRadius, (sh.x + chestEdge) / 2)
-      : Math.max(sh.x - elbowRadius, (sh.x + chestEdge) / 2);
+      ? Math.min(sh.x + elbowRadius + 4, (sh.x + chestEdge) / 2 + 4)
+      : Math.max(sh.x - elbowRadius - 4, (sh.x + chestEdge) / 2 - 4);
   const sepMid =
     side === "left"
-      ? Math.min(el.x + elbowRadius, waistEdge - 1)
-      : Math.max(el.x - elbowRadius, waistEdge + 1);
+      ? Math.min(el.x + elbowRadius + 6, waistEdge)
+      : Math.max(el.x - elbowRadius - 6, waistEdge);
   const sepBot =
     side === "left"
-      ? Math.min(wr.x + elbowRadius, hipEdge - 1)
-      : Math.max(wr.x - elbowRadius, hipEdge + 1);
+      ? Math.min(wr.x + elbowRadius + 8, hipEdge)
+      : Math.max(wr.x - elbowRadius - 8, hipEdge);
   const outerX = side === "left" ? 0 : CHAR2D_W;
 
   ctx.beginPath();
   ctx.moveTo(outerX, Math.max(0, a.shoulderY - 52));
-  ctx.lineTo(sh.x - sign * 18, Math.max(0, a.shoulderY - 52));
+  ctx.lineTo(sh.x - sign * 20, Math.max(0, a.shoulderY - 52));
   ctx.lineTo(sepTop, a.chestY - 8);
   ctx.lineTo(sepMid, a.waistY);
-  ctx.lineTo(sepBot, Math.min(CHAR2D_H, wr.y + 96));
-  ctx.lineTo(outerX, Math.min(CHAR2D_H, wr.y + 96));
+  ctx.lineTo(sepBot, Math.min(CHAR2D_H, wr.y + 104));
+  ctx.lineTo(outerX, Math.min(CHAR2D_H, wr.y + 104));
   ctx.closePath();
 }
 
@@ -318,10 +463,6 @@ export function buildCharacterRigSlices(
   actor: Stage2DActor,
   mode: RenderMode2D,
 ): CharacterRig2D {
-  const key = makeCharRigCacheKey(char, actor.angle, mode, actor);
-  const cached = RIG_SLICE_CACHE.get(key);
-  if (cached) return cached;
-
   const effectiveChar: Character2D = {
     ...char,
     angle: actor.angle,
@@ -333,11 +474,23 @@ export function buildCharacterRigSlices(
     },
   };
 
+  const imagesReady = hasRequiredCharacterImages2D(effectiveChar, baseModel, headPack, imageMap);
+  const key = makeCharRigCacheKey(char, actor.angle, mode, actor);
+  if (imagesReady) {
+    const cached = RIG_SLICE_CACHE.get(key);
+    if (cached) return cached;
+  }
+
   const master = document.createElement("canvas");
-  master.width = CHAR2D_W;
-  master.height = CHAR2D_H;
+  master.width = CHAR2D_W * RIG_SCALE;
+  master.height = CHAR2D_H * RIG_SCALE;
   const mctx = master.getContext("2d")!;
+  mctx.imageSmoothingEnabled = true;
+  mctx.imageSmoothingQuality = "high";
+  mctx.save();
+  mctx.scale(RIG_SCALE, RIG_SCALE);
   renderCharacter2DSync(mctx, effectiveChar, baseModel, customParts, imageMap, headPack);
+  mctx.restore();
 
   const profile = isProfileAngle(actor.angle);
   const usesIllustratedBodyCutout =
@@ -346,17 +499,15 @@ export function buildCharacterRigSlices(
     profile && usesIllustratedBodyCutout
       ? (() => {
           const c = document.createElement("canvas");
-          c.width = CHAR2D_W;
-          c.height = CHAR2D_H;
-          renderCharacter2DSync(
-            c.getContext("2d")!,
-            effectiveChar,
-            baseModel,
-            customParts,
-            imageMap,
-            headPack,
-            { skipProfileForegroundArm: true },
-          );
+          c.width = CHAR2D_W * RIG_SCALE;
+          c.height = CHAR2D_H * RIG_SCALE;
+          const cctx = c.getContext("2d")!;
+          cctx.imageSmoothingEnabled = true;
+          cctx.imageSmoothingQuality = "high";
+          cctx.scale(RIG_SCALE, RIG_SCALE);
+          renderCharacter2DSync(cctx, effectiveChar, baseModel, customParts, imageMap, headPack, {
+            skipProfileForegroundArm: true,
+          });
           return c;
         })()
       : null;
@@ -439,6 +590,43 @@ export function buildCharacterRigSlices(
   const hTipL = handTip(elL, wrL);
   const hTipR = handTip(elR, wrR);
 
+  // For short-sleeve / bare-torso outfits on non-profile angles, render a cached bare-body reference
+  // so bare forearms, wrists, thumbs, and hands are sliced 100% cleanly with ZERO hoodie/cargo pocket bleed!
+  const hasShortOrNoSleeve =
+    effectiveChar.clothes.top === "none" ||
+    effectiveChar.clothes.top === "zip_hoodie_tee" ||
+    effectiveChar.clothes.top === "tshirt";
+  const bareBodyMaster =
+    !profile && hasShortOrNoSleeve
+      ? (() => {
+          const c = document.createElement("canvas");
+          c.width = CHAR2D_W * RIG_SCALE;
+          c.height = CHAR2D_H * RIG_SCALE;
+          const cctx = c.getContext("2d")!;
+          cctx.imageSmoothingEnabled = true;
+          cctx.imageSmoothingQuality = "high";
+          cctx.scale(RIG_SCALE, RIG_SCALE);
+          renderCharacter2DSync(
+            cctx,
+            {
+              ...effectiveChar,
+              hair: { ...effectiveChar.hair, style: "none" },
+              clothes: {
+                ...effectiveChar.clothes,
+                top: "none",
+                bottom: "none",
+                footwear: "none",
+              },
+            },
+            baseModel,
+            [],
+            imageMap,
+            headPack,
+          );
+          return c;
+        })()
+      : null;
+
   const profileForearmCutout =
     profile && usesIllustratedBodyCutout
       ? extractProfileForearmForPose2D(
@@ -457,22 +645,28 @@ export function buildCharacterRigSlices(
     const wr = side === "left" ? wrL : wrR;
     const tip = side === "left" ? hTipL : hTipR;
 
+    // On 90°/270° profile, align both sleeve cuff and bare forearm cutout concentrically onto `el` and `wr`
+    // so bending the elbow in punches/blocks never creates a horizontal detachment seam!
+    const profArmShiftX = profile && profileForearmCutout ? (actor.angle === 90 ? 10 : -10) : 0;
     const armMaster = profile
       ? profileForearmCutout
         ? (() => {
             const c = document.createElement("canvas");
-            c.width = CHAR2D_W;
-            c.height = CHAR2D_H;
+            c.width = CHAR2D_W * RIG_SCALE;
+            c.height = CHAR2D_H * RIG_SCALE;
             const cx = c.getContext("2d")!;
+            cx.imageSmoothingEnabled = true;
+            cx.imageSmoothingQuality = "high";
+            cx.scale(RIG_SCALE, RIG_SCALE);
             cx.save();
             cx.beginPath();
-            cx.rect(Math.max(0, sh.x - 36), Math.max(0, sh.y - 38), 86, el.y - sh.y + 42);
+            cx.rect(Math.max(0, sh.x - 42), Math.max(0, sh.y - 44), 96, el.y - sh.y + 38);
             cx.clip();
-            cx.drawImage(master, 0, 0);
+            cx.drawImage(master, -profArmShiftX * 0.45, 0, CHAR2D_W, CHAR2D_H);
             cx.restore();
             cx.drawImage(
               profileForearmCutout.canvas,
-              profileForearmCutout.x,
+              profileForearmCutout.x - profArmShiftX,
               profileForearmCutout.y,
               profileForearmCutout.w,
               profileForearmCutout.h,
@@ -482,80 +676,120 @@ export function buildCharacterRigSlices(
         : master
       : (() => {
           const c = document.createElement("canvas");
-          c.width = CHAR2D_W;
-          c.height = CHAR2D_H;
+          c.width = CHAR2D_W * RIG_SCALE;
+          c.height = CHAR2D_H * RIG_SCALE;
           const cx = c.getContext("2d")!;
+          cx.imageSmoothingEnabled = true;
+          cx.imageSmoothingQuality = "high";
           cx.save();
+          cx.scale(RIG_SCALE, RIG_SCALE);
           traceArmOuterRegion(cx, a, side, topPad, elbowR);
           cx.clip();
-          cx.drawImage(master, 0, 0);
+          if (bareBodyMaster) {
+            // Draw bare forearm/hand first (100% free of hoodie/cargo pocket fragments!),
+            // then overlay the crisp short sleeve cleanly above the elbow cuff (y <= 368).
+            cx.drawImage(bareBodyMaster, 0, 0, CHAR2D_W, CHAR2D_H);
+            cx.save();
+            cx.beginPath();
+            cx.rect(0, 0, CHAR2D_W, 370);
+            cx.clip();
+            cx.drawImage(master, 0, 0, CHAR2D_W, CHAR2D_H);
+            cx.restore();
+          } else {
+            cx.drawImage(master, 0, 0, CHAR2D_W, CHAR2D_H);
+          }
           cx.restore();
           return c;
         })();
 
-    const profArmShiftX = profile && profileForearmCutout ? (actor.angle === 90 ? 12 : -12) : 0;
-    const maxUpR = Math.max(shoulderR, elbowR);
+    const maxUpR = Math.max(shoulderR, elbowR) + 4;
     const upperArm = sliceRegion(
       armMaster,
       sh,
       {
         x: Math.min(sh.x, el.x) - maxUpR - 6,
         y: Math.min(sh.y, el.y) - maxUpR - 6,
-        w: Math.abs(el.x - sh.x) + (maxUpR + 6) * 2 + 12,
+        w: Math.abs(el.x - sh.x) + (maxUpR + 6) * 2 + 10,
         h: Math.abs(el.y - sh.y) + (maxUpR + 6) * 2,
       },
-      (ctx) => traceCapsulePath(ctx, sh, el, shoulderR, elbowR + 4, 0, 0),
+      (ctx) => traceCapsulePath(ctx, sh, el, shoulderR + 3, elbowR + 5, 0, 0),
       { dimDarken: dimFar },
     );
 
-    const maxFoR = Math.max(elbowR, wristR) + (profileForearmCutout ? 8 : 0);
-    const elBox = { x: el.x + profArmShiftX, y: el.y };
-    const wrBox = { x: wr.x + profArmShiftX, y: wr.y };
-    const tipBox = { x: tip.x + profArmShiftX, y: tip.y };
+    const maxFoR = Math.max(elbowR, wristR) + (profileForearmCutout ? 8 : 5);
     const forearm = sliceRegion(
       armMaster,
       el,
       {
-        x: Math.min(elBox.x, wrBox.x) - maxFoR - 2,
-        y: Math.min(elBox.y, wrBox.y) - maxFoR - 2,
-        w: Math.abs(wrBox.x - elBox.x) + (maxFoR + 2) * 2,
-        h: Math.abs(wrBox.y - elBox.y) + (maxFoR + 2) * 2,
+        x: Math.min(el.x, wr.x) - maxFoR - 2,
+        y: Math.min(el.y, wr.y) - maxFoR - 2,
+        w: Math.abs(wr.x - el.x) + (maxFoR + 2) * 2,
+        h: Math.abs(wr.y - el.y) + (maxFoR + 2) * 2,
       },
-      (ctx) => traceCapsulePath(ctx, elBox, wrBox, elbowR + 4, wristR + 4, 0, 0),
+      (ctx) => traceCapsulePath(ctx, el, wr, elbowR + 5, wristR + 5, 0, 0),
       { dimDarken: dimFar },
     );
 
-    const handR = Math.max(wristR, 18) + (profileForearmCutout ? 8 : 0);
+    const handR = Math.max(wristR, 20) + (profileForearmCutout ? 8 : 5);
     const hand = sliceRegion(
       armMaster,
       wr,
       {
-        x: Math.min(wrBox.x, tipBox.x) - handR - 4,
-        y: Math.min(wrBox.y, tipBox.y) - handR - 4,
-        w: Math.abs(tipBox.x - wrBox.x) + (handR + 4) * 2,
-        h: Math.abs(tipBox.y - wrBox.y) + (handR + 20) * 2,
+        x: Math.min(wr.x, tip.x) - handR - 4,
+        y: Math.min(wr.y, tip.y) - handR - 4,
+        w: Math.abs(tip.x - wr.x) + (handR + 4) * 2,
+        h: Math.abs(tip.y - wr.y) + (handR + 24) * 2,
       },
-      (ctx) => traceCapsulePath(ctx, wrBox, tipBox, wristR + 4, handR, 0, 16),
+      (ctx) => traceCapsulePath(ctx, wr, tip, wristR + 5, handR, 0, 20),
       { dimDarken: dimFar },
     );
 
     return { upperArm, forearm, hand };
   };
 
-  // In profile views (90° facing right / 270° facing left), far limb is cloned & subtly shaded in Color mode only
-  const farDim = profile && mode === "color" ? 0.22 : 0;
-  const leftArmSlices = sliceArm("left", 0);
-  const rightArmSlices = sliceArm("right", 0);
-  const baseArmBright = leftArmSlices;
-  const baseArmDim = profile && farDim > 0 ? sliceArm("left", farDim) : leftArmSlices;
-  const finalArmL = profile && actor.angle === 270 ? baseArmDim : leftArmSlices;
-  const finalArmR = profile ? (actor.angle === 90 ? baseArmDim : baseArmBright) : rightArmSlices;
+  // In profile views (90°/270°) & 3/4 views (45°/135°/225°/315°), reuse the intact near-side arm
+  // (mirrored cleanly on 3/4 views and subtly depth-shaded in Color Mode) so occluded far arms NEVER split into floating slivers!
+  const farDim = mode === "color" ? (profile ? 0.22 : 0.16) : 0;
+  const isRightOccluded34 = actor.angle === 45 || actor.angle === 135;
+  const isLeftOccluded34 = actor.angle === 225 || actor.angle === 315;
 
-  // 3. Torso & Pelvis base canvas (head trimmed + outer arms removed strictly outside clothing outline)
+  const leftArmSlices = isLeftOccluded34 ? null : sliceArm("left", 0);
+  const rightArmSlices = profile || isRightOccluded34 ? null : sliceArm("right", 0);
+
+  const mirrorArmSet = (
+    src: { upperArm: PartSlice2D; forearm: PartSlice2D; hand: PartSlice2D },
+    dim: number,
+  ) => ({
+    upperArm: mirrorPartSliceHorizontally(src.upperArm, dim),
+    forearm: mirrorPartSliceHorizontally(src.forearm, dim),
+    hand: mirrorPartSliceHorizontally(src.hand, dim),
+  });
+
+  const baseArmDim =
+    profile && farDim > 0 ? sliceArm("left", farDim) : (leftArmSlices ?? sliceArm("left", 0));
+
+  const finalArmL = profile
+    ? actor.angle === 270
+      ? baseArmDim
+      : leftArmSlices!
+    : isLeftOccluded34
+      ? mirrorArmSet(rightArmSlices!, farDim)
+      : leftArmSlices!;
+
+  const finalArmR = profile
+    ? actor.angle === 90
+      ? baseArmDim
+      : leftArmSlices!
+    : isRightOccluded34
+      ? mirrorArmSet(leftArmSlices!, farDim)
+      : rightArmSlices!;
+
+  // 3. Torso & Pelvis base canvas (head trimmed + outer arms removed cleanly without leaving hip notches)
   const bodyCleaned = cloneCanvas(bodyNoArmMaster ?? master);
   {
     const bctx = bodyCleaned.getContext("2d")!;
     bctx.save();
+    bctx.scale(RIG_SCALE, RIG_SCALE);
     bctx.globalCompositeOperation = "destination-out";
     bctx.beginPath();
     bctx.moveTo(0, 0);
@@ -669,10 +903,13 @@ export function buildCharacterRigSlices(
       ? (bodyNoArmMaster ?? master)
       : (() => {
           const c = document.createElement("canvas");
-          c.width = CHAR2D_W;
-          c.height = CHAR2D_H;
+          c.width = CHAR2D_W * RIG_SCALE;
+          c.height = CHAR2D_H * RIG_SCALE;
           const cx = c.getContext("2d")!;
+          cx.imageSmoothingEnabled = true;
+          cx.imageSmoothingQuality = "high";
           cx.save();
+          cx.scale(RIG_SCALE, RIG_SCALE);
           cx.beginPath();
           const outerX = side === "left" ? 0 : CHAR2D_W;
           const topY = a.hipY - 2;
@@ -684,7 +921,7 @@ export function buildCharacterRigSlices(
           cx.lineTo(outerX, CHAR2D_H);
           cx.closePath();
           cx.clip();
-          cx.drawImage(master, 0, 0);
+          cx.drawImage(master, 0, 0, CHAR2D_W, CHAR2D_H);
           cx.restore();
           return c;
         })();
@@ -748,7 +985,7 @@ export function buildCharacterRigSlices(
   const legL = sliceLeg("left", profile && actor.angle === 270 ? farDim : 0);
   const legR = profile ? sliceLeg("left", actor.angle === 90 ? farDim : 0) : sliceLeg("right", 0);
 
-  return putRigCache(key, {
+  const builtRig: CharacterRig2D = {
     anchors: a,
     slices: {
       head: headSlice,
@@ -767,14 +1004,19 @@ export function buildCharacterRigSlices(
       shinR: legR.shin,
       footR: legR.foot,
     },
-  });
+  };
+
+  // CRITICAL: Only cache complete rigs built after sprites finished loading (prevents blank Color Mode bug!)
+  return imagesReady ? putRigCache(key, builtRig) : builtRig;
 }
 
 function drawSliceAt(ctx: C, slice: PartSlice2D, worldPos: BodyPoint2D, angleDeg: number) {
   ctx.save();
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
   ctx.translate(worldPos.x, worldPos.y);
   if (angleDeg) ctx.rotate(degToRad(angleDeg));
-  ctx.drawImage(slice.canvas, -slice.pivotX, -slice.pivotY);
+  ctx.drawImage(slice.canvas, -slice.pivotX, -slice.pivotY, slice.w, slice.h);
   ctx.restore();
 }
 
@@ -1239,6 +1481,138 @@ function drawCheckerboard(ctx: C) {
   }
 }
 
+/** Draws crisp Manga Action FX (radial focus speedlines, impact clash burst, ground dust puffs). */
+function drawStageActionFx2D(
+  ctx: C,
+  stage: Stage2D,
+  skeletons: Map<string, SkeletonWorld2D>,
+  selectedActorId: string | null | undefined,
+  fx: Stage2DFxOverlay | undefined,
+) {
+  if (!fx || (!fx.speedlines && !fx.impactBurst && !fx.groundDust)) return;
+  const mode = stage.renderMode;
+  const visibleActors = stage.actors.filter((a) => a.visible);
+  const focusActor =
+    visibleActors.find((a) => a.id === selectedActorId) ?? visibleActors[0] ?? null;
+
+  // Compute screen-space focal center (midpoint between 2 clashing actors or primary actor's chest)
+  let focusX = STAGE2D_W / 2;
+  let focusY = STAGE2D_H * 0.45;
+  if (visibleActors.length >= 2 && fx.impactBurst) {
+    const a0 = visibleActors[0]!;
+    const a1 = visibleActors[1]!;
+    const sk0 = skeletons.get(a0.id);
+    const sk1 = skeletons.get(a1.id);
+    if (sk0 && sk1) {
+      const p0 = characterToStagePoint(sk0.chest, a0, stage.camera);
+      const p1 = characterToStagePoint(sk1.chest, a1, stage.camera);
+      focusX = (p0.x + p1.x) / 2;
+      focusY = (p0.y + p1.y) / 2;
+    }
+  } else if (focusActor) {
+    const sk = skeletons.get(focusActor.id);
+    if (sk) {
+      const p = characterToStagePoint(sk.chest, focusActor, stage.camera);
+      focusX = p.x;
+      focusY = p.y;
+    }
+  }
+
+  // 1. Ground Dust Clouds around grounded actors' feet
+  if (fx.groundDust) {
+    ctx.save();
+    for (const actor of visibleActors) {
+      const sk = skeletons.get(actor.id);
+      if (!sk) continue;
+      const footL = characterToStagePoint(
+        { x: sk.ankleL.x, y: sk.ankleL.y + 32 },
+        actor,
+        stage.camera,
+      );
+      const footR = characterToStagePoint(
+        { x: sk.ankleR.x, y: sk.ankleR.y + 32 },
+        actor,
+        stage.camera,
+      );
+      const scale = Math.max(0.4, actor.scale * (stage.camera.zoom || 1));
+      const puffs = [
+        { x: footL.x - 36 * scale, y: footL.y - 6 * scale, rx: 32 * scale, ry: 18 * scale },
+        { x: footL.x - 62 * scale, y: footL.y - 16 * scale, rx: 22 * scale, ry: 13 * scale },
+        { x: footR.x + 36 * scale, y: footR.y - 6 * scale, rx: 32 * scale, ry: 18 * scale },
+        { x: footR.x + 62 * scale, y: footR.y - 16 * scale, rx: 22 * scale, ry: 13 * scale },
+      ];
+      for (const pf of puffs) {
+        ctx.fillStyle = mode === "manga" ? "rgba(255,255,255,0.92)" : "rgba(241,245,249,0.82)";
+        ctx.strokeStyle = mode === "manga" ? "#000000" : "#334155";
+        ctx.lineWidth = Math.max(1.4, 2.1 * scale);
+        ctx.beginPath();
+        ctx.ellipse(pf.x, pf.y, pf.rx, pf.ry, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
+  // 2. Radial Shonen Focus Speedlines (frame border converging toward focal action center)
+  if (fx.speedlines) {
+    ctx.save();
+    const maxR = Math.hypot(STAGE2D_W, STAGE2D_H) * 0.9;
+    const count = 84;
+    ctx.fillStyle = mode === "manga" ? "#000000" : "rgba(15, 23, 42, 0.78)";
+    for (let i = 0; i < count; i++) {
+      const baseAng = (i / count) * Math.PI * 2;
+      const jitter = Math.sin(i * 12.9898) * 0.025;
+      const ang = baseAng + jitter;
+      const innerR = 230 + ((i * 73) % 130);
+      const halfSpread = 0.004 + ((i * 19) % 5) * 0.0022;
+      ctx.beginPath();
+      ctx.moveTo(focusX + Math.cos(ang) * innerR, focusY + Math.sin(ang) * innerR);
+      ctx.lineTo(
+        focusX + Math.cos(ang - halfSpread) * maxR,
+        focusY + Math.sin(ang - halfSpread) * maxR,
+      );
+      ctx.lineTo(
+        focusX + Math.cos(ang + halfSpread) * maxR,
+        focusY + Math.sin(ang + halfSpread) * maxR,
+      );
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // 3. Impact Clash Starburst + Sharp Manga Sparks
+  if (fx.impactBurst) {
+    ctx.save();
+    ctx.translate(focusX, focusY);
+    const spikes = 16;
+    ctx.beginPath();
+    for (let i = 0; i < spikes * 2; i++) {
+      const ang = (i / (spikes * 2)) * Math.PI * 2;
+      const r = i % 2 === 0 ? 96 + ((i * 37) % 44) : 26 + ((i * 13) % 12);
+      const px = Math.cos(ang) * r;
+      const py = Math.sin(ang) * r;
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.fillStyle = mode === "manga" ? "#ffffff" : "rgba(254, 249, 195, 0.94)";
+    ctx.fill();
+    ctx.strokeStyle = mode === "manga" ? "#000000" : "#0f172a";
+    ctx.lineWidth = 3;
+    ctx.lineJoin = "miter";
+    ctx.stroke();
+
+    // Inner kinetic ring & flying sparks
+    ctx.beginPath();
+    ctx.arc(0, 0, 14, 0, Math.PI * 2);
+    ctx.fillStyle = mode === "manga" ? "#000000" : "#f59e0b";
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
 export function renderStage2DSync(
   ctx: C,
   stage: Stage2D,
@@ -1272,11 +1646,131 @@ export function renderStage2DSync(
   const cam = stage.camera;
   const hw = STAGE2D_W / 2;
   const hh = STAGE2D_H / 2;
+  const zoom = Math.max(0.3, cam.zoom || 1);
+
+  // Edge-clamped backdrop extension so Dutch Angle tilts & wide zoom-outs NEVER expose blank corner triangles
+  // or double room outlines!
+  let sceneBackdropBuf: HTMLCanvasElement | null = null;
+  if (scene) {
+    const corners = [
+      cameraCanvasToStageWorldPoint({ x: 0, y: 0 }, cam),
+      cameraCanvasToStageWorldPoint({ x: STAGE2D_W, y: 0 }, cam),
+      cameraCanvasToStageWorldPoint({ x: 0, y: STAGE2D_H }, cam),
+      cameraCanvasToStageWorldPoint({ x: STAGE2D_W, y: STAGE2D_H }, cam),
+    ];
+    let minWx = 0;
+    let maxWx = STAGE2D_W;
+    let minWy = 0;
+    let maxWy = STAGE2D_H;
+    for (const c of corners) {
+      if (c.x < minWx) minWx = c.x;
+      if (c.x > maxWx) maxWx = c.x;
+      if (c.y < minWy) minWy = c.y;
+      if (c.y > maxWy) maxWy = c.y;
+    }
+    const needsOverscan =
+      minWx < -1 || maxWx > STAGE2D_W + 1 || minWy < -1 || maxWy > STAGE2D_H + 1;
+    if (needsOverscan) {
+      sceneBackdropBuf = document.createElement("canvas");
+      sceneBackdropBuf.width = STAGE2D_W;
+      sceneBackdropBuf.height = STAGE2D_H;
+      const bctx = sceneBackdropBuf.getContext("2d")!;
+      renderScene2DSync(
+        bctx,
+        { ...scene, renderMode: stage.renderMode, objects: [], strokes: [] },
+        [],
+        assets.sceneImages,
+        { showGuides: false, selectedObjectId: null },
+      );
+
+      const padL = Math.ceil(Math.max(0, -minWx)) + 24;
+      const padR = Math.ceil(Math.max(0, maxWx - STAGE2D_W)) + 24;
+      const padT = Math.ceil(Math.max(0, -minWy)) + 24;
+      const padB = Math.ceil(Math.max(0, maxWy - STAGE2D_H)) + 24;
+
+      ctx.save();
+      ctx.translate(hw, hh);
+      if (cam.tilt) ctx.rotate(degToRad(cam.tilt));
+      ctx.translate(cam.panX || 0, cam.panY || 0);
+      ctx.scale(zoom, zoom);
+      ctx.translate(-hw, -hh);
+      ctx.imageSmoothingEnabled = false;
+      // Extend clean inset border strips (well inside outer 2px room-corner ink lines) seamlessly to viewport edges
+      const inset = 22;
+      if (padT > 0)
+        ctx.drawImage(sceneBackdropBuf, 0, inset, STAGE2D_W, 2, 0, -padT, STAGE2D_W, padT + 4);
+      if (padB > 0)
+        ctx.drawImage(
+          sceneBackdropBuf,
+          0,
+          STAGE2D_H - inset - 2,
+          STAGE2D_W,
+          2,
+          0,
+          STAGE2D_H - 2,
+          STAGE2D_W,
+          padB + 4,
+        );
+      if (padL > 0)
+        ctx.drawImage(sceneBackdropBuf, inset, 0, 2, STAGE2D_H, -padL, 0, padL + 4, STAGE2D_H);
+      if (padR > 0)
+        ctx.drawImage(
+          sceneBackdropBuf,
+          STAGE2D_W - inset - 2,
+          0,
+          2,
+          STAGE2D_H,
+          STAGE2D_W - 2,
+          0,
+          padR + 4,
+          STAGE2D_H,
+        );
+      if (padL > 0 && padT > 0)
+        ctx.drawImage(sceneBackdropBuf, inset, 6, 2, 2, -padL, -padT, padL + 4, padT + 4);
+      if (padR > 0 && padT > 0)
+        ctx.drawImage(
+          sceneBackdropBuf,
+          STAGE2D_W - inset - 2,
+          6,
+          2,
+          2,
+          STAGE2D_W - 2,
+          -padT,
+          padR + 4,
+          padT + 4,
+        );
+      if (padL > 0 && padB > 0)
+        ctx.drawImage(
+          sceneBackdropBuf,
+          inset,
+          STAGE2D_H - 8,
+          2,
+          2,
+          -padL,
+          STAGE2D_H - 2,
+          padL + 4,
+          padB + 4,
+        );
+      if (padR > 0 && padB > 0)
+        ctx.drawImage(
+          sceneBackdropBuf,
+          STAGE2D_W - inset - 2,
+          STAGE2D_H - 8,
+          2,
+          2,
+          STAGE2D_W - 2,
+          STAGE2D_H - 2,
+          padR + 4,
+          padB + 4,
+        );
+      ctx.restore();
+    }
+  }
+
   ctx.save();
   ctx.translate(hw, hh);
   if (cam.tilt) ctx.rotate(degToRad(cam.tilt));
   ctx.translate(cam.panX || 0, cam.panY || 0);
-  const zoom = Math.max(0.3, cam.zoom || 1);
   ctx.scale(zoom, zoom);
   ctx.translate(-hw, -hh);
 
@@ -1318,6 +1812,9 @@ export function renderStage2DSync(
 
   ctx.restore();
 
+  // Optional Manga Action FX (Speedlines, Impact Burst, Ground Dust) in crisp screen-aligned framing
+  drawStageActionFx2D(ctx, stage, skeletons, opts.selectedActorId, stage.fx);
+
   // Interactive Rig Overlay rendered in un-clipped screen canvas coords so handle sizes stay crisp
   if (opts.showRig && opts.selectedActorId) {
     const selActor = stage.actors.find((a) => a.id === opts.selectedActorId);
@@ -1335,7 +1832,6 @@ export function renderStage2DSync(
   }
 
   ctx.restore();
-  void cameraCanvasToStageWorldPoint;
   return skeletons;
 }
 

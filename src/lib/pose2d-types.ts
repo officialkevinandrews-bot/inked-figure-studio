@@ -94,15 +94,49 @@ export interface Stage2DCamera {
   tilt: number;
 }
 
+export interface Stage2DFxOverlay {
+  speedlines: boolean;
+  impactBurst: boolean;
+  groundDust: boolean;
+}
+
+export const DEFAULT_STAGE_FX_2D: Stage2DFxOverlay = {
+  speedlines: false,
+  impactBurst: false,
+  groundDust: false,
+};
+
 export interface Stage2D {
   id: string;
   name: string;
   sceneId: string | null;
   renderMode: RenderMode2D;
   camera: Stage2DCamera;
+  fx?: Stage2DFxOverlay;
   actors: Stage2DActor[];
   createdAt: number;
   updatedAt: number;
+}
+
+export interface Stage2DCompositionSlot {
+  x: number;
+  y: number;
+  scale: number;
+  angle: Angle2D;
+  flipX: boolean;
+  depth: SceneDepthLayer;
+  poseId: string;
+  expression?: Expression2DId;
+  fx?: FaceFx2D[];
+}
+
+export interface Stage2DCompositionPreset {
+  id: string;
+  name: string;
+  subtitle: string;
+  camera: Stage2DCamera;
+  stageFx: Stage2DFxOverlay;
+  slots: [Stage2DCompositionSlot, Stage2DCompositionSlot];
 }
 
 export interface SourceStage2DMetadata {
@@ -534,6 +568,125 @@ export const BUILTIN_POSE_PRESETS_2D: Pose2DPreset[] = [
   ),
 ];
 
+export const BUILTIN_STAGE_COMPOSITIONS_2D: Stage2DCompositionPreset[] = [
+  {
+    id: "rival-faceoff",
+    name: "Rival Face-Off",
+    subtitle: "90° vs 270° tense battle showdown",
+    camera: { zoom: 1.18, panX: 0, panY: 30, tilt: -4 },
+    stageFx: { speedlines: true, impactBurst: false, groundDust: true },
+    slots: [
+      {
+        x: Math.round(STAGE2D_W * 0.34),
+        y: Math.round(STAGE2D_H * 0.89),
+        scale: 0.64,
+        angle: 90,
+        flipX: false,
+        depth: "midground",
+        poseId: "battle-stance",
+        expression: "serious",
+      },
+      {
+        x: Math.round(STAGE2D_W * 0.66),
+        y: Math.round(STAGE2D_H * 0.89),
+        scale: 0.64,
+        angle: 270,
+        flipX: false,
+        depth: "midground",
+        poseId: "guard-block",
+        expression: "smug",
+      },
+    ],
+  },
+  {
+    id: "punch-vs-guard",
+    name: "Punch vs. Guard",
+    subtitle: "High-impact clash with burst FX",
+    camera: { zoom: 1.32, panX: 0, panY: 45, tilt: -7 },
+    stageFx: { speedlines: true, impactBurst: true, groundDust: true },
+    slots: [
+      {
+        x: Math.round(STAGE2D_W * 0.38),
+        y: Math.round(STAGE2D_H * 0.88),
+        scale: 0.66,
+        angle: 90,
+        flipX: false,
+        depth: "midground",
+        poseId: "power-punch",
+        expression: "angry",
+      },
+      {
+        x: Math.round(STAGE2D_W * 0.63),
+        y: Math.round(STAGE2D_H * 0.89),
+        scale: 0.65,
+        angle: 270,
+        flipX: false,
+        depth: "midground",
+        poseId: "guard-block",
+        expression: "shocked",
+        fx: ["sweat"],
+      },
+    ],
+  },
+  {
+    id: "back-to-back",
+    name: "Back-to-Back Duo",
+    subtitle: "Heroic tag-team stance",
+    camera: { zoom: 1.15, panX: 0, panY: 25, tilt: 0 },
+    stageFx: { speedlines: false, impactBurst: false, groundDust: false },
+    slots: [
+      {
+        x: Math.round(STAGE2D_W * 0.43),
+        y: Math.round(STAGE2D_H * 0.88),
+        scale: 0.64,
+        angle: 315,
+        flipX: false,
+        depth: "midground",
+        poseId: "arms-crossed",
+        expression: "smug",
+      },
+      {
+        x: Math.round(STAGE2D_W * 0.57),
+        y: Math.round(STAGE2D_H * 0.88),
+        scale: 0.64,
+        angle: 45,
+        flipX: false,
+        depth: "midground",
+        poseId: "battle-stance",
+        expression: "serious",
+      },
+    ],
+  },
+  {
+    id: "ots-talk",
+    name: "Over-the-Shoulder",
+    subtitle: "Cinematic manga dialogue framing",
+    camera: { zoom: 1.38, panX: 25, panY: 110, tilt: 0 },
+    stageFx: { speedlines: false, impactBurst: false, groundDust: false },
+    slots: [
+      {
+        x: Math.round(STAGE2D_W * 0.28),
+        y: Math.round(STAGE2D_H * 1.06),
+        scale: 0.86,
+        angle: 135,
+        flipX: false,
+        depth: "foreground",
+        poseId: "relaxed-lean",
+      },
+      {
+        x: Math.round(STAGE2D_W * 0.64),
+        y: Math.round(STAGE2D_H * 0.87),
+        scale: 0.6,
+        angle: 315,
+        flipX: false,
+        depth: "midground",
+        poseId: "pointing-forward",
+        expression: "serious",
+      },
+    ],
+  },
+];
+
 export function createDefaultStage2D(
   name = "Stage #1",
   sceneId: string | null = "scene-cozy-bedroom",
@@ -552,6 +705,7 @@ export function createDefaultStage2D(
       panY: 0,
       tilt: 0,
     },
+    fx: { ...DEFAULT_STAGE_FX_2D },
     actors: characterId
       ? [
           {

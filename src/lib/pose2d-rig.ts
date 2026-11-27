@@ -478,3 +478,146 @@ export function stageToCharacterPoint(
 ): BodyPoint2D {
   return stageWorldToCharacterPoint(cameraCanvasToStageWorldPoint(pt, camera), actor);
 }
+
+/**
+ * Computes tight character-local bounding box around the posed FK skeleton (with padding for head, hair & limbs).
+ * Used for tilt/crouch-accurate hit-testing and automatic camera framing.
+ */
+export function computeActorLocalBounds2D(sk: SkeletonWorld2D): {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+} {
+  const pts: BodyPoint2D[] = [
+    { x: sk.head.x, y: sk.head.y - 88 },
+    { x: sk.head.x - 52, y: sk.head.y },
+    { x: sk.head.x + 52, y: sk.head.y },
+    sk.neck,
+    sk.chest,
+    sk.spine,
+    sk.hips,
+    sk.shoulderL,
+    sk.elbowL,
+    sk.wristL,
+    sk.handTipL,
+    sk.shoulderR,
+    sk.elbowR,
+    sk.wristR,
+    sk.handTipR,
+    sk.hipL,
+    sk.kneeL,
+    sk.ankleL,
+    { x: sk.toeL.x, y: sk.toeL.y + 18 },
+    sk.hipR,
+    sk.kneeR,
+    sk.ankleR,
+    { x: sk.toeR.x, y: sk.toeR.y + 18 },
+  ];
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const p of pts) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  return {
+    minX: minX - 38,
+    maxX: maxX + 38,
+    minY: minY - 18,
+    maxY: maxY + 22,
+  };
+}
+
+/**
+ * Computes the exact `rootOffsetY` value that plants the character's lowest foot directly on canonical floor `y = 940`.
+ */
+export function computeSnapFeetToFloorOffsetY(
+  anchors: BodyAngleAnchors,
+  pose: Pose2DState,
+): number {
+  const sk = computeForwardKinematics2D(anchors, pose);
+  const lowestFootY = Math.max(sk.ankleL.y + 34, sk.ankleR.y + 34, sk.toeL.y + 6, sk.toeR.y + 6);
+  const delta = 940 - lowestFootY;
+  return Math.max(-180, Math.min(260, Math.round((pose.rootOffsetY || 0) + delta)));
+}
+
+/**
+ * When Foot Pinning is enabled, moving the pelvis vertically (`targetRootOffsetY`) automatically solves
+ * 2-bone IK for both legs so both ankles stay planted at their starting floor coordinates while knees bend naturally.
+ */
+export function solvePinnedFeetHipDrag2D(
+  anchors: BodyAngleAnchors,
+  startPose: Pose2DState,
+  targetRootOffsetY: number,
+): Pose2DState {
+  const startSk = computeForwardKinematics2D(anchors, startPose);
+  const pinnedAnkleL = startSk.ankleL;
+  const pinnedAnkleR = startSk.ankleR;
+
+  const clampedY = Math.max(-160, Math.min(240, Math.round(targetRootOffsetY)));
+  const draft: Pose2DState = {
+    ...startPose,
+    joints: { ...startPose.joints },
+    rootOffsetY: clampedY,
+  };
+  const nextSk = computeForwardKinematics2D(anchors, draft);
+  const clampDeg = (d: number) => Math.max(-165, Math.min(165, Math.round(d * 10) / 10));
+
+  const solL = solveTwoBoneIK2D(
+    nextSk.hipL,
+    nextSk.lengths.thighL,
+    nextSk.lengths.shinL,
+    nextSk.restAnglesRad.thighL,
+    nextSk.restAnglesRad.shinL,
+    pinnedAnkleL,
+    draft.kneeBendL,
+    degToRad(nextSk.anglesDeg.hips),
+  );
+  const solR = solveTwoBoneIK2D(
+    nextSk.hipR,
+    nextSk.lengths.thighR,
+    nextSk.lengths.shinR,
+    nextSk.restAnglesRad.thighR,
+    nextSk.restAnglesRad.shinR,
+    pinnedAnkleR,
+    draft.kneeBendR,
+    degToRad(nextSk.anglesDeg.hips),
+  );
+
+  draft.joints.thighL = clampDeg(solL.upperDeg);
+  draft.joints.shinL = clampDeg(solL.lowerDeg);
+  draft.joints.thighR = clampDeg(solR.upperDeg);
+  draft.joints.shinR = clampDeg(solR.lowerDeg);
+  // Keep feet level with floor as shins angle
+  draft.joints.footL = Math.max(
+    -45,
+    Math.min(45, Math.round(-(draft.joints.hips + solL.upperDeg + solL.lowerDeg) * 0.45)),
+  );
+  draft.joints.footR = Math.max(
+    -45,
+    Math.min(45, Math.round(-(draft.joints.hips + solR.upperDeg + solR.lowerDeg) * 0.45)),
+  );
+  return draft;
+}
+
+/**
+ * Computes a clean camera framing centered on the selected actor's posed bounding box.
+ */
+export function computeFrameActorCamera2D(actor: Stage2DActor, sk: SkeletonWorld2D): Stage2DCamera {
+  const b = computeActorLocalBounds2D(sk);
+  const tl = characterToStageWorldPoint({ x: b.minX, y: b.minY }, actor);
+  const br = characterToStageWorldPoint({ x: b.maxX, y: b.maxY }, actor);
+  const worldW = Math.max(80, Math.abs(br.x - tl.x));
+  const worldH = Math.max(120, Math.abs(br.y - tl.y));
+  const cx = (tl.x + br.x) / 2;
+  const cy = (tl.y + br.y) / 2;
+  const rawZoom = Math.min((STAGE2D_W * 0.72) / worldW, (STAGE2D_H * 0.82) / worldH);
+  const zoom = Math.max(0.6, Math.min(2.4, Math.round(rawZoom * 20) / 20));
+  const panX = Math.max(-480, Math.min(480, Math.round((STAGE2D_W / 2 - cx) * zoom)));
+  const panY = Math.max(-340, Math.min(420, Math.round((STAGE2D_H / 2 - cy) * zoom)));
+  return { zoom, panX, panY, tilt: 0 };
+}

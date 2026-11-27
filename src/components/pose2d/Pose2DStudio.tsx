@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Anchor,
+  ArrowDownToLine,
   Camera,
   Check,
   Copy,
@@ -7,6 +9,7 @@ import {
   Eye,
   EyeOff,
   FlipHorizontal,
+  Focus,
   Image as ImageIcon,
   Layers,
   Move,
@@ -21,6 +24,7 @@ import {
   Undo2,
   UserPlus,
   Users,
+  Zap,
 } from "lucide-react";
 import { AccountMenu } from "@/components/auth/AccountMenu";
 import { FeedbackButton } from "@/components/feedback/FeedbackProvider";
@@ -44,7 +48,9 @@ import { ensureScenes2DInitialized, loadCustomSceneObjects2D } from "@/lib/scene
 import type { Scene2D, SceneDepthLayer } from "@/lib/scene2d-types";
 import {
   BUILTIN_POSE_PRESETS_2D,
+  BUILTIN_STAGE_COMPOSITIONS_2D,
   DEFAULT_POSE_2D,
+  DEFAULT_STAGE_FX_2D,
   JOINT_IDS_2D,
   JOINT_LABELS_2D,
   STAGE2D_H,
@@ -58,11 +64,17 @@ import {
   type SourceStage2DMetadata,
   type Stage2D,
   type Stage2DActor,
+  type Stage2DCompositionPreset,
+  type Stage2DFxOverlay,
 } from "@/lib/pose2d-types";
 import {
-  characterToStagePoint,
+  cameraCanvasToStageWorldPoint,
+  computeActorLocalBounds2D,
   computeForwardKinematics2D,
+  computeFrameActorCamera2D,
+  computeSnapFeetToFloorOffsetY,
   degToRad,
+  solvePinnedFeetHipDrag2D,
   solveSingleBoneRotationDeg,
   solveTwoBoneIK2D,
   stageToCharacterPoint,
@@ -130,10 +142,10 @@ export function Pose2DStudio({
     ensureCharacters2DInitialized(),
   );
   const [scenes, setScenes] = useState<Scene2D[]>(() => ensureScenes2DInitialized());
-  const customModels = useMemo(() => loadCustomBaseModels2D(), []);
-  const customParts = useMemo(() => loadCustomParts2D(), []);
-  const customHeads = useMemo(() => loadCustomHeads2D(), []);
-  const customSceneObjects = useMemo(() => loadCustomSceneObjects2D(), []);
+  const [customModels, setCustomModels] = useState(() => loadCustomBaseModels2D());
+  const [customParts, setCustomParts] = useState(() => loadCustomParts2D());
+  const [customHeads, setCustomHeads] = useState(() => loadCustomHeads2D());
+  const [customSceneObjects, setCustomSceneObjects] = useState(() => loadCustomSceneObjects2D());
 
   const [stages, setStages] = useState<Stage2D[]>(() => {
     const ch = characters[0];
@@ -150,6 +162,8 @@ export function Pose2DStudio({
   const [poseCategory, setPoseCategory] = useState<"all" | Pose2DCategory>("all");
   const [showRig, setShowRig] = useState(true);
   const [controlMode, setControlMode] = useState<"ik" | "fk">("ik");
+  const [pinFeet, setPinFeet] = useState(false);
+  const [spacePanHeld, setSpacePanHeld] = useState(false);
   const [targetPanelId, setTargetPanelId] = useState<string>(panels[0]?.id ?? "");
   const [renaming, setRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
@@ -167,19 +181,32 @@ export function Pose2DStudio({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const skeletonsRef = useRef<Map<string, SkeletonWorld2D>>(new Map());
   const dragRef = useRef<{
-    kind: RigHandleKind2D;
+    kind: RigHandleKind2D | { type: "camera_pan" } | { type: "actor_move" };
     actorId: string;
     startCanvasPt: { x: number; y: number };
+    startWorldPt: { x: number; y: number };
     startActorX: number;
     startActorY: number;
     startScale: number;
+    startPose?: Pose2DState;
+    startPanX: number;
+    startPanY: number;
     pushedUndo: boolean;
   } | null>(null);
 
-  // Refresh saved characters & scenes when tab mounts or opens
+  // Refresh saved characters, scenes & custom assets when tab mounts or window regains focus
   useEffect(() => {
-    setCharacters(ensureCharacters2DInitialized());
-    setScenes(ensureScenes2DInitialized());
+    const refresh = () => {
+      setCharacters(ensureCharacters2DInitialized());
+      setScenes(ensureScenes2DInitialized());
+      setCustomModels(loadCustomBaseModels2D());
+      setCustomParts(loadCustomParts2D());
+      setCustomHeads(loadCustomHeads2D());
+      setCustomSceneObjects(loadCustomSceneObjects2D());
+    };
+    refresh();
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
   }, []);
 
   useEffect(() => {
@@ -248,39 +275,227 @@ export function Pose2DStudio({
     setStages((s) => upsertStage2D(s, next));
   }, [redoStack, activeStage]);
 
+  const pushUndoSnapshot = useCallback(() => {
+    if (!activeStage) return;
+    const snapshot = structuredClone(activeStage);
+    setUndoStack((u) => [...u.slice(-(MAX_UNDO - 1)), snapshot]);
+    setRedoStack([]);
+  }, [activeStage]);
+
+  const handleSnapFeetToFloor = useCallback(() => {
+    if (!activeStage || !selectedActor) return;
+    const ch = characters.find((c) => c.id === selectedActor.characterId) ?? characters[0];
+    if (!ch) return;
+    const model = resolveBaseModel2D(ch.baseModelId, customModels);
+    const head = resolveCharacterHeadPack2D(ch.headShapeId, customHeads);
+    const anchors = resolveEffectiveAnchors(
+      model,
+      { ...ch, angle: selectedActor.angle },
+      selectedActor.angle,
+      head,
+    );
+    const nextRootY = computeSnapFeetToFloorOffsetY(anchors, selectedActor.pose);
+    commitStage(
+      (s) => ({
+        ...s,
+        actors: s.actors.map((a) =>
+          a.id === selectedActor.id ? { ...a, pose: { ...a.pose, rootOffsetY: nextRootY } } : a,
+        ),
+      }),
+      true,
+    );
+  }, [activeStage, selectedActor, characters, customModels, customHeads, commitStage]);
+
+  const handleFrameSelectedActor = useCallback(() => {
+    if (!activeStage || !selectedActor) return;
+    const sk = skeletonsRef.current.get(selectedActor.id);
+    if (!sk) return;
+    const nextCam = computeFrameActorCamera2D(selectedActor, sk);
+    commitStage((s) => ({ ...s, camera: nextCam }), true);
+  }, [activeStage, selectedActor, commitStage]);
+
+  const handleApplyComposition = useCallback(
+    (comp: Stage2DCompositionPreset) => {
+      if (!activeStage) return;
+      const charA = characters[0];
+      if (!charA) return;
+      const charB = characters[1] ?? characters[0];
+      const now = Date.now();
+      const buildActor = (slotIdx: 0 | 1): Stage2DActor => {
+        const slot = comp.slots[slotIdx];
+        const ch = slotIdx === 0 ? charA : charB;
+        const preset =
+          BUILTIN_POSE_PRESETS_2D.find((p) => p.id === slot.poseId)?.pose ?? DEFAULT_POSE_2D;
+        return {
+          id: `actor2d-${now}-${slotIdx + 1}`,
+          characterId: ch.id,
+          name: slotIdx === 1 && charB.id === charA.id ? `${ch.name} (Rival)` : ch.name,
+          x: slot.x,
+          y: slot.y,
+          scale: slot.scale,
+          angle: slot.angle,
+          flipX: slot.flipX,
+          depth: slot.depth,
+          shadow: true,
+          visible: true,
+          expressionOverride: slot.expression,
+          fxOverride: slot.fx ? [...slot.fx] : undefined,
+          pose: clonePose2D(preset),
+        };
+      };
+      const nextActors: Stage2DActor[] = [buildActor(0), buildActor(1)];
+      commitStage(
+        (s) => ({
+          ...s,
+          actors: nextActors,
+          camera: { ...comp.camera },
+          fx: { ...comp.stageFx },
+        }),
+        true,
+      );
+      setSelectedActorId(nextActors[0]!.id);
+    },
+    [activeStage, characters, commitStage],
+  );
+
+  const handleDuplicateActor = useCallback(
+    (actor: Stage2DActor) => {
+      if (!activeStage) return;
+      const copy: Stage2DActor = {
+        ...structuredClone(actor),
+        id: `actor2d-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+        name: `${actor.name} Copy`,
+        x: Math.min(STAGE2D_W - 100, actor.x + 110),
+      };
+      commitStage((s) => ({ ...s, actors: [...s.actors, copy] }), true);
+      setSelectedActorId(copy.id);
+    },
+    [activeStage, commitStage],
+  );
+
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement ||
+        e.target instanceof HTMLSelectElement
+      ) {
+        return;
+      }
+      if (e.code === "Space") {
+        e.preventDefault();
+        setSpacePanHeld(true);
+        return;
+      }
+      const k = e.key.toLowerCase();
+      if ((e.ctrlKey || e.metaKey) && k === "z") {
         e.preventDefault();
         if (e.shiftKey) handleRedo();
         else handleUndo();
-      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") {
+      } else if ((e.ctrlKey || e.metaKey) && k === "y") {
         e.preventDefault();
         handleRedo();
+      } else if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+        if (k === "r") {
+          setShowRig((v) => !v);
+        } else if (k === "i") {
+          setControlMode("ik");
+        } else if (k === "k") {
+          setControlMode("fk");
+        } else if (k === "h" && selectedActor) {
+          commitStage(
+            (s) => ({
+              ...s,
+              actors: s.actors.map((a) =>
+                a.id === selectedActor.id ? { ...a, flipX: !a.flipX } : a,
+              ),
+            }),
+            true,
+          );
+        } else if (k === "g") {
+          handleSnapFeetToFloor();
+        } else if (k === "f") {
+          handleFrameSelectedActor();
+        } else if ((e.key === "Delete" || e.key === "Backspace") && selectedActor) {
+          e.preventDefault();
+          commitStage(
+            (s) => ({ ...s, actors: s.actors.filter((a) => a.id !== selectedActor.id) }),
+            true,
+          );
+          setSelectedActorId(null);
+        }
       }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [handleUndo, handleRedo]);
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code === "Space") setSpacePanHeld(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+    };
+  }, [
+    handleUndo,
+    handleRedo,
+    handleSnapFeetToFloor,
+    handleFrameSelectedActor,
+    selectedActor,
+    commitStage,
+  ]);
 
-  // Preload all scene custom sprites & staged character sprites
+  // Preload all scene custom sprites & staged character sprites ONLY when asset dependencies actually change
+  // (NEVER on every pointer-move pose drag frame!).
+  const activeStageRef = useRef(activeStage);
+  activeStageRef.current = activeStage;
+  const activeSceneRef = useRef(activeScene);
+  activeSceneRef.current = activeScene;
+
+  const stageId = activeStage?.id ?? "";
+  const stageRenderMode = activeStage?.renderMode ?? "color";
+  const stageSceneId = activeStage?.sceneId ?? "none";
+  const stageActors = activeStage?.actors;
+  const activeSceneUpdatedAt = activeScene?.updatedAt ?? 0;
+
   const assetKey = useMemo(() => {
-    if (!activeStage) return "";
+    if (!stageId || !stageActors) return "";
+    const charSigs = stageActors
+      .map((a) => {
+        const ch = characters.find((c) => c.id === a.characterId) ?? characters[0];
+        return `${a.characterId}:${a.angle}:${ch?.updatedAt ?? 0}:${ch?.headShapeId ?? ""}:${ch?.hair.style ?? ""}:${ch?.clothes.top ?? ""}:${ch?.clothes.bottom ?? ""}:${ch?.clothes.footwear ?? ""}`;
+      })
+      .join(",");
     return [
-      activeStage.id,
-      activeStage.renderMode,
-      activeStage.sceneId ?? "none",
-      activeStage.actors.map((a) => `${a.characterId}:${a.angle}`).join(","),
+      stageId,
+      stageRenderMode,
+      stageSceneId,
+      activeSceneUpdatedAt,
+      charSigs,
+      customModels.length,
+      customParts.length,
+      customHeads.length,
+      customSceneObjects.length,
     ].join("|");
-  }, [activeStage]);
+  }, [
+    stageId,
+    stageRenderMode,
+    stageSceneId,
+    stageActors,
+    activeSceneUpdatedAt,
+    characters,
+    customModels.length,
+    customParts.length,
+    customHeads.length,
+    customSceneObjects.length,
+  ]);
 
   useEffect(() => {
-    if (!activeStage) return;
+    const st = activeStageRef.current;
+    if (!st) return;
     let alive = true;
     void preloadStage2DImages(
-      activeStage,
-      activeScene,
+      st,
+      activeSceneRef.current,
       customSceneObjects,
       characters,
       customModels,
@@ -292,16 +507,27 @@ export function Pose2DStudio({
     return () => {
       alive = false;
     };
-  }, [
-    assetKey,
-    activeStage,
-    activeScene,
-    customSceneObjects,
-    characters,
-    customModels,
-    customParts,
-    customHeads,
-  ]);
+  }, [assetKey, characters, customModels, customParts, customHeads, customSceneObjects]);
+
+  // Non-passive mouse-wheel zoom directly on the stage viewport
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const onWheel = (e: WheelEvent) => {
+      const st = activeStageRef.current;
+      if (!st) return;
+      e.preventDefault();
+      const delta = e.deltaY < 0 ? 0.1 : -0.1;
+      const nextZoom = Math.max(
+        0.55,
+        Math.min(2.6, Math.round(((st.camera.zoom || 1) + delta) * 20) / 20),
+      );
+      if (nextZoom === st.camera.zoom) return;
+      setStages((prev) => upsertStage2D(prev, { ...st, camera: { ...st.camera, zoom: nextZoom } }));
+    };
+    canvas.addEventListener("wheel", onWheel, { passive: false });
+    return () => canvas.removeEventListener("wheel", onWheel);
+  }, []);
 
   // Paint stage canvas whenever state or preloaded images change
   useEffect(() => {
@@ -609,6 +835,26 @@ export function Pose2DStudio({
   const onCanvasPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!activeStage) return;
     const pt = clientToCanvasPt(e);
+    const worldPt = cameraCanvasToStageWorldPoint(pt, activeStage.camera);
+
+    // 0. Middle-mouse or Space-held -> smooth camera pan
+    if (e.button === 1 || spacePanHeld) {
+      e.preventDefault();
+      dragRef.current = {
+        kind: { type: "camera_pan" },
+        actorId: "",
+        startCanvasPt: pt,
+        startWorldPt: worldPt,
+        startActorX: 0,
+        startActorY: 0,
+        startScale: 1,
+        startPanX: activeStage.camera.panX || 0,
+        startPanY: activeStage.camera.panY || 0,
+        pushedUndo: false,
+      };
+      e.currentTarget.setPointerCapture(e.pointerId);
+      return;
+    }
 
     // 1. Check overlay rig handles on currently selected actor
     if (showRig && selectedActor) {
@@ -630,9 +876,13 @@ export function Pose2DStudio({
             kind: bestHandle.kind,
             actorId: selectedActor.id,
             startCanvasPt: pt,
+            startWorldPt: worldPt,
             startActorX: selectedActor.x,
             startActorY: selectedActor.y,
             startScale: selectedActor.scale,
+            startPose: clonePose2D(selectedActor.pose),
+            startPanX: activeStage.camera.panX || 0,
+            startPanY: activeStage.camera.panY || 0,
             pushedUndo: false,
           };
           e.currentTarget.setPointerCapture(e.pointerId);
@@ -641,51 +891,119 @@ export function Pose2DStudio({
       }
     }
 
-    // 2. Otherwise hit-test actors front-to-back to select & drag actor
+    // 2. Otherwise hit-test actors front-to-back using posed FK skeleton bounds (tilt/crouch-accurate!)
     const revActors = [...activeStage.actors].reverse();
     for (const a of revActors) {
       if (!a.visible) continue;
-      const headTop = characterToStagePoint({ x: 240, y: 60 }, a, activeStage.camera);
-      const footBot = characterToStagePoint({ x: 240, y: 970 }, a, activeStage.camera);
-      const minY = Math.min(headTop.y, footBot.y) - 20;
-      const maxY = Math.max(headTop.y, footBot.y) + 20;
-      const halfW = Math.max(48, 120 * a.scale * (activeStage.camera.zoom || 1));
-      if (pt.x >= headTop.x - halfW && pt.x <= headTop.x + halfW && pt.y >= minY && pt.y <= maxY) {
+      const localPt = stageToCharacterPoint(pt, a, activeStage.camera);
+      const sk = skeletonsRef.current.get(a.id);
+      const bounds = sk
+        ? computeActorLocalBounds2D(sk)
+        : { minX: 110, maxX: 370, minY: 40, maxY: 980 };
+      if (
+        localPt.x >= bounds.minX &&
+        localPt.x <= bounds.maxX &&
+        localPt.y >= bounds.minY &&
+        localPt.y <= bounds.maxY
+      ) {
         setSelectedActorId(a.id);
         setActiveHandleId("root");
         dragRef.current = {
-          kind: { type: "root", label: "Move Character" },
+          kind: { type: "actor_move" },
           actorId: a.id,
           startCanvasPt: pt,
+          startWorldPt: worldPt,
           startActorX: a.x,
           startActorY: a.y,
           startScale: a.scale,
+          startPose: clonePose2D(a.pose),
+          startPanX: activeStage.camera.panX || 0,
+          startPanY: activeStage.camera.panY || 0,
           pushedUndo: false,
         };
         e.currentTarget.setPointerCapture(e.pointerId);
         return;
       }
     }
+
+    // 3. Dragging empty backdrop smoothly pans the stage camera
+    dragRef.current = {
+      kind: { type: "camera_pan" },
+      actorId: "",
+      startCanvasPt: pt,
+      startWorldPt: worldPt,
+      startActorX: 0,
+      startActorY: 0,
+      startScale: 1,
+      startPanX: activeStage.camera.panX || 0,
+      startPanY: activeStage.camera.panY || 0,
+      pushedUndo: false,
+    };
+    e.currentTarget.setPointerCapture(e.pointerId);
   };
 
   const onCanvasPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const d = dragRef.current;
     if (!d || !activeStage) return;
-    const actor = activeStage.actors.find((a) => a.id === d.actorId);
-    if (!actor) return;
     const pt = clientToCanvasPt(e);
     const shouldPushUndo = !d.pushedUndo;
     d.pushedUndo = true;
 
-    const zoom = Math.max(0.3, activeStage.camera.zoom || 1);
-    if (d.kind.type === "root") {
-      const dx = (pt.x - d.startCanvasPt.x) / zoom;
-      const dy = (pt.y - d.startCanvasPt.y) / zoom;
+    if (d.kind.type === "camera_pan") {
+      const tiltRad = -degToRad(activeStage.camera.tilt || 0);
+      const rawDx = pt.x - d.startCanvasPt.x;
+      const rawDy = pt.y - d.startCanvasPt.y;
+      const panDx = rawDx * Math.cos(tiltRad) - rawDy * Math.sin(tiltRad);
+      const panDy = rawDx * Math.sin(tiltRad) + rawDy * Math.cos(tiltRad);
+      commitStage(
+        (s) => ({
+          ...s,
+          camera: {
+            ...s.camera,
+            panX: Math.max(-480, Math.min(480, Math.round(d.startPanX + panDx))),
+            panY: Math.max(-340, Math.min(420, Math.round(d.startPanY + panDy))),
+          },
+        }),
+        shouldPushUndo,
+      );
+      return;
+    }
+
+    const actor = activeStage.actors.find((a) => a.id === d.actorId);
+    if (!actor) return;
+    const worldPt = cameraCanvasToStageWorldPoint(pt, activeStage.camera);
+    const worldDx = worldPt.x - d.startWorldPt.x;
+    const worldDy = worldPt.y - d.startWorldPt.y;
+
+    // When Pin Feet is ON and dragging the red hip pin (`root`), solve 2-bone leg IK for natural squat/crouch!
+    if (d.kind.type === "root" && pinFeet && d.startPose) {
+      const ch = characters.find((c) => c.id === actor.characterId) ?? characters[0];
+      if (ch) {
+        const model = resolveBaseModel2D(ch.baseModelId, customModels);
+        const head = resolveCharacterHeadPack2D(ch.headShapeId, customHeads);
+        const anchors = resolveEffectiveAnchors(
+          model,
+          { ...ch, angle: actor.angle },
+          actor.angle,
+          head,
+        );
+        const localDy = worldDy / Math.max(0.2, actor.scale);
+        const nextPose = solvePinnedFeetHipDrag2D(
+          anchors,
+          d.startPose,
+          (d.startPose.rootOffsetY || 0) + localDy,
+        );
+        updateActor(actor.id, { pose: nextPose }, shouldPushUndo);
+        return;
+      }
+    }
+
+    if (d.kind.type === "root" || d.kind.type === "actor_move") {
       updateActor(
         actor.id,
         {
-          x: Math.round(d.startActorX + dx),
-          y: Math.round(d.startActorY + dy),
+          x: Math.round(d.startActorX + worldDx),
+          y: Math.round(d.startActorY + worldDy),
         },
         shouldPushUndo,
       );
@@ -693,10 +1011,9 @@ export function Pose2DStudio({
     }
 
     if (d.kind.type === "scale") {
-      const dy = (pt.y - d.startCanvasPt.y) / zoom;
       const nextScale = Math.max(
         0.2,
-        Math.min(2.2, Math.round((d.startScale + dy / 380) * 100) / 100),
+        Math.min(2.2, Math.round((d.startScale + worldDy / 380) * 100) / 100),
       );
       updateActor(actor.id, { scale: nextScale }, shouldPushUndo);
       return;
@@ -1047,10 +1364,32 @@ export function Pose2DStudio({
             type="button"
             data-testid="pose2d-toggle-rig"
             onClick={() => setShowRig((v) => !v)}
+            title="Show/Hide Rig Skeleton (R)"
             className={`inline-flex items-center gap-1 rounded-xs border px-2 py-1 font-semibold ${showRig ? "border-primary bg-primary/10 text-primary" : "border-border bg-background text-muted-foreground"}`}
           >
             {showRig ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
             <span>Rig</span>
+          </button>
+          <button
+            type="button"
+            data-testid="pose2d-pin-feet"
+            onClick={() => setPinFeet((v) => !v)}
+            title="Pin Feet on floor — dragging the red hip pin bends both knees naturally"
+            className={`inline-flex items-center gap-1 rounded-xs border px-2 py-1 font-semibold ${pinFeet ? "border-emerald-600 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300" : "border-border bg-background text-muted-foreground hover:text-foreground"}`}
+          >
+            <Anchor className="h-3.5 w-3.5" />
+            <span>Pin Feet</span>
+          </button>
+          <button
+            type="button"
+            data-testid="pose2d-frame-actor"
+            disabled={!selectedActor}
+            onClick={handleFrameSelectedActor}
+            title="Frame Selected Character (F)"
+            className="inline-flex items-center gap-1 rounded-xs border border-border bg-background px-2 py-1 font-semibold text-muted-foreground hover:border-foreground hover:text-foreground disabled:opacity-40"
+          >
+            <Focus className="h-3.5 w-3.5" />
+            <span className="hidden lg:inline">Frame</span>
           </button>
         </div>
 
@@ -1148,19 +1487,76 @@ export function Pose2DStudio({
               onPointerMove={onCanvasPointerMove}
               onPointerUp={onCanvasPointerUp}
               style={{ touchAction: "none" }}
-              className="max-h-full max-w-full aspect-[16/10] bg-white shadow-xl border-2 border-foreground cursor-crosshair"
+              className={`max-h-full max-w-full aspect-[16/10] bg-white shadow-xl border-2 border-foreground ${spacePanHeld ? "cursor-grab" : "cursor-crosshair"}`}
             />
           </div>
+
+          {/* Quick Actor Bar: 8-Angle Turnaround + Expression + Ground Snap without leaving Poses tab */}
+          {selectedActor && (
+            <div className="border-t border-border bg-card/95 px-2.5 py-1.5 text-[11px] flex flex-wrap items-center gap-1.5">
+              <div className="flex items-center gap-0.5">
+                {ANGLES_2D.map((ang: Angle2D) => (
+                  <button
+                    key={ang}
+                    type="button"
+                    data-testid={`pose2d-quick-angle-${ang}`}
+                    onClick={() => updateActor(selectedActor.id, { angle: ang })}
+                    className={`rounded-xs border px-1.5 py-0.5 font-mono font-bold transition-colors ${selectedActor.angle === ang ? "border-primary bg-primary text-primary-foreground" : "border-border bg-background text-muted-foreground hover:border-foreground hover:text-foreground"}`}
+                  >
+                    {ang}°
+                  </button>
+                ))}
+              </div>
+              <select
+                aria-label="Quick Shot Expression"
+                data-testid="pose2d-quick-expression"
+                value={selectedActor.expressionOverride ?? ""}
+                onChange={(e) =>
+                  updateActor(selectedActor.id, {
+                    expressionOverride: (e.target.value || undefined) as Expression2DId | undefined,
+                  })
+                }
+                className="rounded-xs border border-border bg-background px-1.5 py-0.5 text-[11px] font-semibold"
+              >
+                <option value="">Expr: Default</option>
+                {(Object.keys(EXPRESSION_PRESETS_2D) as Expression2DId[]).map((ex) => (
+                  <option key={ex} value={ex}>
+                    {EXPRESSION_PRESETS_2D[ex].label}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={() => updateActor(selectedActor.id, { flipX: !selectedActor.flipX })}
+                title="Flip Character Horizontally (H)"
+                className={`inline-flex items-center gap-1 rounded-xs border px-1.5 py-0.5 font-semibold ${selectedActor.flipX ? "border-foreground bg-foreground text-background" : "border-border bg-background hover:border-foreground"}`}
+              >
+                <FlipHorizontal className="h-3 w-3" />
+                <span>Flip</span>
+              </button>
+              <button
+                type="button"
+                data-testid="pose2d-snap-floor-btn"
+                onClick={handleSnapFeetToFloor}
+                title="Plant lowest foot onto ground shadow (G)"
+                className="inline-flex items-center gap-1 rounded-xs border border-border bg-background px-1.5 py-0.5 font-semibold hover:border-foreground"
+              >
+                <ArrowDownToLine className="h-3 w-3 text-primary" />
+                <span>Snap Feet</span>
+              </button>
+            </div>
+          )}
 
           <div className="border-t border-border bg-card/90 px-3 py-1 text-[10px] text-muted-foreground flex flex-wrap items-center justify-between gap-2">
             <span>
               {activeStage.actors.length} cast ·{" "}
               {activeScene ? activeScene.name : "Transparent Backdrop"} · Camera{" "}
               {(activeStage.camera.zoom * 100).toFixed(0)}%
+              {activeStage.camera.tilt ? ` · Tilt ${activeStage.camera.tilt}°` : ""}
             </span>
             <span>
-              Gold diamonds = IK Hands/Feet · Red pin = Move · Cyan/Orange/Blue = Bend Joints ·
-              Square = Resize
+              Wheel = Zoom · Drag BG / Space = Pan · R = Rig · G = Snap Feet · F = Frame ·{" "}
+              {pinFeet ? "Red Pin = Squat (Feet Pinned)" : "Red Pin = Move"}
             </span>
           </div>
         </section>
@@ -1219,6 +1615,42 @@ export function Pose2DStudio({
                     <RotateCcw className="h-3.5 w-3.5" />
                     Reset Pose
                   </button>
+                  <button
+                    type="button"
+                    disabled={!selectedActor}
+                    onClick={handleSnapFeetToFloor}
+                    className="inline-flex items-center gap-1 rounded-xs border border-border bg-background px-2 py-1 font-semibold hover:border-foreground disabled:opacity-40"
+                  >
+                    <ArrowDownToLine className="h-3.5 w-3.5 text-primary" />
+                    Snap Feet
+                  </button>
+                </div>
+
+                {/* 1-Click 2-Character Manga Panel Setups */}
+                <div className="rounded-xs border border-border bg-muted/20 p-2 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-[11px] flex items-center gap-1">
+                      <Users className="h-3.5 w-3.5 text-primary" />
+                      2-Character Manga Setups
+                    </span>
+                    <span className="text-[10px] text-muted-foreground">Instant 2-cast shot</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-1">
+                    {BUILTIN_STAGE_COMPOSITIONS_2D.map((comp) => (
+                      <button
+                        key={comp.id}
+                        type="button"
+                        data-testid={`pose2d-comp-${comp.id}`}
+                        onClick={() => handleApplyComposition(comp)}
+                        className="rounded-xs border border-border bg-background px-2 py-1.5 text-left hover:border-primary hover:bg-primary/5 transition-colors"
+                      >
+                        <div className="font-bold text-[11px] truncate">{comp.name}</div>
+                        <div className="text-[10px] text-muted-foreground truncate">
+                          {comp.subtitle}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
                 </div>
 
                 {/* Save Custom Pose */}
@@ -1388,6 +1820,8 @@ export function Pose2DStudio({
                       min={-160}
                       max={220}
                       value={selectedActor.pose.rootOffsetY}
+                      onPointerDown={pushUndoSnapshot}
+                      onKeyDown={pushUndoSnapshot}
                       onChange={(e) =>
                         updateSelectedPose((p) => ({ ...p, rootOffsetY: +e.target.value }), false)
                       }
@@ -1409,6 +1843,8 @@ export function Pose2DStudio({
                           max={165}
                           step={1}
                           value={selectedActor.pose.joints[jid] ?? 0}
+                          onPointerDown={pushUndoSnapshot}
+                          onKeyDown={pushUndoSnapshot}
                           onChange={(e) =>
                             updateSelectedPose(
                               (p) => ({
@@ -1478,6 +1914,14 @@ export function Pose2DStudio({
                           className="flex-1 text-left font-semibold truncate"
                         >
                           {a.name} ({a.angle}° · {a.depth})
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDuplicateActor(a)}
+                          className="p-1 text-muted-foreground hover:text-foreground"
+                          title="Duplicate Actor"
+                        >
+                          <Copy className="h-3.5 w-3.5" />
                         </button>
                         <button
                           type="button"
@@ -1578,6 +2022,8 @@ export function Pose2DStudio({
                         max={2.0}
                         step={0.02}
                         value={selectedActor.scale}
+                        onPointerDown={pushUndoSnapshot}
+                        onKeyDown={pushUndoSnapshot}
                         onChange={(e) =>
                           updateActor(selectedActor.id, { scale: +e.target.value }, false)
                         }
@@ -1722,6 +2168,48 @@ export function Pose2DStudio({
                     </button>
                   ))}
                 </div>
+
+                {/* Manga Action FX Overlay Controls */}
+                <div className="rounded-xs border border-border bg-muted/20 p-2.5 space-y-2 border-t">
+                  <div className="font-bold flex items-center gap-1">
+                    <Zap className="h-3.5 w-3.5 text-amber-500" />
+                    <span>Manga Action FX Overlay</span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {(
+                      [
+                        { key: "speedlines", label: "Speedlines" },
+                        { key: "impactBurst", label: "Impact Burst" },
+                        { key: "groundDust", label: "Ground Dust" },
+                      ] as const
+                    ).map((item) => {
+                      const curFx: Stage2DFxOverlay = activeStage.fx ?? DEFAULT_STAGE_FX_2D;
+                      const on = Boolean(curFx[item.key]);
+                      return (
+                        <button
+                          key={item.key}
+                          type="button"
+                          data-testid={`pose2d-fx-${item.key}`}
+                          onClick={() =>
+                            commitStage(
+                              (s) => ({
+                                ...s,
+                                fx: {
+                                  ...(s.fx ?? DEFAULT_STAGE_FX_2D),
+                                  [item.key]: !on,
+                                },
+                              }),
+                              true,
+                            )
+                          }
+                          className={`rounded-xs border px-2 py-1.5 text-[11px] font-bold transition-colors ${on ? "border-foreground bg-foreground text-background" : "border-border bg-background hover:border-foreground"}`}
+                        >
+                          {item.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
               </div>
             )}
 
@@ -1753,6 +2241,15 @@ export function Pose2DStudio({
                         {shot.label}
                       </button>
                     ))}
+                    <button
+                      type="button"
+                      disabled={!selectedActor}
+                      onClick={handleFrameSelectedActor}
+                      className="col-span-2 inline-flex items-center justify-center gap-1 rounded-xs border border-primary bg-primary/10 py-1.5 font-bold text-primary hover:bg-primary/20 disabled:opacity-40"
+                    >
+                      <Focus className="h-3.5 w-3.5" />
+                      Frame Selected Character
+                    </button>
                   </div>
                 </div>
 
@@ -1767,6 +2264,8 @@ export function Pose2DStudio({
                     max={2.5}
                     step={0.05}
                     value={activeStage.camera.zoom}
+                    onPointerDown={pushUndoSnapshot}
+                    onKeyDown={pushUndoSnapshot}
                     onChange={(e) =>
                       commitStage(
                         (s) => ({ ...s, camera: { ...s.camera, zoom: +e.target.value } }),
@@ -1788,6 +2287,8 @@ export function Pose2DStudio({
                     max={480}
                     step={5}
                     value={activeStage.camera.panX}
+                    onPointerDown={pushUndoSnapshot}
+                    onKeyDown={pushUndoSnapshot}
                     onChange={(e) =>
                       commitStage(
                         (s) => ({ ...s, camera: { ...s.camera, panX: +e.target.value } }),
@@ -1809,6 +2310,8 @@ export function Pose2DStudio({
                     max={420}
                     step={5}
                     value={activeStage.camera.panY}
+                    onPointerDown={pushUndoSnapshot}
+                    onKeyDown={pushUndoSnapshot}
                     onChange={(e) =>
                       commitStage(
                         (s) => ({ ...s, camera: { ...s.camera, panY: +e.target.value } }),
@@ -1830,6 +2333,8 @@ export function Pose2DStudio({
                     max={20}
                     step={1}
                     value={activeStage.camera.tilt}
+                    onPointerDown={pushUndoSnapshot}
+                    onKeyDown={pushUndoSnapshot}
                     onChange={(e) =>
                       commitStage(
                         (s) => ({ ...s, camera: { ...s.camera, tilt: +e.target.value } }),
