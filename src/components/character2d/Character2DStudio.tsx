@@ -1570,6 +1570,73 @@ export function Character2DStudio({
                     }
                   />
                 </div>
+
+                {resolveIllustratedHairPack2D(activeChar.hair.style) && (
+                  <div className="space-y-2 border-t border-border pt-3">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold">Hair Fit (Fine-Tune)</span>
+                      {((activeChar.hair.scale ?? 1) !== 1 ||
+                        (activeChar.hair.offsetY ?? 0) !== 0) && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            updateActiveChar((c) => ({
+                              ...c,
+                              hair: { ...c.hair, scale: 1, offsetY: 0 },
+                            }))
+                          }
+                          className="text-[10px] font-semibold text-primary hover:underline"
+                        >
+                          Reset Fit
+                        </button>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className="space-y-1">
+                        <span className="flex justify-between text-[11px]">
+                          <span>Hair Size</span>
+                          <span className="font-mono">
+                            {Math.round((activeChar.hair.scale ?? 1) * 100)}%
+                          </span>
+                        </span>
+                        <input
+                          type="range"
+                          min={0.85}
+                          max={1.2}
+                          step={0.01}
+                          value={activeChar.hair.scale ?? 1}
+                          onChange={(e) =>
+                            updateActiveChar((c) => ({
+                              ...c,
+                              hair: { ...c.hair, scale: +e.target.value },
+                            }))
+                          }
+                          className="w-full accent-primary"
+                        />
+                      </label>
+                      <label className="space-y-1">
+                        <span className="flex justify-between text-[11px]">
+                          <span>Vertical Position</span>
+                          <span className="font-mono">{activeChar.hair.offsetY ?? 0}px</span>
+                        </span>
+                        <input
+                          type="range"
+                          min={-16}
+                          max={16}
+                          step={1}
+                          value={activeChar.hair.offsetY ?? 0}
+                          onChange={(e) =>
+                            updateActiveChar((c) => ({
+                              ...c,
+                              hair: { ...c.hair, offsetY: +e.target.value },
+                            }))
+                          }
+                          className="w-full accent-primary"
+                        />
+                      </label>
+                    </div>
+                  </div>
+                )}
               </>
             )}
 

@@ -195,6 +195,8 @@ export interface Character2D {
   hair: {
     style: HairStyle2D;
     color: string;
+    scale?: number; // 0.85..1.20 (default 1)
+    offsetY?: number; // -16..16 px (default 0)
   };
   clothes: {
     top: TopStyle2D;

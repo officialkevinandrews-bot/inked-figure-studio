@@ -567,6 +567,7 @@ export function recolorIllustratedPartCanvas(
     accentHex?: string | null;
     shadingDepth?: ShadingDepth2D;
     renderMode: RenderMode2D;
+    kind?: "hair" | "cloth";
     targetW?: number;
     targetH?: number;
   },
@@ -679,16 +680,65 @@ export function recolorIllustratedPartCanvas(
       }
 
       const [tr, tg, tb] = liftDarkColor(rawR, rawG, rawB);
-
-      // 1. Local-contrast + global dark lineart detection (preserves thin gray hair strands, seams, & laces)
+      const isHair = opts.kind === "hair";
       const localDrop = Math.max(0, localMax - L);
-      const globalInk = Math.max(0, Math.min(1, (148 - L) / 92));
-      const detailInk = L < 222 ? Math.max(0, Math.min(1, (localDrop - 10) / 44)) : 0;
-      const lineStrength = Math.max(globalInk, detailInk * 0.86);
 
-      const inkR = Math.min(22, Math.round(rawR * 0.09 + 6));
-      const inkG = Math.min(24, Math.round(rawG * 0.09 + 7));
-      const inkB = Math.min(32, Math.round(rawB * 0.11 + 10));
+      if (isHair) {
+        // True Studio Anime Hair Cel-Shading:
+        // 1) Detect ONLY crisp dark ink outlines & dark inner tuft strokes (NEVER muddy cel-shadow boundaries!)
+        const globalInk = Math.max(0, Math.min(1, (130 - L) / 76));
+        const strandInk =
+          L < 176 && localDrop > 30 ? Math.max(0, Math.min(0.72, (localDrop - 30) / 52)) : 0;
+        const lineStrength = Math.max(globalInk, strandInk);
+
+        // Hue-tinted deep anime hair lineart (rich midnight navy on blue hair, deep wine on red, espresso on gold)
+        const inkR = Math.min(54, Math.round(rawR * 0.14 + 8));
+        const inkG = Math.min(54, Math.round(rawG * 0.13 + 8));
+        const inkB = Math.min(64, Math.round(rawB * 0.18 + 13));
+
+        // 2) Clean 2-stop anime cel planes (vibrant lit plane + cool-shifted deep cel shadow) + silky crown sheen
+        const tLinear = Math.max(0, Math.min(1, (L - 168) / 82));
+        const tStep = Math.max(0, Math.min(1, (L - 216) / 18));
+        const tSmoothStep = tStep * tStep * (3 - 2 * tStep);
+        const tTone = 0.35 * tLinear + 0.65 * tSmoothStep;
+
+        const shadeFactor =
+          depth === "flat"
+            ? 0.9 + 0.1 * tTone
+            : depth === "dramatic"
+              ? 0.54 + 0.46 * tTone
+              : 0.72 + 0.3 * tTone;
+
+        // Subtle cool-indigo shift in hair shadow planes keeps warm hues (gold/red/orange) vibrant instead of muddy brown
+        const shadowAmt = 1 - tTone;
+        const coolR = -shadowAmt * (depth === "flat" ? 2 : 6);
+        const coolG = -shadowAmt * (depth === "flat" ? 1 : 3);
+        const coolB = shadowAmt * (depth === "flat" ? 4 : 14);
+
+        // Luminous anime hair sheen on brightest highlight tufts (L >= 242)
+        const rawMx = Math.max(rawR, rawG, rawB);
+        const sheenT = L > 241 ? Math.min(1, (L - 241) / 13) : 0;
+        const sheenAmt = sheenT * (rawMx < 92 ? 32 : 24);
+
+        const fillR = Math.max(0, Math.min(255, tr * shadeFactor + coolR + sheenAmt));
+        const fillG = Math.max(0, Math.min(255, tg * shadeFactor + coolG + sheenAmt));
+        const fillB = Math.max(0, Math.min(255, tb * shadeFactor + coolB + sheenAmt * 1.05));
+
+        d[i] = Math.round(fillR * (1 - lineStrength) + inkR * lineStrength);
+        d[i + 1] = Math.round(fillG * (1 - lineStrength) + inkG * lineStrength);
+        d[i + 2] = Math.round(fillB * (1 - lineStrength) + inkB * lineStrength);
+        continue;
+      }
+
+      // 1. Local-contrast + global dark lineart detection for garments (seams, pockets, zippers, laces)
+      const globalInk = Math.max(0, Math.min(1, (144 - L) / 90));
+      const detailInk =
+        L < 208 && localDrop > 16 ? Math.max(0, Math.min(1, (localDrop - 16) / 48)) : 0;
+      const lineStrength = Math.max(globalInk, detailInk * 0.82);
+
+      const inkR = Math.min(24, Math.round(rawR * 0.09 + 6));
+      const inkG = Math.min(26, Math.round(rawG * 0.09 + 7));
+      const inkB = Math.min(34, Math.round(rawB * 0.11 + 10));
 
       // 2. Crisp 3-stop anime cel-shading transfer (lit plane vs distinct cool cel shadow)
       const tLinear = Math.max(0, Math.min(1, (L - 160) / 88));

@@ -188,8 +188,9 @@ function getRecoloredIllustratedPart(
   accentHex?: string | null,
   targetW?: number,
   targetH?: number,
+  kind: "hair" | "cloth" = "cloth",
 ): HTMLCanvasElement {
-  const key = `ill|${srcKey}|${accentKey ?? "nomask"}|${mode}|${shadingDepth}|${primaryHex}|${accentHex ?? "noacc"}|${targetW ?? 0}x${targetH ?? 0}`;
+  const key = `ill2|${kind}|${srcKey}|${accentKey ?? "nomask"}|${mode}|${shadingDepth}|${primaryHex}|${accentHex ?? "noacc"}|${targetW ?? 0}x${targetH ?? 0}`;
   const hit = PROCESSED_SPRITE_CACHE.get(key);
   if (hit) return hit;
   return putProcessedCache(
@@ -199,10 +200,28 @@ function getRecoloredIllustratedPart(
       accentHex,
       shadingDepth,
       renderMode: mode,
+      kind,
       targetW,
       targetH,
     }),
   );
+}
+
+function getHairShadowSilhouette(img: HTMLImageElement, srcKey: string): HTMLCanvasElement {
+  const key = `hair-sh|${srcKey}`;
+  const hit = PROCESSED_SPRITE_CACHE.get(key);
+  if (hit) return hit;
+  const w = Math.min(560, img.naturalWidth || img.width || 280);
+  const h = Math.min(560, img.naturalHeight || img.height || 280);
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  const cctx = c.getContext("2d")!;
+  cctx.drawImage(img, 0, 0, w, h);
+  cctx.globalCompositeOperation = "source-in";
+  cctx.fillStyle = "rgba(116, 62, 56, 0.25)";
+  cctx.fillRect(0, 0, w, h);
+  return putProcessedCache(key, c);
 }
 
 function getRecoloredIrisSprite(
@@ -2711,6 +2730,79 @@ function drawHairFront2D(
   );
 }
 
+function computeHairPlacement2D(
+  char: Character2D,
+  a: BodyAngleAnchors,
+  angle: Angle2D,
+  pack: IllustratedHairPack2D,
+  sil: HeadSilhouetteInfo | null,
+) {
+  const skullCx = sil ? sil.skullCx : a.headCx;
+  const crownH = sil ? Math.max(46, sil.eyeY - sil.topY) : 61;
+  const refCrownH = 61;
+  const userScale = Math.max(0.85, Math.min(1.2, char.hair.scale ?? 1));
+  const userOffsetY = Math.max(-16, Math.min(16, char.hair.offsetY ?? 0));
+  const eyeAnchorY = (sil ? sil.eyeY : a.eyeY) + (crownH - refCrownH) * 0.14 + userOffsetY;
+  const refW = M1_REF_SKULL_W[angle];
+  const wRatio = sil ? Math.max(0.93, Math.min(1.16, sil.skullW / refW)) : a.headRx / 46;
+  const hRatio = Math.max(0.94, Math.min(1.14, crownH / refCrownH));
+  const baseScale = (47.2 / pack.refHeadRx) * userScale;
+  const scaleX = baseScale * wRatio;
+  // Adapt vertically to each head shape's true crown-to-eye height while clamping aspect ratio so spikes never distort
+  const scaleY = Math.max(scaleX * 0.91, Math.min(scaleX * 1.09, baseScale * hRatio));
+  return { skullCx, eyeAnchorY, scaleX, scaleY };
+}
+
+function drawIllustratedHairCastShadow2D(
+  ctx: C,
+  char: Character2D,
+  a: BodyAngleAnchors,
+  angle: Angle2D,
+  mode: RenderMode2D,
+  imageMap: Map<string, HTMLImageElement>,
+  pack: IllustratedHairPack2D | null,
+  sil: HeadSilhouetteInfo | null,
+) {
+  if (!pack || !sil || mode === "manga" || isBackFacingAngle2D(angle)) return;
+  const src = pack.frontFrames[angle];
+  if (!src) return;
+  const img = imageMap.get(src);
+  if (!img) return;
+
+  const { skullCx, eyeAnchorY, scaleX, scaleY } = computeHairPlacement2D(char, a, angle, pack, sil);
+  const shSprite = getHairShadowSilhouette(img, src);
+  const dir = facingDir(angle);
+
+  // Project subtle cel-shaded bang shadow onto forehead/temples, clipped strictly inside active head silhouette
+  const x0 = 140;
+  const y0 = 55;
+  const fRes = 2;
+  const sc = document.createElement("canvas");
+  sc.width = 200 * fRes;
+  sc.height = 200 * fRes;
+  const sctx = sc.getContext("2d")!;
+  sctx.imageSmoothingEnabled = true;
+  sctx.imageSmoothingQuality = "high";
+  sctx.save();
+  sctx.scale(fRes, fRes);
+  sctx.translate(-x0, -y0);
+  // Restrict cast shadow cleanly to upper face / forehead / temple zone (never below cheekbones or on neck)
+  sctx.beginPath();
+  sctx.rect(x0, y0, 200, Math.max(40, sil.eyeY + 14 - y0));
+  sctx.clip();
+  sctx.translate(skullCx + dir * 1.4, eyeAnchorY + 4.2);
+  sctx.scale(scaleX, scaleY);
+  sctx.drawImage(shSprite, -pack.pivotX, -pack.pivotY, pack.canvasW, pack.canvasH);
+  sctx.restore();
+
+  sctx.globalCompositeOperation = "destination-in";
+  sctx.drawImage(sil.headMaskCanvas, 0, 0, sc.width, sc.height);
+
+  ctx.save();
+  ctx.drawImage(sc, x0, y0, 200, 200);
+  ctx.restore();
+}
+
 function drawIllustratedHair2D(
   ctx: C,
   char: Character2D,
@@ -2734,18 +2826,14 @@ function drawIllustratedHair2D(
     char.hair.color,
     mode,
     char.shadingDepth ?? "cel",
+    null,
+    undefined,
+    null,
+    undefined,
+    undefined,
+    "hair",
   );
-  const skullCx = sil ? sil.skullCx : a.headCx;
-  const crownH = sil ? Math.max(46, sil.eyeY - sil.topY) : 61;
-  const refCrownH = 61;
-  const eyeAnchorY = (sil ? sil.eyeY : a.eyeY) - 1 + (crownH - refCrownH) * 0.14;
-  const refW = M1_REF_SKULL_W[angle];
-  const wRatio = sil ? Math.max(0.93, Math.min(1.16, sil.skullW / refW)) : a.headRx / 46;
-  const hRatio = Math.max(0.94, Math.min(1.14, crownH / refCrownH));
-  const baseScale = 46 / pack.refHeadRx;
-  const scaleX = baseScale * wRatio;
-  // Adapt vertically to each head shape's true crown-to-eye height while clamping aspect ratio so spikes never distort
-  const scaleY = Math.max(scaleX * 0.91, Math.min(scaleX * 1.09, baseScale * hRatio));
+  const { skullCx, eyeAnchorY, scaleX, scaleY } = computeHairPlacement2D(char, a, angle, pack, sil);
 
   ctx.save();
   ctx.imageSmoothingEnabled = true;
@@ -3259,7 +3347,7 @@ function drawIllustratedFace2D(
             ? 1.08
             : 1;
 
-    if (char.face.eyeStyle !== "none") {
+    if (pass === "full" && char.face.eyeStyle !== "none") {
       if (preset.eyeMode === "happy" || preset.eyeMode === "closed") {
         drawSingleClosedEye2D(
           fctx,
@@ -3325,7 +3413,7 @@ function drawIllustratedFace2D(
 
     if (char.face.browStyle !== "none") {
       fctx.save();
-      if (pass === "eyes_brows_over_bangs") fctx.globalAlpha = 0.82;
+      if (pass === "eyes_brows_over_bangs") fctx.globalAlpha = 0.42;
       const browDy = (preset.browTilt > 0 ? 3 : preset.browTilt < 0 ? -3.5 : 0) * fScale;
       const tiltRad = (preset.browTilt * 0.55 * Math.PI) / 180;
       const brOffY = (prof ? 8.5 : 9.5) * fScale;
@@ -3729,6 +3817,7 @@ export function renderCharacter2DSync(
     );
   }
   drawIllustratedFace2D(ctx, char, anchors, angle, mode, imageMap, facePack, headSil, "full");
+  drawIllustratedHairCastShadow2D(ctx, char, anchors, angle, mode, imageMap, hairPack, headSil);
   drawIllustratedHair2D(ctx, char, anchors, angle, mode, "front", imageMap, hairPack, headSil);
   if (hairPack) {
     drawIllustratedFace2D(
