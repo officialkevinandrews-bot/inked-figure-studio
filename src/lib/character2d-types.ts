@@ -84,6 +84,20 @@ export interface HeadAngleAnchors2D {
   neckAttachY: number;
 }
 
+export interface HairAngleFit2D {
+  offsetX?: number; // -32..32 px
+  offsetY?: number; // -32..32 px
+  scale?: number; // 0.80..1.25
+}
+
+export function getMirrorAngle2D(angle: Angle2D): Angle2D | null {
+  for (const [a, b] of MIRROR_PAIRS_2D) {
+    if (angle === a) return b;
+    if (angle === b) return a;
+  }
+  return null;
+}
+
 export interface HeadFit2D {
   scale: number; // 0.85..1.15
   offsetY: number; // -16..16 px
@@ -195,8 +209,10 @@ export interface Character2D {
   hair: {
     style: HairStyle2D;
     color: string;
-    scale?: number; // 0.85..1.20 (default 1)
-    offsetY?: number; // -16..16 px (default 0)
+    scale?: number; // 0.85..1.20 (global default 1)
+    offsetY?: number; // -16..16 px (global default 0)
+    /** Optional per-angle alignment adjustments (X/Y/Size) layered cleanly on top of built-in calibration. */
+    perAngle?: Partial<Record<Angle2D, HairAngleFit2D>>;
   };
   clothes: {
     top: TopStyle2D;

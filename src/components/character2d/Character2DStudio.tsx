@@ -40,6 +40,7 @@ import {
   SKIN_PRESETS_2D,
   TOP_STYLE_LABELS_2D,
   createDefaultCharacter2D,
+  getMirrorAngle2D,
   isBackFacingAngle2D,
   stepAngle2D,
   type Angle2D,
@@ -48,6 +49,7 @@ import {
   type BottomStyle2D,
   type Character2D,
   type CustomLayerInstance2D,
+  type HairAngleFit2D,
   type CustomLayerTransform2D,
   type CustomPartAsset2D,
   type Expression2DId,
@@ -231,6 +233,8 @@ export function Character2DStudio({
   const [nameDraft, setNameDraft] = useState("");
   const [exportBusy, setExportBusy] = useState(false);
   const [selectedLayerId, setSelectedLayerId] = useState<string | null>(null);
+  const [hairMirrorSync, setHairMirrorSync] = useState(true);
+  const [hairFitCopied, setHairFitCopied] = useState(false);
 
   // Base Model Upload Wizard State
   const [modelUploadMode, setModelUploadMode] = useState<"sheet-8" | "sheet-5">("sheet-8");
@@ -398,6 +402,14 @@ export function Character2DStudio({
       name: `${activeChar.name} Copy`,
       createdAt: Date.now(),
       updatedAt: Date.now(),
+      hair: {
+        ...activeChar.hair,
+        perAngle: activeChar.hair.perAngle
+          ? Object.fromEntries(
+              Object.entries(activeChar.hair.perAngle).map(([k, v]) => [k, v ? { ...v } : v]),
+            )
+          : undefined,
+      },
       customLayers: activeChar.customLayers.map((l) => ({
         ...l,
         defaultTransform: { ...l.defaultTransform },
@@ -1571,72 +1583,264 @@ export function Character2DStudio({
                   />
                 </div>
 
-                {resolveIllustratedHairPack2D(activeChar.hair.style) && (
-                  <div className="space-y-2 border-t border-border pt-3">
-                    <div className="flex items-center justify-between">
-                      <span className="font-bold">Hair Fit (Fine-Tune)</span>
-                      {((activeChar.hair.scale ?? 1) !== 1 ||
-                        (activeChar.hair.offsetY ?? 0) !== 0) && (
+                {resolveIllustratedHairPack2D(activeChar.hair.style) &&
+                  (() => {
+                    const ang = activeChar.angle;
+                    const mirrorAng = getMirrorAngle2D(ang);
+                    const curFit = activeChar.hair.perAngle?.[ang] ?? {};
+                    const curX = curFit.offsetX ?? 0;
+                    const curY = curFit.offsetY ?? 0;
+                    const curScale = curFit.scale ?? 1;
+                    const hasAngleEdit = curX !== 0 || curY !== 0 || curScale !== 1;
+                    const hasAnyEdit =
+                      (activeChar.hair.scale ?? 1) !== 1 ||
+                      (activeChar.hair.offsetY ?? 0) !== 0 ||
+                      Object.values(activeChar.hair.perAngle ?? {}).some(
+                        (v) =>
+                          v &&
+                          ((v.offsetX ?? 0) !== 0 ||
+                            (v.offsetY ?? 0) !== 0 ||
+                            (v.scale ?? 1) !== 1),
+                      );
+
+                    const patchAngleFit = (patch: Partial<HairAngleFit2D>) => {
+                      updateActiveChar((c) => {
+                        const prevMap = { ...(c.hair.perAngle ?? {}) };
+                        const nextCur: HairAngleFit2D = {
+                          ...(prevMap[ang] ?? {}),
+                          ...patch,
+                        };
+                        prevMap[ang] = nextCur;
+                        if (hairMirrorSync && mirrorAng !== null) {
+                          const prevMir = prevMap[mirrorAng] ?? {};
+                          const mirPatch: HairAngleFit2D = { ...prevMir };
+                          if (patch.offsetX !== undefined) {
+                            mirPatch.offsetX = Math.round(-patch.offsetX * 10) / 10;
+                          }
+                          if (patch.offsetY !== undefined) mirPatch.offsetY = patch.offsetY;
+                          if (patch.scale !== undefined) mirPatch.scale = patch.scale;
+                          prevMap[mirrorAng] = mirPatch;
+                        }
+                        return { ...c, hair: { ...c.hair, perAngle: prevMap } };
+                      });
+                    };
+
+                    const resetCurrentAngle = () => {
+                      updateActiveChar((c) => {
+                        const nextMap = { ...(c.hair.perAngle ?? {}) };
+                        delete nextMap[ang];
+                        if (hairMirrorSync && mirrorAng !== null) delete nextMap[mirrorAng];
+                        return { ...c, hair: { ...c.hair, perAngle: nextMap } };
+                      });
+                    };
+
+                    const resetAllAngles = () => {
+                      updateActiveChar((c) => ({
+                        ...c,
+                        hair: { ...c.hair, scale: 1, offsetY: 0, perAngle: {} },
+                      }));
+                    };
+
+                    const copyCalibrationJson = () => {
+                      const pack = resolveIllustratedHairPack2D(activeChar.hair.style);
+                      const combined: Record<
+                        number,
+                        { offsetX: number; offsetY: number; scale: number }
+                      > = {};
+                      for (const a of ANGLES_2D) {
+                        const b = pack?.perAngleFit?.[a];
+                        const u = activeChar.hair.perAngle?.[a];
+                        const ox = Math.round(((b?.offsetX ?? 0) + (u?.offsetX ?? 0)) * 10) / 10;
+                        const oy =
+                          Math.round(
+                            ((b?.offsetY ?? 0) +
+                              (activeChar.hair.offsetY ?? 0) +
+                              (u?.offsetY ?? 0)) *
+                              10,
+                          ) / 10;
+                        const sc =
+                          Math.round(
+                            (b?.scale ?? 1) * (activeChar.hair.scale ?? 1) * (u?.scale ?? 1) * 1000,
+                          ) / 1000;
+                        combined[a] = { offsetX: ox, offsetY: oy, scale: sc };
+                      }
+                      void navigator.clipboard
+                        ?.writeText(JSON.stringify(combined, null, 2))
+                        .then(() => {
+                          setHairFitCopied(true);
+                          window.setTimeout(() => setHairFitCopied(false), 1800);
+                        });
+                    };
+
+                    return (
+                      <div className="space-y-2.5 border-t border-border pt-3">
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="font-bold">
+                            Hair Alignment ({ang}°
+                            {hairMirrorSync && mirrorAng !== null ? ` ↔ ${mirrorAng}°` : ""})
+                          </span>
+                          <div className="flex items-center gap-2">
+                            {hasAngleEdit && (
+                              <button
+                                type="button"
+                                onClick={resetCurrentAngle}
+                                className="text-[10px] font-semibold text-primary hover:underline"
+                              >
+                                Reset {ang}°
+                              </button>
+                            )}
+                            {hasAnyEdit && (
+                              <button
+                                type="button"
+                                onClick={resetAllAngles}
+                                className="text-[10px] font-semibold text-muted-foreground hover:text-foreground hover:underline"
+                              >
+                                Reset All
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        {mirrorAng !== null && (
+                          <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={hairMirrorSync}
+                              onChange={(e) => setHairMirrorSync(e.target.checked)}
+                              className="accent-primary"
+                            />
+                            <span>
+                              Auto-mirror opposite angle ({ang}° ↔ {mirrorAng}°)
+                            </span>
+                          </label>
+                        )}
+
+                        <div className="space-y-2 rounded-sm border border-border bg-background p-2">
+                          <label className="block space-y-1">
+                            <span className="flex items-center justify-between text-[11px]">
+                              <span className="font-semibold">Left / Right (X)</span>
+                              <span className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    patchAngleFit({
+                                      offsetX: Math.max(-32, Math.round((curX - 1) * 10) / 10),
+                                    })
+                                  }
+                                  className="rounded-xs border border-border px-1.5 py-0.5 text-[10px] hover:border-foreground"
+                                  title="Nudge 1px left"
+                                >
+                                  ◀
+                                </button>
+                                <span className="w-11 text-center font-mono">
+                                  {curX > 0 ? `+${curX}` : curX}px
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    patchAngleFit({
+                                      offsetX: Math.min(32, Math.round((curX + 1) * 10) / 10),
+                                    })
+                                  }
+                                  className="rounded-xs border border-border px-1.5 py-0.5 text-[10px] hover:border-foreground"
+                                  title="Nudge 1px right"
+                                >
+                                  ▶
+                                </button>
+                              </span>
+                            </span>
+                            <input
+                              type="range"
+                              min={-32}
+                              max={32}
+                              step={0.5}
+                              value={curX}
+                              onChange={(e) => patchAngleFit({ offsetX: +e.target.value })}
+                              className="w-full accent-primary"
+                            />
+                          </label>
+
+                          <label className="block space-y-1">
+                            <span className="flex items-center justify-between text-[11px]">
+                              <span className="font-semibold">Up / Down (Y)</span>
+                              <span className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    patchAngleFit({
+                                      offsetY: Math.max(-32, Math.round((curY - 1) * 10) / 10),
+                                    })
+                                  }
+                                  className="rounded-xs border border-border px-1.5 py-0.5 text-[10px] hover:border-foreground"
+                                  title="Nudge 1px up"
+                                >
+                                  ▲
+                                </button>
+                                <span className="w-11 text-center font-mono">
+                                  {curY > 0 ? `+${curY}` : curY}px
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    patchAngleFit({
+                                      offsetY: Math.min(32, Math.round((curY + 1) * 10) / 10),
+                                    })
+                                  }
+                                  className="rounded-xs border border-border px-1.5 py-0.5 text-[10px] hover:border-foreground"
+                                  title="Nudge 1px down"
+                                >
+                                  ▼
+                                </button>
+                              </span>
+                            </span>
+                            <input
+                              type="range"
+                              min={-32}
+                              max={32}
+                              step={0.5}
+                              value={curY}
+                              onChange={(e) => patchAngleFit({ offsetY: +e.target.value })}
+                              className="w-full accent-primary"
+                            />
+                          </label>
+
+                          <label className="block space-y-1">
+                            <span className="flex justify-between text-[11px]">
+                              <span className="font-semibold">Size ({ang}°)</span>
+                              <span className="font-mono">{Math.round(curScale * 100)}%</span>
+                            </span>
+                            <input
+                              type="range"
+                              min={0.8}
+                              max={1.25}
+                              step={0.01}
+                              value={curScale}
+                              onChange={(e) => patchAngleFit({ scale: +e.target.value })}
+                              className="w-full accent-primary"
+                            />
+                          </label>
+                        </div>
+
                         <button
                           type="button"
-                          onClick={() =>
-                            updateActiveChar((c) => ({
-                              ...c,
-                              hair: { ...c.hair, scale: 1, offsetY: 0 },
-                            }))
-                          }
-                          className="text-[10px] font-semibold text-primary hover:underline"
+                          onClick={copyCalibrationJson}
+                          className="flex w-full items-center justify-center gap-1.5 rounded-xs border border-border bg-background py-1.5 text-[11px] font-semibold hover:border-foreground"
                         >
-                          Reset Fit
+                          {hairFitCopied ? (
+                            <>
+                              <Check className="h-3.5 w-3.5 text-emerald-600" />
+                              <span>Copied 8-Angle Alignment JSON!</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="h-3.5 w-3.5" />
+                              <span>Copy 8-Angle Alignment Values</span>
+                            </>
+                          )}
                         </button>
-                      )}
-                    </div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <label className="space-y-1">
-                        <span className="flex justify-between text-[11px]">
-                          <span>Hair Size</span>
-                          <span className="font-mono">
-                            {Math.round((activeChar.hair.scale ?? 1) * 100)}%
-                          </span>
-                        </span>
-                        <input
-                          type="range"
-                          min={0.85}
-                          max={1.2}
-                          step={0.01}
-                          value={activeChar.hair.scale ?? 1}
-                          onChange={(e) =>
-                            updateActiveChar((c) => ({
-                              ...c,
-                              hair: { ...c.hair, scale: +e.target.value },
-                            }))
-                          }
-                          className="w-full accent-primary"
-                        />
-                      </label>
-                      <label className="space-y-1">
-                        <span className="flex justify-between text-[11px]">
-                          <span>Vertical Position</span>
-                          <span className="font-mono">{activeChar.hair.offsetY ?? 0}px</span>
-                        </span>
-                        <input
-                          type="range"
-                          min={-16}
-                          max={16}
-                          step={1}
-                          value={activeChar.hair.offsetY ?? 0}
-                          onChange={(e) =>
-                            updateActiveChar((c) => ({
-                              ...c,
-                              hair: { ...c.hair, offsetY: +e.target.value },
-                            }))
-                          }
-                          className="w-full accent-primary"
-                        />
-                      </label>
-                    </div>
-                  </div>
-                )}
+                      </div>
+                    );
+                  })()}
               </>
             )}
 

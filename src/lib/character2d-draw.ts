@@ -2737,16 +2737,32 @@ function computeHairPlacement2D(
   pack: IllustratedHairPack2D,
   sil: HeadSilhouetteInfo | null,
 ) {
-  const skullCx = sil ? sil.skullCx : a.headCx;
-  const crownH = sil ? Math.max(46, sil.eyeY - sil.topY) : 61;
-  const refCrownH = 61;
-  const userScale = Math.max(0.85, Math.min(1.2, char.hair.scale ?? 1));
-  const userOffsetY = Math.max(-16, Math.min(16, char.hair.offsetY ?? 0));
-  const eyeAnchorY = (sil ? sil.eyeY : a.eyeY) + (crownH - refCrownH) * 0.14 + userOffsetY;
   const refW = M1_REF_SKULL_W[angle];
   const wRatio = sil ? Math.max(0.93, Math.min(1.16, sil.skullW / refW)) : a.headRx / 46;
+  const crownH = sil ? Math.max(46, sil.eyeY - sil.topY) : 61;
+  const refCrownH = 61;
   const hRatio = Math.max(0.94, Math.min(1.14, crownH / refCrownH));
-  const baseScale = (47.2 / pack.refHeadRx) * userScale;
+
+  const packAng = pack.perAngleFit?.[angle];
+  const userAng = char.hair.perAngle?.[angle];
+  const packDx = packAng?.offsetX ?? 0;
+  const packDy = packAng?.offsetY ?? 0;
+  const packScale = packAng?.scale ?? 1;
+
+  const userGlobalScale = Math.max(0.8, Math.min(1.25, char.hair.scale ?? 1));
+  const userGlobalOffsetY = Math.max(-24, Math.min(24, char.hair.offsetY ?? 0));
+  const userAngDx = Math.max(-36, Math.min(36, userAng?.offsetX ?? 0));
+  const userAngDy = Math.max(-36, Math.min(36, userAng?.offsetY ?? 0));
+  const userAngScale = Math.max(0.8, Math.min(1.25, userAng?.scale ?? 1));
+
+  const skullCx = (sil ? sil.skullCx : a.headCx) + packDx * wRatio + userAngDx;
+  const eyeAnchorY =
+    (sil ? sil.eyeY : a.eyeY) +
+    (crownH - refCrownH) * 0.14 +
+    packDy * hRatio +
+    userGlobalOffsetY +
+    userAngDy;
+  const baseScale = (47.2 / pack.refHeadRx) * packScale * userGlobalScale * userAngScale;
   const scaleX = baseScale * wRatio;
   // Adapt vertically to each head shape's true crown-to-eye height while clamping aspect ratio so spikes never distort
   const scaleY = Math.max(scaleX * 0.91, Math.min(scaleX * 1.09, baseScale * hRatio));

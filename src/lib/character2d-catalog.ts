@@ -21,6 +21,8 @@ export interface IllustratedHairPack2D {
   pivotY: number;
   refHeadRx: number;
   refHeadRy: number;
+  /** Optional baked per-angle pixel calibration defaults (logical 480x1000 space). */
+  perAngleFit?: Partial<Record<Angle2D, { offsetX?: number; offsetY?: number; scale?: number }>>;
 }
 
 export interface IllustratedClothingPack2D {
