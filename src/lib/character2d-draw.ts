@@ -140,7 +140,7 @@ function getProcessedCompositedBaseSprite(
 
   const processed =
     mode === "manga"
-      ? extractMangaLineartCanvas(merged, tw, th)
+      ? extractMangaLineartCanvas(merged, tw, th, { kind: "body", pixelScale: scale })
       : applySkinToneCanvas(merged, skinTone, tw, th);
   return putProcessedCache(key, processed);
 }
@@ -159,7 +159,7 @@ function getProcessedBaseSprite(
   const th = CHAR2D_H * scale;
   const processed =
     mode === "manga"
-      ? extractMangaLineartCanvas(img, tw, th)
+      ? extractMangaLineartCanvas(img, tw, th, { kind: "body", pixelScale: scale })
       : applySkinToneCanvas(img, skinTone, tw, th);
   return putProcessedCache(key, processed);
 }
@@ -249,10 +249,13 @@ function getRecoloredInkSprite(
 }
 
 function getMangaLineSprite(img: HTMLImageElement, srcKey: string): HTMLCanvasElement {
-  const key = `ill-manga|${srcKey}`;
+  const key = `ill-manga-eye|${srcKey}`;
   const hit = PROCESSED_SPRITE_CACHE.get(key);
   if (hit) return hit;
-  return putProcessedCache(key, extractIllustratedMangaLineartCanvas(img));
+  return putProcessedCache(
+    key,
+    extractIllustratedMangaLineartCanvas(img, undefined, undefined, { kind: "eye" }),
+  );
 }
 
 interface HeadSilhouetteInfo {
@@ -554,6 +557,7 @@ function redrawHeadNeckAboveCollar2D(
 
 function getClothingMaskedBaseCanvas(
   processedBase: HTMLCanvasElement,
+  rawBaseImg: HTMLImageElement | null,
   silKey: string,
   angle: Angle2D,
   anchors: BodyAngleAnchors,
@@ -567,7 +571,7 @@ function getClothingMaskedBaseCanvas(
   const w = processedBase.width;
   const h = processedBase.height;
   const s = w / CHAR2D_W;
-  const key = `cmask|${silKey}|${w}x${h}|${angle}|${hasHair ? 1 : 0}${hasTop ? 1 : 0}${hasBottom ? 1 : 0}${hasFootwear ? 1 : 0}`;
+  const key = `cmask2|${silKey}|${w}x${h}|${angle}|${hasHair ? 1 : 0}${hasTop ? 1 : 0}${hasBottom ? 1 : 0}${hasFootwear ? 1 : 0}`;
   const hit = PROCESSED_SPRITE_CACHE.get(key);
   if (hit) return hit;
 
@@ -622,7 +626,8 @@ function getClothingMaskedBaseCanvas(
     }
   }
 
-  // 3. Hide neutral dark briefs at hips (preserving bare hands at sides) + bare lower legs below fingertips
+  // 3. Hide solid dark briefs at hips using RAW colored base pixels (NEVER black-and-white Manga pixels!)
+  //    Erode+dilate the solid dark briefs core so thin 2-4px forearm/wrist/hand ink outlines are 100% preserved!
   if (hasBottom) {
     const hipCoreL = Math.floor((anchors.hipL + 6) * s);
     const hipCoreR = Math.ceil((anchors.hipR - 6) * s);
@@ -630,17 +635,101 @@ function getClothingMaskedBaseCanvas(
     const yB1 = Math.ceil(584 * s);
     const xB0 = Math.floor(135 * s);
     const xB1 = Math.ceil(345 * s);
-    for (let y = yB0; y <= yB1; y++) {
-      const ly = y / s;
-      for (let x = xB0; x <= xB1; x++) {
+    const bandW = xB1 - xB0 + 1;
+    const bandH = yB1 - yB0 + 1;
+
+    let rawBandData: Uint8ClampedArray | null = null;
+    if (rawBaseImg) {
+      const rawS = (rawBaseImg.naturalWidth || rawBaseImg.width || CHAR2D_W) / CHAR2D_W;
+      const rc = document.createElement("canvas");
+      rc.width = bandW;
+      rc.height = bandH;
+      const rctx = rc.getContext("2d")!;
+      rctx.drawImage(
+        rawBaseImg,
+        (xB0 / s) * rawS,
+        (yB0 / s) * rawS,
+        (bandW / s) * rawS,
+        (bandH / s) * rawS,
+        0,
+        0,
+        bandW,
+        bandH,
+      );
+      rawBandData = rctx.getImageData(0, 0, bandW, bandH).data;
+    }
+
+    const darkNeutral = new Uint8Array(bandW * bandH);
+    for (let ly = 0; ly < bandH; ly++) {
+      for (let lx = 0; lx < bandW; lx++) {
+        const q = ly * bandW + lx;
+        if (rawBandData) {
+          const ri = q * 4;
+          if ((rawBandData[ri + 3] ?? 0) < 30) continue;
+          const r = rawBandData[ri] ?? 255;
+          const g = rawBandData[ri + 1] ?? 255;
+          const b = rawBandData[ri + 2] ?? 255;
+          const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+          const maxDiff = Math.max(Math.abs(r - g), Math.abs(g - b), Math.abs(r - b));
+          if (maxDiff <= 24 && lum < 118) darkNeutral[q] = 1;
+        } else {
+          const i = ((yB0 + ly) * w + (xB0 + lx)) * 4;
+          if ((d[i + 3] ?? 0) < 30) continue;
+          const r = d[i] ?? 255;
+          const g = d[i + 1] ?? 255;
+          const b = d[i + 2] ?? 255;
+          const maxDiff = Math.max(Math.abs(r - g), Math.abs(g - b), Math.abs(r - b));
+          if (maxDiff <= 15 && r < 110) darkNeutral[q] = 1;
+        }
+      }
+    }
+
+    // Keep only solid interior dark briefs core (erode by >= 2.5*s so thin hand/arm ink lines NEVER match)
+    const erodeR = Math.max(2, Math.round(2.5 * s));
+    const briefsCore = new Uint8Array(bandW * bandH);
+    for (let ly = erodeR; ly < bandH - erodeR; ly++) {
+      for (let lx = erodeR; lx < bandW - erodeR; lx++) {
+        const q = ly * bandW + lx;
+        if (!darkNeutral[q]) continue;
+        if (
+          darkNeutral[q - erodeR] &&
+          darkNeutral[q + erodeR] &&
+          darkNeutral[q - erodeR * bandW] &&
+          darkNeutral[q + erodeR * bandW]
+        ) {
+          briefsCore[q] = 1;
+        }
+      }
+    }
+
+    // Dilate surviving briefs core by 3.5*s so the briefs border clears cleanly without touching bare hands
+    const dilR = Math.max(3, Math.round(3.5 * s));
+    const briefsMask = new Uint8Array(bandW * bandH);
+    for (let ly = 0; ly < bandH; ly++) {
+      for (let lx = 0; lx < bandW; lx++) {
+        if (!briefsCore[ly * bandW + lx]) continue;
+        const ny0 = Math.max(0, ly - dilR);
+        const ny1 = Math.min(bandH - 1, ly + dilR);
+        const nx0 = Math.max(0, lx - dilR);
+        const nx1 = Math.min(bandW - 1, lx + dilR);
+        for (let ny = ny0; ny <= ny1; ny++) {
+          const rowOff = ny * bandW;
+          for (let nx = nx0; nx <= nx1; nx++) {
+            briefsMask[rowOff + nx] = 1;
+          }
+        }
+      }
+    }
+
+    for (let ly = 0; ly < bandH; ly++) {
+      const y = yB0 + ly;
+      const wy = y / s;
+      for (let lx = 0; lx < bandW; lx++) {
+        const x = xB0 + lx;
+        const q = ly * bandW + lx;
         const i = (y * w + x) * 4;
         if ((d[i + 3] ?? 0) < 10) continue;
-        const r = d[i] ?? 0;
-        const g = d[i + 1] ?? 0;
-        const b = d[i + 2] ?? 0;
-        const maxDiff = Math.max(Math.abs(r - g), Math.abs(g - b), Math.abs(r - b));
-        const isNeutralBriefs = maxDiff <= 15 && r < 185;
-        if (isNeutralBriefs || (x >= hipCoreL && x <= hipCoreR && ly >= 468)) {
+        if (briefsMask[q] || (x >= hipCoreL && x <= hipCoreR && wy >= 468)) {
           d[i + 3] = 0;
         }
       }
@@ -2918,7 +3007,7 @@ function getProfileSkinForearmCanvas(
   const pbw = Math.round(bw * s);
   const pbh = Math.round(bh * s);
 
-  const key = `prof-arm-v5|${rawBaseSrc}|${pbw}x${pbh}|${angle}|${mode}|${skinTone ?? "orig"}|${bx0},${by0},${bw},${bh}`;
+  const key = `prof-arm-v6|${rawBaseSrc}|${pbw}x${pbh}|${angle}|${mode}|${skinTone ?? "orig"}|${bx0},${by0},${bw},${bh}`;
   const hit = PROCESSED_SPRITE_CACHE.get(key);
   if (hit) return { canvas: hit, x: bx0, y: by0, w: bw, h: bh };
 
@@ -3025,6 +3114,50 @@ function getProfileSkinForearmCanvas(
   for (let p = 0; p < pbw * pbh; p++) {
     if (!keepMask[p]) od[p * 4 + 3] = 0;
   }
+
+  // In Manga Mode, guarantee a 100% continuous G-Pen black ink contour along the bare forearm, wrist & hand
+  // where the arm overlaps clothes (strictly below the short-sleeve cuff wy >= 364 so zero bar across sleeve).
+  if (mode === "manga") {
+    const cRad = Math.max(2, Math.round(1.25 * s));
+    const cuffCutoffPy = Math.ceil((364 - by0) * s);
+    for (let py = Math.max(0, cuffCutoffPy); py < pbh; py++) {
+      const rowOff = py * pbw;
+      for (let px = 0; px < pbw; px++) {
+        const p = rowOff + px;
+        if (!keepMask[p]) continue;
+        let minD2 = 9999;
+        const y0 = Math.max(0, py - cRad);
+        const y1 = Math.min(pbh - 1, py + cRad);
+        const x0 = Math.max(0, px - cRad);
+        const x1 = Math.min(pbw - 1, px + cRad);
+        for (let ny = y0; ny <= y1; ny++) {
+          const nRow = ny * pbw;
+          const dy = ny - py;
+          for (let nx = x0; nx <= x1; nx++) {
+            if (!keepMask[nRow + nx]) {
+              const dx = nx - px;
+              const d2 = dx * dx + dy * dy;
+              if (d2 < minD2) minD2 = d2;
+            }
+          }
+        }
+        const dist = Math.sqrt(minD2);
+        if (dist <= cRad + 0.45) {
+          const cInk = Math.max(0, Math.min(1, (cRad + 0.45 - dist) / 1.05));
+          const i = p * 4;
+          const curShade = od[i] ?? 255;
+          const targetShade = Math.round(255 * (1 - cInk));
+          if (targetShade < curShade) {
+            od[i] = targetShade;
+            od[i + 1] = targetShade;
+            od[i + 2] = targetShade;
+          }
+          od[i + 3] = 255;
+        }
+      }
+    }
+  }
+
   outCtx.putImageData(outId, 0, 0);
   putProcessedCache(key, outC);
   return { canvas: outC, x: bx0, y: by0, w: bw, h: bh };
@@ -3429,7 +3562,7 @@ function drawIllustratedFace2D(
 
     if (char.face.browStyle !== "none") {
       fctx.save();
-      if (pass === "eyes_brows_over_bangs") fctx.globalAlpha = 0.42;
+      if (pass === "eyes_brows_over_bangs") fctx.globalAlpha = mode === "manga" ? 0.78 : 0.42;
       const browDy = (preset.browTilt > 0 ? 3 : preset.browTilt < 0 ? -3.5 : 0) * fScale;
       const tiltRad = (preset.browTilt * 0.55 * Math.PI) / 180;
       const brOffY = (prof ? 8.5 : 9.5) * fScale;
@@ -3762,6 +3895,7 @@ export function renderCharacter2DSync(
   if (processedBaseCanvas) {
     const maskedBase = getClothingMaskedBaseCanvas(
       processedBaseCanvas,
+      rawBaseImg,
       silKey,
       angle,
       anchors,

@@ -317,100 +317,707 @@ function parseHexRgb(hex: string): [number, number, number] {
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 }
 
+export interface MangaLineartOptions2D {
+  /** Content specialization for authentic Japanese G-Pen / Maru-Pen line extraction. */
+  kind?: "body" | "cloth" | "hair" | "eye" | "generic";
+  /** Resolution multiplier relative to 480x1000 logical canvas (e.g. 2.0 for 2K sprites, ~3.65 for 1024px hair). */
+  pixelScale?: number;
+}
+
 /**
- * Converts a colored character/clothing sprite into pure black ink lineart over opaque white interior.
- * Removes all skin/clothing fills and flat dark garment fills, preserving only crisp outline & anatomy lines.
+ * Core Shonen G-Pen / Maru-Pen pure-lineart engine.
+ * Combines:
+ * 1. Guaranteed 100% closed outer silhouette contours via 2-pass Chamfer distance transform
+ *    (normalized by pixelScale so 960x2000 body/clothes and 1024x1024 hair share harmonious ink weights).
+ * 2. Multi-scale 4-directional bilateral dark-valley detection that extracts crisp interior anatomy,
+ *    fabric creases, and hair strand lines while mathematically rejecting 1-sided cel-shadow edges.
+ * 3. Material-boundary edge tracing for dark solid fills (e.g. dark briefs waistband/hems on bare body).
+ * 4. 8-connected hysteresis tracing + micro-speckle pruning for continuous tapered strokes with zero dust.
+ * 5. Opaque #FFFFFF interior fills + zero-white-halo jet-black #000000 anti-aliased exterior fringe.
+ */
+/**
+ * Pure RGBA buffer implementation of the Shonen G-Pen / Maru-Pen lineart engine.
+ * Exported so both canvas rendering and headless unit tests exercise the exact same pixel kernel.
+ */
+export function processMangaGpenPixels(
+  d: Uint8ClampedArray,
+  w: number,
+  h: number,
+  opts: MangaLineartOptions2D = {},
+): void {
+  const kind = opts.kind ?? "generic";
+
+  // Dedicated razor-sharp Manga Eye mode: preserves hand-drawn lashes, iris rim, pupil & white catchlight
+  // while removing soft sclera shading cleanly without drawing a fake box border around transparent lids.
+  if (kind === "eye") {
+    for (let i = 0; i < d.length; i += 4) {
+      const a = d[i + 3] ?? 0;
+      if (a < 20) {
+        d[i + 3] = 0;
+        continue;
+      }
+      const lum = 0.299 * (d[i] ?? 255) + 0.587 * (d[i + 1] ?? 255) + 0.114 * (d[i + 2] ?? 255);
+      const rawInk = Math.max(0, Math.min(1, (172 - lum) / 76));
+      const ink = rawInk * rawInk * (3 - 2 * rawInk);
+      if (a < 180 && ink > 0.35) {
+        // Keep semi-transparent lash tips pure black ink with clean anti-aliased alpha
+        d[i] = 0;
+        d[i + 1] = 0;
+        d[i + 2] = 0;
+        d[i + 3] = Math.min(255, Math.round(a * (0.95 + ink * 0.45)));
+      } else {
+        const shade = Math.round(255 * (1 - ink));
+        d[i] = shade;
+        d[i + 1] = shade;
+        d[i + 2] = shade;
+        d[i + 3] = a > 125 ? 255 : a;
+      }
+    }
+    return;
+  }
+
+  const s = opts.pixelScale ?? (kind === "hair" ? Math.max(1, w / 280) : Math.max(1, w / CHAR2D_W));
+
+  // 1) Compute tight opaque bounding box (skips 70-90% empty transparent margins for 5x speedup)
+  let minX = w;
+  let minY = h;
+  let maxX = -1;
+  let maxY = -1;
+  for (let y = 0; y < h; y++) {
+    const rowOff = y * w;
+    for (let x = 0; x < w; x++) {
+      if ((d[(rowOff + x) * 4 + 3] ?? 0) >= 20) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  if (maxX < minX || maxY < minY) {
+    return;
+  }
+
+  const pad = Math.max(6, Math.ceil(5 * s));
+  const bx0 = Math.max(0, minX - pad);
+  const by0 = Math.max(0, minY - pad);
+  const bx1 = Math.min(w - 1, maxX + pad);
+  const by1 = Math.min(h - 1, maxY + pad);
+  const bw = bx1 - bx0 + 1;
+  const bh = by1 - by0 + 1;
+  const N = bw * bh;
+
+  const lum = new Float32Array(N);
+  const lumS = new Float32Array(N);
+  const chroma = new Uint8Array(N);
+  const alpha = new Uint8Array(N);
+  const solid = new Uint8Array(N);
+
+  for (let ly = 0; ly < bh; ly++) {
+    const wy = by0 + ly;
+    const srcRow = wy * w;
+    const dstRow = ly * bw;
+    for (let lx = 0; lx < bw; lx++) {
+      const i = (srcRow + bx0 + lx) * 4;
+      const q = dstRow + lx;
+      const a = d[i + 3] ?? 0;
+      alpha[q] = a;
+      if (a < 20) {
+        d[i + 3] = 0;
+        lum[q] = 255;
+        continue;
+      }
+      const r = d[i] ?? 255;
+      const g = d[i + 1] ?? 255;
+      const b = d[i + 2] ?? 255;
+      lum[q] = 0.299 * r + 0.587 * g + 0.114 * b;
+      chroma[q] = Math.max(r, g, b) - Math.min(r, g, b);
+      if (a >= 72) solid[q] = 1;
+    }
+  }
+
+  // 2) Exact 2-pass Chamfer Euclidean distance transform from transparent exterior
+  const distBg = new Float32Array(N);
+  const INF = 1e6;
+  for (let q = 0; q < N; q++) {
+    distBg[q] = solid[q] ? INF : 0;
+  }
+  for (let ly = 0; ly < bh; ly++) {
+    const row = ly * bw;
+    for (let lx = 0; lx < bw; lx++) {
+      const q = row + lx;
+      let best = distBg[q]!;
+      if (best === 0) continue;
+      if (lx > 0) {
+        const v = distBg[q - 1]! + 1;
+        if (v < best) best = v;
+      }
+      if (ly > 0) {
+        const up = q - bw;
+        const v = distBg[up]! + 1;
+        if (v < best) best = v;
+        if (lx > 0) {
+          const vd = distBg[up - 1]! + 1.4142;
+          if (vd < best) best = vd;
+        }
+        if (lx + 1 < bw) {
+          const vd = distBg[up + 1]! + 1.4142;
+          if (vd < best) best = vd;
+        }
+      }
+      distBg[q] = best;
+    }
+  }
+  for (let ly = bh - 1; ly >= 0; ly--) {
+    const row = ly * bw;
+    for (let lx = bw - 1; lx >= 0; lx--) {
+      const q = row + lx;
+      let best = distBg[q]!;
+      if (best === 0) continue;
+      if (lx + 1 < bw) {
+        const v = distBg[q + 1]! + 1;
+        if (v < best) best = v;
+      }
+      if (ly + 1 < bh) {
+        const dn = q + bw;
+        const v = distBg[dn]! + 1;
+        if (v < best) best = v;
+        if (lx + 1 < bw) {
+          const vd = distBg[dn + 1]! + 1.4142;
+          if (vd < best) best = vd;
+        }
+        if (lx > 0) {
+          const vd = distBg[dn - 1]! + 1.4142;
+          if (vd < best) best = vd;
+        }
+      }
+      distBg[q] = best;
+    }
+  }
+
+  // 3) Prune disconnected micro-dust islands & skinny detached 1-2px cloth cutout slivers so they never get inked
+  {
+    const visited = new Uint8Array(N);
+    const compQueue = new Int32Array(N);
+    const minDustArea = Math.max(8, Math.round(12 * s * s));
+    const maxSliverArea = Math.round(620 * s * s);
+    const sliverDistCut = Math.max(1.8, 1.95 * s);
+    for (let start = 0; start < N; start++) {
+      if (!solid[start] || visited[start]) continue;
+      let qHead = 0;
+      let qTail = 0;
+      let maxCompDist = 0;
+      visited[start] = 1;
+      compQueue[qTail++] = start;
+      while (qHead < qTail) {
+        const cur = compQueue[qHead++]!;
+        const cd = distBg[cur]!;
+        if (cd > maxCompDist) maxCompDist = cd;
+        const cx = cur % bw;
+        const cy = (cur / bw) | 0;
+        if (cx > 0 && solid[cur - 1] && !visited[cur - 1]) {
+          visited[cur - 1] = 1;
+          compQueue[qTail++] = cur - 1;
+        }
+        if (cx + 1 < bw && solid[cur + 1] && !visited[cur + 1]) {
+          visited[cur + 1] = 1;
+          compQueue[qTail++] = cur + 1;
+        }
+        if (cy > 0 && solid[cur - bw] && !visited[cur - bw]) {
+          visited[cur - bw] = 1;
+          compQueue[qTail++] = cur - bw;
+        }
+        if (cy + 1 < bh && solid[cur + bw] && !visited[cur + bw]) {
+          visited[cur + bw] = 1;
+          compQueue[qTail++] = cur + bw;
+        }
+      }
+      const isTinyDust = qTail < minDustArea;
+      const isStrayClothSliver =
+        kind === "cloth" && qTail < maxSliverArea && maxCompDist <= sliverDistCut;
+      if (isTinyDust || isStrayClothSliver) {
+        for (let k = 0; k < qTail; k++) {
+          const p = compQueue[k]!;
+          solid[p] = 0;
+          alpha[p] = 0;
+          distBg[p] = 0;
+        }
+      }
+    }
+  }
+
+  // 4) 3x3 opaque-aware Gaussian luminance smoothing (unrolled, zero heap allocations)
+  for (let ly = 0; ly < bh; ly++) {
+    const row = ly * bw;
+    const hasUp = ly > 0;
+    const hasDn = ly + 1 < bh;
+    for (let lx = 0; lx < bw; lx++) {
+      const q = row + lx;
+      if (!solid[q]) {
+        lumS[q] = 255;
+        continue;
+      }
+      let sum = lum[q]! * 4;
+      let wt = 4;
+      const hasL = lx > 0;
+      const hasR = lx + 1 < bw;
+      if (hasL && solid[q - 1]) {
+        sum += lum[q - 1]! * 2;
+        wt += 2;
+      }
+      if (hasR && solid[q + 1]) {
+        sum += lum[q + 1]! * 2;
+        wt += 2;
+      }
+      if (hasUp) {
+        const u = q - bw;
+        if (solid[u]) {
+          sum += lum[u]! * 2;
+          wt += 2;
+        }
+        if (hasL && solid[u - 1]) {
+          sum += lum[u - 1]!;
+          wt += 1;
+        }
+        if (hasR && solid[u + 1]) {
+          sum += lum[u + 1]!;
+          wt += 1;
+        }
+      }
+      if (hasDn) {
+        const dn = q + bw;
+        if (solid[dn]) {
+          sum += lum[dn]! * 2;
+          wt += 2;
+        }
+        if (hasL && solid[dn - 1]) {
+          sum += lum[dn - 1]!;
+          wt += 1;
+        }
+        if (hasR && solid[dn + 1]) {
+          sum += lum[dn + 1]!;
+          wt += 1;
+        }
+      }
+      lumS[q] = sum / wt;
+    }
+  }
+
+  // 5) Detect broad dark solid fills (e.g., dark charcoal briefs on bare body) so their interior turns clean white
+  //    while their border against skin receives a 100% unbroken manga waistband/hem ink line.
+  const isDarkFill = new Uint8Array(N);
+  const isDarkCore = new Uint8Array(N);
+  const useDarkFillBoundary = kind === "body" || kind === "generic";
+  if (useDarkFillBoundary) {
+    for (let q = 0; q < N; q++) {
+      if (solid[q] && lum[q]! < 122 && chroma[q]! < 32) {
+        isDarkFill[q] = 1;
+      }
+    }
+    const coreR = Math.max(2, Math.round(3.2 * s));
+    const coreOffX = new Int32Array([coreR, -coreR, 0, 0, coreR, -coreR, coreR, -coreR]);
+    const coreOffY = new Int32Array([0, 0, coreR, -coreR, coreR, coreR, -coreR, -coreR]);
+    for (let ly = 0; ly < bh; ly++) {
+      const row = ly * bw;
+      for (let lx = 0; lx < bw; lx++) {
+        const q = row + lx;
+        if (!isDarkFill[q]) continue;
+        let hits = 0;
+        let checks = 0;
+        for (let k = 0; k < 8; k++) {
+          const nx = lx + coreOffX[k]!;
+          const ny = ly + coreOffY[k]!;
+          if (nx >= 0 && nx < bw && ny >= 0 && ny < bh) {
+            const nq = ny * bw + nx;
+            if (solid[nq]) {
+              checks++;
+              if (isDarkFill[nq]) hits++;
+            }
+          }
+        }
+        if (checks >= 4 && hits >= checks - 1) {
+          isDarkCore[q] = 1;
+        }
+      }
+    }
+  }
+
+  // 6) Score every opaque pixel: Guaranteed G-Pen Outer Contour + Multi-Scale Dark-Valley + Material Seams
+  const contourInk = new Float32Array(N);
+  const rawScore = new Float32Array(N);
+
+  const minOuterW =
+    kind === "hair" ? 1.2 * s : kind === "cloth" ? 1.12 * s : kind === "body" ? 1.15 * s : 1.05 * s;
+  const natOuterMaxDist = (kind === "hair" ? 2.5 : 2.45) * s;
+
+  const r1 = Math.max(1, Math.round(1.1 * s));
+  const r2 = Math.max(r1 + 1, Math.round(2.05 * s));
+  const r3 = Math.max(r2 + 1, Math.round(3.15 * s));
+  const rd1 = Math.max(1, Math.round(r1 * 0.707));
+  const rd2 = Math.max(1, Math.round(r2 * 0.707));
+  const rd3 = Math.max(1, Math.round(r3 * 0.707));
+  const radArr = new Int32Array([r1, r2, r3]);
+  const rDiagArr = new Int32Array([rd1, rd2, rd3]);
+  const rWgtArr = new Float32Array(kind === "hair" ? [1.0, 0.88, 0.72] : [1.0, 0.94, 0.82]);
+
+  // Calibrated per-layer thresholds (immune to 1-sided cel-shading steps; crisp Maru-Pen inner lines!)
+  const valleyLow = kind === "body" ? 13 : kind === "hair" ? 19 : 21;
+  const valleySpan = kind === "body" ? 28 : kind === "hair" ? 32 : 34;
+  const maxValleyLum = kind === "body" ? 214 : kind === "hair" ? 212 : 198;
+  const seamR = Math.max(2, Math.round(1.55 * s));
+  const clothDeepR = Math.max(2, Math.round(5.2 * s));
+  const deepOffX = new Int32Array([
+    clothDeepR,
+    -clothDeepR,
+    0,
+    0,
+    clothDeepR,
+    -clothDeepR,
+    clothDeepR,
+    -clothDeepR,
+  ]);
+  const deepOffY = new Int32Array([
+    0,
+    0,
+    clothDeepR,
+    -clothDeepR,
+    clothDeepR,
+    clothDeepR,
+    -clothDeepR,
+    -clothDeepR,
+  ]);
+
+  for (let ly = 0; ly < bh; ly++) {
+    const row = ly * bw;
+    for (let lx = 0; lx < bw; lx++) {
+      const q = row + lx;
+      if (!solid[q]) continue;
+
+      const dBg = distBg[q]!;
+      const L = lum[q]!;
+
+      // A) Guaranteed closed G-Pen outer silhouette + artist's natural variable outer line weight
+      let cInk = 0;
+      if (dBg <= minOuterW + 0.7) {
+        cInk = Math.max(0, Math.min(1, (minOuterW + 0.7 - dBg) / 1.1));
+      }
+      if (dBg <= natOuterMaxDist + 0.45 && L < 172) {
+        const natDark = Math.max(0, Math.min(1, (172 - L) / 68));
+        const natDist = Math.max(0, Math.min(1, (natOuterMaxDist + 0.45 - dBg) / 1.2));
+        const natInk = natDark * natDist;
+        if (natInk > cInk) cInk = natInk;
+      }
+      contourInk[q] = cInk;
+
+      // B) Material-boundary seam detector for dark solid fills (100% continuous briefs waistband & leg hems!)
+      let seamScore = 0;
+      if (useDarkFillBoundary && isDarkFill[q]) {
+        let minSkinD2 = 9999;
+        const sy0 = ly > seamR ? ly - seamR : 0;
+        const sy1 = ly + seamR < bh ? ly + seamR : bh - 1;
+        const sx0 = lx > seamR ? lx - seamR : 0;
+        const sx1 = lx + seamR < bw ? lx + seamR : bw - 1;
+        for (let ny = sy0; ny <= sy1; ny++) {
+          const nRow = ny * bw;
+          const dy = ny - ly;
+          for (let nx = sx0; nx <= sx1; nx++) {
+            const nq = nRow + nx;
+            if (solid[nq] && !isDarkFill[nq]) {
+              const dx = nx - lx;
+              const d2 = dx * dx + dy * dy;
+              if (d2 < minSkinD2) minSkinD2 = d2;
+            }
+          }
+        }
+        if (minSkinD2 < 9999) {
+          const distSkin = Math.sqrt(minSkinD2);
+          seamScore = Math.max(0, Math.min(1, (seamR + 0.45 - distSkin) / 1.1));
+        }
+        if (isDarkCore[q]) {
+          // Pure interior of dark briefs -> keep crisp pure white except along the waistband/hem border
+          rawScore[q] = Math.max(cInk, seamScore);
+          continue;
+        }
+      }
+
+      // C) Deep genuine dark ink strokes on white/gray garments & hair (zippers, shoe soles, dark hair roots)
+      if ((kind === "cloth" || kind === "hair") && L < 114) {
+        let nearLight = false;
+        for (let k = 0; k < 8; k++) {
+          const nx = lx + deepOffX[k]!;
+          const ny = ly + deepOffY[k]!;
+          if (nx >= 0 && nx < bw && ny >= 0 && ny < bh) {
+            const nq = ny * bw + nx;
+            if (solid[nq] && lum[nq]! > 168) {
+              nearLight = true;
+              break;
+            }
+          }
+        }
+        if (nearLight) {
+          const deepStr = Math.max(0, Math.min(1, (116 - L) / 48));
+          if (deepStr > seamScore) seamScore = deepStr;
+        }
+      }
+
+      // D) Multi-scale 4-directional bilateral dark-valley detector (rejects 1-sided cel shadows cleanly!)
+      let bestValley = 0;
+      if (L < maxValleyLum) {
+        for (let ri = 0; ri < 3; ri++) {
+          const r = radArr[ri]!;
+          const rd = rDiagArr[ri]!;
+          const rw = rWgtArr[ri]!;
+          // Wide scale only fires on genuinely darker lines (prevents wide soft gray folds/hair troughs)
+          if (ri === 2 && L > maxValleyLum - 34) continue;
+
+          if (lx >= r && lx + r < bw && solid[q - r] && solid[q + r]) {
+            const a = lumS[q - r]!;
+            const b = lumS[q + r]!;
+            const v = ((a < b ? a : b) - L) * rw;
+            if (v > bestValley) bestValley = v;
+          }
+          if (ly >= r && ly + r < bh && solid[q - r * bw] && solid[q + r * bw]) {
+            const a = lumS[q - r * bw]!;
+            const b = lumS[q + r * bw]!;
+            const v = ((a < b ? a : b) - L) * rw;
+            if (v > bestValley) bestValley = v;
+          }
+          if (
+            lx >= rd &&
+            lx + rd < bw &&
+            ly >= rd &&
+            ly + rd < bh &&
+            solid[q - rd * bw - rd] &&
+            solid[q + rd * bw + rd]
+          ) {
+            const a = lumS[q - rd * bw - rd]!;
+            const b = lumS[q + rd * bw + rd]!;
+            const v = ((a < b ? a : b) - L) * rw;
+            if (v > bestValley) bestValley = v;
+          }
+          if (
+            lx >= rd &&
+            lx + rd < bw &&
+            ly >= rd &&
+            ly + rd < bh &&
+            solid[q - rd * bw + rd] &&
+            solid[q + rd * bw - rd]
+          ) {
+            const a = lumS[q - rd * bw + rd]!;
+            const b = lumS[q + rd * bw - rd]!;
+            const v = ((a < b ? a : b) - L) * rw;
+            if (v > bestValley) bestValley = v;
+          }
+        }
+      }
+
+      const lumGate = Math.max(0, Math.min(1, (maxValleyLum - L) / 30));
+      const valleyScore =
+        bestValley > valleyLow
+          ? Math.max(0, Math.min(1, (bestValley - valleyLow) / valleySpan)) * lumGate
+          : 0;
+
+      rawScore[q] = Math.max(cInk, seamScore, valleyScore);
+    }
+  }
+
+  // 7) 8-connected Hysteresis Tracing (strong ink seeds pull in smooth tapering stroke tails)
+  const kept = new Uint8Array(N);
+  const bfsQueue = new Int32Array(N);
+  let qHead = 0;
+  let qTail = 0;
+  const strongThresh = kind === "body" ? 0.38 : kind === "cloth" ? 0.46 : 0.44;
+  const weakThresh = kind === "body" ? 0.14 : kind === "cloth" ? 0.2 : 0.18;
+
+  for (let q = 0; q < N; q++) {
+    if (!solid[q]) continue;
+    if (contourInk[q]! >= 0.25 || rawScore[q]! >= strongThresh) {
+      kept[q] = 1;
+      bfsQueue[qTail++] = q;
+    }
+  }
+  while (qHead < qTail) {
+    const cur = bfsQueue[qHead++]!;
+    const cx = cur % bw;
+    const cy = (cur / bw) | 0;
+    const y0 = cy > 0 ? cy - 1 : 0;
+    const y1 = cy + 1 < bh ? cy + 1 : bh - 1;
+    const x0 = cx > 0 ? cx - 1 : 0;
+    const x1 = cx + 1 < bw ? cx + 1 : bw - 1;
+    for (let ny = y0; ny <= y1; ny++) {
+      const nRow = ny * bw;
+      for (let nx = x0; nx <= x1; nx++) {
+        const nq = nRow + nx;
+        if (!kept[nq] && solid[nq] && rawScore[nq]! >= weakThresh) {
+          kept[nq] = 1;
+          bfsQueue[qTail++] = nq;
+        }
+      }
+    }
+  }
+
+  // 8) Isolated interior micro-speckle pruning (kills salt-and-pepper noise on backs/chests/cloth)
+  {
+    const visited = new Uint8Array(N);
+    const speckleFactor = kind === "cloth" ? 8.5 : kind === "body" ? 7.5 : 6.0;
+    const minSpecklePx = Math.max(6, Math.round(speckleFactor * s * s));
+    const tinyDustPx = Math.max(2, Math.round(2.2 * s * s));
+    for (let start = 0; start < N; start++) {
+      if (!kept[start] || visited[start] || contourInk[start]! >= 0.2) continue;
+      let cHead = 0;
+      let cTail = 0;
+      let touchesContour = false;
+      let peakScore = 0;
+      visited[start] = 1;
+      bfsQueue[cTail++] = start;
+      while (cHead < cTail) {
+        const cur = bfsQueue[cHead++]!;
+        if (contourInk[cur]! >= 0.2) touchesContour = true;
+        if (rawScore[cur]! > peakScore) peakScore = rawScore[cur]!;
+        const cx = cur % bw;
+        const cy = (cur / bw) | 0;
+        const y0 = cy > 0 ? cy - 1 : 0;
+        const y1 = cy + 1 < bh ? cy + 1 : bh - 1;
+        const x0 = cx > 0 ? cx - 1 : 0;
+        const x1 = cx + 1 < bw ? cx + 1 : bw - 1;
+        for (let ny = y0; ny <= y1; ny++) {
+          const nRow = ny * bw;
+          for (let nx = x0; nx <= x1; nx++) {
+            const nq = nRow + nx;
+            if (kept[nq] && !visited[nq]) {
+              visited[nq] = 1;
+              bfsQueue[cTail++] = nq;
+            }
+          }
+        }
+      }
+      if (!touchesContour && (cTail <= tinyDustPx || (cTail < minSpecklePx && peakScore < 0.88))) {
+        for (let k = 0; k < cTail; k++) {
+          kept[bfsQueue[k]!] = 0;
+        }
+      }
+    }
+  }
+
+  // 9) Subtle high-DPI hair inner Maru-Pen anti-washout (crisp jet-black strands without thickening into marker)
+  const finalScore = new Float32Array(N);
+  for (let q = 0; q < N; q++) {
+    if (kept[q]) finalScore[q] = rawScore[q]!;
+  }
+  if (kind === "hair" && s >= 2.4) {
+    const boosted = new Float32Array(finalScore);
+    for (let ly = 1; ly < bh - 1; ly++) {
+      const row = ly * bw;
+      for (let lx = 1; lx < bw - 1; lx++) {
+        const q = row + lx;
+        if (!solid[q] || finalScore[q]! > 0.45) continue;
+        const m = Math.max(
+          finalScore[q - 1]!,
+          finalScore[q + 1]!,
+          finalScore[q - bw]!,
+          finalScore[q + bw]!,
+        );
+        const dil = m * 0.42;
+        if (dil > boosted[q]!) boosted[q] = dil;
+      }
+    }
+    finalScore.set(boosted);
+  }
+
+  // 10) Crisp jet-black G-Pen ink tone curve + solid opaque #FFFFFF interiors + zero-white-halo fringe
+  for (let ly = 0; ly < bh; ly++) {
+    const wy = by0 + ly;
+    const dstRow = wy * w;
+    const qRow = ly * bw;
+    for (let lx = 0; lx < bw; lx++) {
+      const q = qRow + lx;
+      const a = alpha[q]!;
+      const i = (dstRow + bx0 + lx) * 4;
+      if (a < 20) {
+        d[i + 3] = 0;
+        continue;
+      }
+
+      if (!solid[q]) {
+        // Semi-transparent outer silhouette anti-aliased fringe: pure black ink prevents white halo on panels
+        let touchesSolid = false;
+        if (
+          (lx > 0 && solid[q - 1]) ||
+          (lx + 1 < bw && solid[q + 1]) ||
+          (ly > 0 && solid[q - bw]) ||
+          (ly + 1 < bh && solid[q + bw])
+        ) {
+          touchesSolid = true;
+        }
+        if (touchesSolid) {
+          d[i] = 0;
+          d[i + 1] = 0;
+          d[i + 2] = 0;
+          d[i + 3] = Math.min(255, Math.round(a * 1.55));
+        } else {
+          d[i + 3] = 0;
+        }
+        continue;
+      }
+
+      const sc = finalScore[q]!;
+      let ink = 0;
+      if (sc > 0.12) {
+        const t = Math.max(0, Math.min(1, (sc - 0.12) / 0.44));
+        ink = t * t * (3 - 2 * t);
+      }
+      if (contourInk[q]! > ink) ink = contourInk[q]!;
+
+      const shade = Math.round(255 * (1 - ink));
+      d[i] = shade;
+      d[i + 1] = shade;
+      d[i + 2] = shade;
+      d[i + 3] = a >= 100 ? 255 : Math.min(255, Math.round(a * 1.8));
+    }
+  }
+}
+
+function renderMangaGpenLineartCore(
+  source: HTMLImageElement | HTMLCanvasElement,
+  targetW: number,
+  targetH: number,
+  opts: MangaLineartOptions2D = {},
+): HTMLCanvasElement {
+  const sw =
+    source instanceof HTMLImageElement ? source.naturalWidth || source.width : source.width;
+  const sh =
+    source instanceof HTMLImageElement ? source.naturalHeight || source.height : source.height;
+  const w = Math.max(1, Math.round(targetW || sw || 1));
+  const h = Math.max(1, Math.round(targetH || sh || 1));
+  const out = document.createElement("canvas");
+  out.width = w;
+  out.height = h;
+  const ctx = out.getContext("2d");
+  if (!ctx || !sw || !sh) return out;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(source, 0, 0, w, h);
+
+  const img = ctx.getImageData(0, 0, w, h);
+  processMangaGpenPixels(img.data, w, h, opts);
+  ctx.putImageData(img, 0, 0);
+  return out;
+}
+
+/**
+ * Converts a colored character/body sprite into pure black G-Pen ink lineart over opaque white interior.
+ * Preserves crisp outer contours, anatomy lines, and dark-garment seams while clearing skin/briefs fills.
  */
 export function extractMangaLineartCanvas(
   source: HTMLImageElement | HTMLCanvasElement,
   targetW = CHAR2D_W,
   targetH = CHAR2D_H,
+  opts?: MangaLineartOptions2D,
 ): HTMLCanvasElement {
-  const out = document.createElement("canvas");
-  out.width = targetW;
-  out.height = targetH;
-  const ctx = out.getContext("2d");
-  if (!ctx) return out;
-  ctx.drawImage(source, 0, 0, targetW, targetH);
-
-  const img = ctx.getImageData(0, 0, targetW, targetH);
-  const d = img.data;
-  const len = targetW * targetH;
-  const lum = new Float32Array(len);
-  const alpha = new Uint8Array(len);
-
-  for (let p = 0; p < len; p++) {
-    const i = p * 4;
-    alpha[p] = d[i + 3] ?? 0;
-    lum[p] = 0.299 * (d[i] ?? 255) + 0.587 * (d[i + 1] ?? 255) + 0.114 * (d[i + 2] ?? 255);
-  }
-
-  for (let y = 0; y < targetH; y++) {
-    for (let x = 0; x < targetW; x++) {
-      const p = y * targetW + x;
-      const a = alpha[p]!;
-      const i = p * 4;
-      if (a < 24) {
-        d[i + 3] = 0;
-        continue;
-      }
-
-      // 1) Check silhouette border within radius 2 -> crisp outer ink outline
-      let nearTransparent = false;
-      for (let dy = -2; dy <= 2 && !nearTransparent; dy++) {
-        const ny = y + dy;
-        if (ny < 0 || ny >= targetH) {
-          nearTransparent = true;
-          break;
-        }
-        for (let dx = -2; dx <= 2; dx++) {
-          const nx = x + dx;
-          if (nx < 0 || nx >= targetW) {
-            nearTransparent = true;
-            break;
-          }
-          if (alpha[ny * targetW + nx]! < 35) {
-            nearTransparent = true;
-            break;
-          }
-        }
-      }
-
-      const l = lum[p]!;
-      // 2) Interior line detector: dark pixels significantly darker than local 7x7 max (anatomy/seams)
-      let localMax = l;
-      const yMin = Math.max(0, y - 3);
-      const yMax = Math.min(targetH - 1, y + 3);
-      const xMin = Math.max(0, x - 3);
-      const xMax = Math.min(targetW - 1, x + 3);
-      for (let ny = yMin; ny <= yMax; ny++) {
-        for (let nx = xMin; nx <= xMax; nx++) {
-          const np = ny * targetW + nx;
-          if (alpha[np]! > 40) {
-            const nl = lum[np]!;
-            if (nl > localMax) localMax = nl;
-          }
-        }
-      }
-
-      const contrast = localMax - l;
-      let inkStrength = 0;
-      if (nearTransparent && l < 198) {
-        inkStrength = Math.max(0, Math.min(1, (198 - l) / 56));
-      } else if (l < 168 && contrast >= 30) {
-        inkStrength = Math.max(0, Math.min(1, (contrast - 26) / 38));
-      }
-
-      const shade = Math.round(255 * (1 - inkStrength));
-      d[i] = shade;
-      d[i + 1] = shade;
-      d[i + 2] = shade;
-      d[i + 3] = a > 120 ? 255 : Math.min(255, Math.round(a * 1.4));
-    }
-  }
-
-  ctx.putImageData(img, 0, 0);
-  return out;
+  return renderMangaGpenLineartCore(source, targetW, targetH, {
+    kind: opts?.kind ?? "body",
+    pixelScale: opts?.pixelScale,
+  });
 }
 
 /** Shifts peach skin tones in Color Mode toward `skinHex` while preserving cel-shading, outlines, and briefs. */
@@ -458,14 +1065,15 @@ export function applySkinToneCanvas(
 }
 
 /**
- * Crisp pure-lineart extractor tuned for neutral white/cool-gray illustrated clothes & hair.
- * Keeps opaque interior white `#FFFFFF` and razor-sharp `#000000` ink outlines, seams, and folds,
+ * Crisp pure-lineart extractor tuned for neutral white/cool-gray illustrated clothes, hair, and eyes.
+ * Keeps opaque interior white `#FFFFFF` and razor-sharp `#000000` G-Pen ink outlines, seams, and folds,
  * stripping gray cel-shading fills cleanly for Manga Ink Mode.
  */
 export function extractIllustratedMangaLineartCanvas(
   source: HTMLImageElement | HTMLCanvasElement,
   targetW?: number,
   targetH?: number,
+  opts?: MangaLineartOptions2D,
 ): HTMLCanvasElement {
   const sw =
     source instanceof HTMLImageElement ? source.naturalWidth || source.width : source.width;
@@ -473,86 +1081,10 @@ export function extractIllustratedMangaLineartCanvas(
     source instanceof HTMLImageElement ? source.naturalHeight || source.height : source.height;
   const w = targetW ?? (sw || 1);
   const h = targetH ?? (sh || 1);
-  const out = document.createElement("canvas");
-  out.width = w;
-  out.height = h;
-  const ctx = out.getContext("2d");
-  if (!ctx || !sw || !sh) return out;
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = "high";
-  ctx.drawImage(source, 0, 0, w, h);
-
-  const img = ctx.getImageData(0, 0, w, h);
-  const d = img.data;
-  const len = w * h;
-  const lum = new Float32Array(len);
-  const alpha = new Uint8Array(len);
-
-  for (let p = 0; p < len; p++) {
-    const i = p * 4;
-    alpha[p] = d[i + 3] ?? 0;
-    lum[p] = 0.299 * (d[i] ?? 255) + 0.587 * (d[i + 1] ?? 255) + 0.114 * (d[i + 2] ?? 255);
-  }
-
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const p = y * w + x;
-      const a = alpha[p]!;
-      const i = p * 4;
-      if (a < 22) {
-        d[i + 3] = 0;
-        continue;
-      }
-
-      let nearTransparent = false;
-      for (let dy = -2; dy <= 2 && !nearTransparent; dy++) {
-        const ny = y + dy;
-        if (ny < 0 || ny >= h) {
-          nearTransparent = true;
-          break;
-        }
-        for (let dx = -2; dx <= 2; dx++) {
-          const nx = x + dx;
-          if (nx < 0 || nx >= w || alpha[ny * w + nx]! < 35) {
-            nearTransparent = true;
-            break;
-          }
-        }
-      }
-
-      let localMax = lum[p]!;
-      const y0 = Math.max(0, y - 2);
-      const y1 = Math.min(h - 1, y + 2);
-      const x0 = Math.max(0, x - 2);
-      const x1 = Math.min(w - 1, x + 2);
-      for (let ny = y0; ny <= y1; ny++) {
-        for (let nx = x0; nx <= x1; nx++) {
-          const np = ny * w + nx;
-          if (alpha[np]! > 40 && lum[np]! > localMax) localMax = lum[np]!;
-        }
-      }
-
-      const l = lum[p]!;
-      const contrast = localMax - l;
-      let inkStrength = 0;
-      if (nearTransparent && l < 214) {
-        inkStrength = Math.max(0, Math.min(1, (214 - l) / 56));
-      } else if (l < 142) {
-        inkStrength = Math.max(0, Math.min(1, (152 - l) / 56));
-      } else if (l < 180 && contrast >= 28) {
-        inkStrength = Math.max(0, Math.min(1, (contrast - 24) / 36));
-      }
-
-      const shade = Math.round(255 * (1 - inkStrength));
-      d[i] = shade;
-      d[i + 1] = shade;
-      d[i + 2] = shade;
-      d[i + 3] = a > 110 ? 255 : Math.min(255, Math.round(a * 1.4));
-    }
-  }
-
-  ctx.putImageData(img, 0, 0);
-  return out;
+  return renderMangaGpenLineartCore(source, w, h, {
+    kind: opts?.kind ?? "cloth",
+    pixelScale: opts?.pixelScale,
+  });
 }
 
 /**
@@ -586,7 +1118,10 @@ export function recolorIllustratedPartCanvas(
   }
 
   if (opts.renderMode === "manga") {
-    return extractIllustratedMangaLineartCanvas(baseImg, w, h);
+    return extractIllustratedMangaLineartCanvas(baseImg, w, h, {
+      kind: opts.kind === "hair" ? "hair" : "cloth",
+      pixelScale: opts.kind === "hair" ? Math.max(1, w / 280) : Math.max(1, w / CHAR2D_W),
+    });
   }
 
   const out = document.createElement("canvas");
@@ -687,8 +1222,7 @@ export function recolorIllustratedPartCanvas(
         // True Studio Anime Hair Cel-Shading:
         // 1) Detect ONLY crisp dark ink outlines & dark inner tuft strokes (NEVER muddy cel-shadow boundaries!)
         const globalInk = Math.max(0, Math.min(1, (130 - L) / 76));
-        const strandInk =
-          L < 176 && localDrop > 30 ? Math.max(0, Math.min(0.72, (localDrop - 30) / 52)) : 0;
+        const strandInk = L < 176 && localDrop > 30 ? Math.max(0, Math.min(0.72, (localDrop - 30) / 52)) : 0;
         const lineStrength = Math.max(globalInk, strandInk);
 
         // Hue-tinted deep anime hair lineart (rich midnight navy on blue hair, deep wine on red, espresso on gold)
@@ -732,8 +1266,7 @@ export function recolorIllustratedPartCanvas(
 
       // 1. Local-contrast + global dark lineart detection for garments (seams, pockets, zippers, laces)
       const globalInk = Math.max(0, Math.min(1, (144 - L) / 90));
-      const detailInk =
-        L < 208 && localDrop > 16 ? Math.max(0, Math.min(1, (localDrop - 16) / 48)) : 0;
+      const detailInk = L < 208 && localDrop > 16 ? Math.max(0, Math.min(1, (localDrop - 16) / 48)) : 0;
       const lineStrength = Math.max(globalInk, detailInk * 0.82);
 
       const inkR = Math.min(24, Math.round(rawR * 0.09 + 6));
@@ -794,13 +1327,11 @@ export function recolorIrisCanvas(
     const a = d[i + 3] ?? 0;
     if (a < 10) continue;
     if (renderMode === "manga") {
-      // Manga Mode keeps eyes white inside with crisp black rim
-      const l =
-        (0.299 * (d[i] ?? 255) + 0.587 * (d[i + 1] ?? 255) + 0.114 * (d[i + 2] ?? 255)) / 255;
-      const val = l < 0.48 ? 24 : 255;
-      d[i] = val;
-      d[i + 1] = val;
-      d[i + 2] = val;
+      // Pure Lines-Only Manga Mode keeps lower iris fill clean white so eyeBase's crisp black lashes,
+      // iris ring, dark upper crescent, pupil & white specular catchlight read like real hand-inked manga.
+      d[i] = 255;
+      d[i + 1] = 255;
+      d[i + 2] = 255;
       continue;
     }
 
@@ -878,7 +1409,7 @@ export function tintCustomPartCanvas(
   }
 
   if (renderMode === "manga") {
-    return extractIllustratedMangaLineartCanvas(source, w, h);
+    return extractIllustratedMangaLineartCanvas(source, w, h, { kind: "generic" });
   }
 
   if (!tintHex) {

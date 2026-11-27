@@ -15,6 +15,7 @@ import {
   resolveHeadPack2D,
 } from "./character2d-heads";
 import { resolveEffectiveAnchors } from "./character2d-draw";
+import { processMangaGpenPixels } from "./character2d-slicer";
 import {
   BASE_MODELS_2D_STORAGE_KEY,
   CHAR2D_STORAGE_KEY,
@@ -229,5 +230,70 @@ describe("2D Character Creator Studio data model & Model #1", () => {
     expect(sharpFace.angles[90]?.eyeRightBase).toBeUndefined();
     expect(sharpFace.angles[270]?.browRight).toBeUndefined();
     expect(sharpFace.angles[315]?.mouth).toContain("mouth-angle-315.webp");
+  });
+
+  it("extracts closed G-Pen outer contours, rejects 1-sided cel shadows, keeps interior lines & briefs seams, and avoids white halos", () => {
+    const w = 64;
+    const h = 64;
+    const buf = new Uint8ClampedArray(w * h * 4);
+    const setPx = (x: number, y: number, r: number, g: number, b: number, a = 255) => {
+      const i = (y * w + x) * 4;
+      buf[i] = r;
+      buf[i + 1] = g;
+      buf[i + 2] = b;
+      buf[i + 3] = a;
+    };
+
+    // Draw a bright peach skin rectangle (10..53, 8..55) with NO dark outer border painted in source,
+    // a 1-sided cel-shadow plane on the right half (x >= 36), a delicate collarbone valley line at y = 20,
+    // solid dark charcoal briefs at y = 38..54, a 1px isolated dust dot at (18, 28), and semi-transparent outer fringe at x = 9.
+    for (let y = 8; y <= 55; y++) {
+      setPx(9, y, 245, 200, 170, 50); // semi-transparent outer fringe
+      for (let x = 10; x <= 53; x++) {
+        if (y >= 38) {
+          setPx(x, y, 42, 44, 48, 255); // solid dark charcoal briefs
+        } else if (x >= 36) {
+          setPx(x, y, 215, 172, 146, 255); // broad 1-sided cel shadow
+        } else {
+          setPx(x, y, 248, 208, 178, 255); // lit peach skin
+        }
+      }
+    }
+    // Delicate warm-brown collarbone anatomy stroke (lum ~145) across lit skin
+    for (let x = 16; x <= 32; x++) {
+      setPx(x, 20, 175, 132, 108, 255);
+      setPx(x, 21, 175, 132, 108, 255);
+    }
+    // Isolated 1px noise speck
+    setPx(18, 28, 135, 100, 82, 255);
+
+    processMangaGpenPixels(buf, w, h, { kind: "body", pixelScale: 1 });
+
+    const pxAt = (x: number, y: number) => {
+      const i = (y * w + x) * 4;
+      return { r: buf[i]!, g: buf[i + 1]!, b: buf[i + 2]!, a: buf[i + 3]! };
+    };
+
+    // 1. Exterior stays transparent
+    expect(pxAt(2, 2).a).toBe(0);
+    // 2. Guaranteed closed jet-black outer contour even though source outer pixels were bright peach
+    expect(pxAt(10, 15).r).toBeLessThan(30);
+    expect(pxAt(53, 15).r).toBeLessThan(30);
+    expect(pxAt(25, 8).r).toBeLessThan(30);
+    expect(pxAt(25, 55).r).toBeLessThan(30);
+    // 3. Semi-transparent exterior fringe uses pure black ink (zero white halo when stamped on dark panels)
+    expect(pxAt(9, 25).r).toBe(0);
+    expect(pxAt(9, 25).a).toBeGreaterThan(0);
+    // 4. Lit interior & 1-sided cel-shadow boundary stay pure opaque white (#FFFFFF)
+    expect(pxAt(22, 14)).toEqual({ r: 255, g: 255, b: 255, a: 255 });
+    expect(pxAt(36, 14)).toEqual({ r: 255, g: 255, b: 255, a: 255 });
+    expect(pxAt(42, 14)).toEqual({ r: 255, g: 255, b: 255, a: 255 });
+    // 5. Delicate bilateral collarbone valley line is preserved cleanly as dark ink
+    expect(pxAt(24, 20).r).toBeLessThan(90);
+    // 6. Isolated 1px noise speck is pruned to pure white
+    expect(pxAt(18, 28)).toEqual({ r: 255, g: 255, b: 255, a: 255 });
+    // 7. Dark briefs interior turns pure opaque white while waistband boundary gets a continuous black seam
+    expect(pxAt(28, 38).r).toBeLessThan(40);
+    expect(pxAt(28, 46)).toEqual({ r: 255, g: 255, b: 255, a: 255 });
   });
 });
