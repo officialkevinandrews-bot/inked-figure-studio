@@ -24,13 +24,13 @@ import { OVERLAY_HEAD_H, OVERLAY_HEAD_W, resolveHeadPack2D } from "./character2d
 import type { ShadingDepth2D } from "./character2d-types";
 import {
   resolveIllustratedBottomPack2D,
-  resolveIllustratedFacePack2D,
+  resolveIllustratedFacePacks2D,
   resolveIllustratedFootwearPack2D,
   resolveIllustratedHairPack2D,
   resolveIllustratedTopPack2D,
   type IllustratedClothingPack2D,
-  type IllustratedFacePack2D,
   type IllustratedHairPack2D,
+  type ResolvedFacePacks2D,
 } from "./character2d-catalog";
 import {
   applySkinToneCanvas,
@@ -42,6 +42,7 @@ import {
   tintCustomPartCanvas,
 } from "./character2d-slicer";
 import { loadImageElement2D } from "./character2d-store";
+import { drawCharacterAccessories2D } from "./character2d-accessories";
 
 type C = CanvasRenderingContext2D;
 
@@ -1110,7 +1111,7 @@ function drawShoeUnit(
   ctx: C,
   ankle: BodyPoint2D,
   toe: BodyPoint2D,
-  style: "sneakers" | "boots",
+  style: "sneakers" | "loafers" | "boots",
   angle: Angle2D,
   baseCol: string,
   accentCol: string,
@@ -2002,6 +2003,7 @@ function drawAnimeEye2D(
   const wByStyle: Record<EyeStyle2D, number> = {
     none: 0,
     sharp: 18,
+    cool: 19,
     round: 16,
     almond: 19,
     intense: 17,
@@ -2011,6 +2013,7 @@ function drawAnimeEye2D(
   const hByStyle: Record<EyeStyle2D, number> = {
     none: 0,
     sharp: 11,
+    cool: 9,
     round: 14,
     almond: 10,
     intense: 12,
@@ -2162,6 +2165,7 @@ function drawAnimeBrow2D(
     thin: 1.8,
     bold: 3.4,
     sharp: 2.5,
+    cool: 2.1,
     soft: 2.4,
     flat: 2.6,
   };
@@ -3366,6 +3370,7 @@ function drawForegroundProfileArm2D(
   angle: Angle2D,
   mode: RenderMode2D,
   skinTone: string | null,
+  handOnly = false,
 ) {
   if (!rawBaseImg || !processedBase || !rawBaseSrc || (angle !== 90 && angle !== 270)) return;
   const sprite = getProfileSkinForearmCanvas(
@@ -3377,6 +3382,19 @@ function drawForegroundProfileArm2D(
     mode,
     skinTone,
   );
+  if (handOnly) {
+    // Long-sleeve tops (e.g. Suit Blazer) already draw the sleeved forearm down to the wrist cuff;
+    // clip strictly to the bare hand below the cuff so the hand always renders in front of trousers.
+    const arm = angle === 90 ? a.armLeft : a.armRight;
+    const wristClipY = Math.max(sprite.y, Math.round(arm[2].y - 4));
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(sprite.x, wristClipY, sprite.w, Math.max(0, sprite.y + sprite.h - wristClipY));
+    ctx.clip();
+    ctx.drawImage(sprite.canvas, sprite.x, sprite.y, sprite.w, sprite.h);
+    ctx.restore();
+    return;
+  }
   ctx.drawImage(sprite.canvas, sprite.x, sprite.y, sprite.w, sprite.h);
 }
 
@@ -3502,7 +3520,7 @@ function drawIllustratedFace2D(
   angle: Angle2D,
   mode: RenderMode2D,
   imageMap: Map<string, HTMLImageElement>,
-  facePack: IllustratedFacePack2D | null,
+  facePacks: ResolvedFacePacks2D,
   sil: HeadSilhouetteInfo | null,
   pass: "full" | "eyes_brows_over_bangs" = "full",
 ) {
@@ -3599,8 +3617,15 @@ function drawIllustratedFace2D(
     mouthPos = { x: mouthL + Math.max(10, mouthW * 0.13), y: mouthCenterY, sx: baseS * 0.85 };
   }
 
-  const angAssets = facePack?.angles[angle];
-  if (facePack && angAssets) {
+  const eyePack = facePacks.eyes;
+  const browPack = facePacks.brows;
+  const nosePack = facePacks.nose;
+  const mouthPack = facePacks.mouth;
+  const eyeAng = eyePack?.angles[angle];
+  const browAng = browPack?.angles[angle];
+  const noseAng = nosePack?.angles[angle];
+  const mouthAng = mouthPack?.angles[angle];
+  if (eyeAng || browAng || noseAng || mouthAng) {
     // Render all facial parts onto a 400x400 (2x Hi-Res) offscreen canvas and intersect with active eroded head mask
     const x0 = 140;
     const y0 = 55;
@@ -3663,7 +3688,7 @@ function drawIllustratedFace2D(
             mode,
           );
         }
-      } else {
+      } else if (eyePack && eyeAng) {
         const renderEyeUnit = (
           pos: { x: number; y: number; sx: number; sy: number },
           baseSrc: string | undefined,
@@ -3678,8 +3703,8 @@ function drawIllustratedFace2D(
               ebSp,
               pos.x,
               pos.y,
-              facePack.eyeW,
-              facePack.eyeH,
+              eyePack.eyeW,
+              eyePack.eyeH,
               pos.sx,
               pos.sy * eyeYScale,
             );
@@ -3690,22 +3715,22 @@ function drawIllustratedFace2D(
               eiSp,
               pos.x,
               pos.y,
-              facePack.eyeW,
-              facePack.eyeH,
+              eyePack.eyeW,
+              eyePack.eyeH,
               pos.sx,
               pos.sy * eyeYScale,
             );
           }
         };
 
-        renderEyeUnit(leftEyePos, angAssets.eyeLeftBase, angAssets.eyeLeftIris);
+        renderEyeUnit(leftEyePos, eyeAng.eyeLeftBase, eyeAng.eyeLeftIris);
         if (rightEyePos) {
-          renderEyeUnit(rightEyePos, angAssets.eyeRightBase, angAssets.eyeRightIris);
+          renderEyeUnit(rightEyePos, eyeAng.eyeRightBase, eyeAng.eyeRightIris);
         }
       }
     }
 
-    if (char.face.browStyle !== "none") {
+    if (char.face.browStyle !== "none" && browPack && browAng) {
       fctx.save();
       if (pass === "eyes_brows_over_bangs") fctx.globalAlpha = mode === "manga" ? 0.78 : 0.42;
       const browDy = (preset.browTilt > 0 ? 3 : preset.browTilt < 0 ? -3.5 : 0) * fScale;
@@ -3713,30 +3738,30 @@ function drawIllustratedFace2D(
       const brOffY = (prof ? 8.5 : 9.5) * fScale;
       const browLeftSx = prof ? leftEyePos.sx * 0.82 : leftEyePos.sx;
 
-      const blImg = imageMap.get(angAssets.browLeft);
+      const blImg = imageMap.get(browAng.browLeft);
       if (blImg) {
-        const blSp = getRecoloredInkSprite(blImg, angAssets.browLeft, char.face.browColor, mode);
+        const blSp = getRecoloredInkSprite(blImg, browAng.browLeft, char.face.browColor, mode);
         drawCenteredSprite(
           blSp,
           leftEyePos.x,
           leftEyePos.y - brOffY + browDy,
-          facePack.browW,
-          facePack.browH,
+          browPack.browW,
+          browPack.browH,
           browLeftSx,
           leftEyePos.sy,
           leftEyePos.tiltDir * tiltRad,
         );
       }
-      if (rightEyePos && angAssets.browRight) {
-        const brImg = imageMap.get(angAssets.browRight);
+      if (rightEyePos && browAng.browRight) {
+        const brImg = imageMap.get(browAng.browRight);
         if (brImg) {
-          const brSp = getRecoloredInkSprite(brImg, angAssets.browRight, char.face.browColor, mode);
+          const brSp = getRecoloredInkSprite(brImg, browAng.browRight, char.face.browColor, mode);
           drawCenteredSprite(
             brSp,
             rightEyePos.x,
             rightEyePos.y - brOffY + browDy,
-            facePack.browW,
-            facePack.browH,
+            browPack.browW,
+            browPack.browH,
             rightEyePos.sx,
             rightEyePos.sy,
             rightEyePos.tiltDir * tiltRad,
@@ -3746,16 +3771,16 @@ function drawIllustratedFace2D(
       fctx.restore();
     }
 
-    if (pass === "full" && char.face.noseStyle !== "none" && nosePos) {
-      const nsImg = imageMap.get(angAssets.nose);
+    if (pass === "full" && char.face.noseStyle !== "none" && nosePos && nosePack && noseAng) {
+      const nsImg = imageMap.get(noseAng.nose);
       if (nsImg) {
-        const nsSp = getRecoloredInkSprite(nsImg, angAssets.nose, "#1c1f29", mode);
+        const nsSp = getRecoloredInkSprite(nsImg, noseAng.nose, "#1c1f29", mode);
         drawCenteredSprite(
           nsSp,
           nosePos.x,
           nosePos.y,
-          facePack.noseW,
-          facePack.noseH,
+          nosePack.noseW,
+          nosePack.noseH,
           nosePos.sx,
           baseS,
         );
@@ -3764,18 +3789,20 @@ function drawIllustratedFace2D(
 
     if (pass === "full" && char.face.mouthStyle !== "none") {
       if (preset.mouthPose === "neutral" || preset.mouthPose === "serious") {
-        const mtImg = imageMap.get(angAssets.mouth);
-        if (mtImg) {
-          const mtSp = getRecoloredInkSprite(mtImg, angAssets.mouth, "#1c1f29", mode);
-          drawCenteredSprite(
-            mtSp,
-            mouthPos.x,
-            mouthPos.y,
-            facePack.mouthW,
-            facePack.mouthH,
-            mouthPos.sx,
-            baseS * (preset.mouthPose === "serious" ? 0.9 : 1),
-          );
+        if (mouthPack && mouthAng) {
+          const mtImg = imageMap.get(mouthAng.mouth);
+          if (mtImg) {
+            const mtSp = getRecoloredInkSprite(mtImg, mouthAng.mouth, "#1c1f29", mode);
+            drawCenteredSprite(
+              mtSp,
+              mouthPos.x,
+              mouthPos.y,
+              mouthPack.mouthW,
+              mouthPack.mouthH,
+              mouthPos.sx,
+              baseS * (preset.mouthPose === "serious" ? 0.9 : 1),
+            );
+          }
         }
       } else {
         fctx.save();
@@ -3925,22 +3952,23 @@ export async function preloadCharacter2DImages(
   }
 
   if (!isBackFacingAngle2D(ang)) {
-    const facePack =
-      resolveIllustratedFacePack2D(char.face.eyeStyle) ??
-      resolveIllustratedFacePack2D(char.face.browStyle) ??
-      resolveIllustratedFacePack2D(char.face.noseStyle) ??
-      resolveIllustratedFacePack2D(char.face.mouthStyle);
-    const faceAng = facePack?.angles[ang];
-    if (faceAng) {
-      urls.add(faceAng.eyeLeftBase);
-      urls.add(faceAng.eyeLeftIris);
-      if (faceAng.eyeRightBase) urls.add(faceAng.eyeRightBase);
-      if (faceAng.eyeRightIris) urls.add(faceAng.eyeRightIris);
-      urls.add(faceAng.browLeft);
-      if (faceAng.browRight) urls.add(faceAng.browRight);
-      urls.add(faceAng.nose);
-      urls.add(faceAng.mouth);
+    const facePacks = resolveIllustratedFacePacks2D(char.face);
+    const eyeAng = facePacks.eyes?.angles[ang];
+    if (eyeAng) {
+      urls.add(eyeAng.eyeLeftBase);
+      urls.add(eyeAng.eyeLeftIris);
+      if (eyeAng.eyeRightBase) urls.add(eyeAng.eyeRightBase);
+      if (eyeAng.eyeRightIris) urls.add(eyeAng.eyeRightIris);
     }
+    const browAng = facePacks.brows?.angles[ang];
+    if (browAng) {
+      urls.add(browAng.browLeft);
+      if (browAng.browRight) urls.add(browAng.browRight);
+    }
+    const noseAng = facePacks.nose?.angles[ang];
+    if (noseAng) urls.add(noseAng.nose);
+    const mouthAng = facePacks.mouth?.angles[ang];
+    if (mouthAng) urls.add(mouthAng.mouth);
   }
 
   const partMap = new Map(customParts.map((p) => [p.id, p]));
@@ -3985,11 +4013,7 @@ export function renderCharacter2DSync(
   const topPack = resolveIllustratedTopPack2D(char.clothes.top);
   const bottomPack = resolveIllustratedBottomPack2D(char.clothes.bottom);
   const footwearPack = resolveIllustratedFootwearPack2D(char.clothes.footwear);
-  const facePack =
-    resolveIllustratedFacePack2D(char.face.eyeStyle) ??
-    resolveIllustratedFacePack2D(char.face.browStyle) ??
-    resolveIllustratedFacePack2D(char.face.noseStyle) ??
-    resolveIllustratedFacePack2D(char.face.mouthStyle);
+  const facePacks = resolveIllustratedFacePacks2D(char.face);
 
   let processedBaseCanvas: HTMLCanvasElement | null = null;
   let rawBaseImg: HTMLImageElement | null = null;
@@ -4034,6 +4058,17 @@ export function renderCharacter2DSync(
     : null;
 
   ctx.save();
+  drawCharacterAccessories2D(
+    ctx,
+    char.accessories,
+    anchors,
+    headSil,
+    angle,
+    mode,
+    shadingDepth,
+    "behind_body",
+    char.face.offsetY,
+  );
   drawIllustratedHair2D(ctx, char, anchors, angle, mode, "back", imageMap, hairPack, headSil);
   drawCustomLayers2D(ctx, char, customParts, "behind", angle, imageMap);
 
@@ -4097,11 +4132,18 @@ export function renderCharacter2DSync(
   if (topPack) {
     redrawHeadNeckAboveCollar2D(ctx, processedBaseCanvas, headSil, angle);
   }
-  if (
-    !opts?.skipProfileForegroundArm &&
-    (bottomPack || topPack) &&
-    (!topPack || topPack.shortSleeve)
-  ) {
+  drawCharacterAccessories2D(
+    ctx,
+    char.accessories,
+    anchors,
+    headSil,
+    angle,
+    mode,
+    shadingDepth,
+    "neck_over_clothes",
+    char.face.offsetY,
+  );
+  if (!opts?.skipProfileForegroundArm && (bottomPack || topPack)) {
     drawForegroundProfileArm2D(
       ctx,
       rawBaseImg,
@@ -4111,9 +4153,21 @@ export function renderCharacter2DSync(
       angle,
       mode,
       char.skinTone,
+      Boolean(topPack && !topPack.shortSleeve),
     );
   }
-  drawIllustratedFace2D(ctx, char, anchors, angle, mode, imageMap, facePack, headSil, "full");
+  drawIllustratedFace2D(ctx, char, anchors, angle, mode, imageMap, facePacks, headSil, "full");
+  drawCharacterAccessories2D(
+    ctx,
+    char.accessories,
+    anchors,
+    headSil,
+    angle,
+    mode,
+    shadingDepth,
+    "face_under_hair",
+    char.face.offsetY,
+  );
   drawIllustratedHairCastShadow2D(ctx, char, anchors, angle, mode, imageMap, hairPack, headSil);
   drawIllustratedHair2D(ctx, char, anchors, angle, mode, "front", imageMap, hairPack, headSil);
   if (hairPack) {
@@ -4124,11 +4178,22 @@ export function renderCharacter2DSync(
       angle,
       mode,
       imageMap,
-      facePack,
+      facePacks,
       headSil,
       "eyes_brows_over_bangs",
     );
   }
+  drawCharacterAccessories2D(
+    ctx,
+    char.accessories,
+    anchors,
+    headSil,
+    angle,
+    mode,
+    shadingDepth,
+    "over_hair",
+    char.face.offsetY,
+  );
   drawCustomLayers2D(ctx, char, customParts, "front", angle, imageMap);
   ctx.restore();
 }

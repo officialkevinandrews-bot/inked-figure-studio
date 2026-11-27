@@ -33,10 +33,21 @@ import {
 } from "./character2d-store";
 import { LEGACY_EXACT_KEYS, setActiveStorageUser } from "./user-storage";
 import {
+  ACCESSORY_CATALOG_2D,
+  ACCESSORY_SLOTS_2D,
+  countEquippedAccessories2D,
+  getAccessoriesForSlot2D,
+  serializeAccessoriesSignature2D,
+} from "./character2d-accessories";
+import {
+  CHARACTER_STYLE_PRESETS_2D,
   ILLUSTRATED_FACE_PACKS_2D,
+  ILLUSTRATED_TOP_PACKS_2D,
   MODEL1_ART_TEMPLATES_2D,
+  getAvailableStylePresets2D,
   resolveIllustratedBottomPack2D,
   resolveIllustratedFacePack2D,
+  resolveIllustratedFacePacks2D,
   resolveIllustratedFootwearPack2D,
   resolveIllustratedHairPack2D,
   resolveIllustratedTopPack2D,
@@ -368,5 +379,59 @@ describe("2D Character Creator Studio data model & Model #1", () => {
         prev = sx;
       }
     }
+  });
+
+  it("resolves face packs independently per feature and gates unready Set 2 packs & style presets safely", () => {
+    // Independent per-feature face pack resolution (none hides only that feature while others stay active)
+    const mixed = resolveIllustratedFacePacks2D({
+      eyeStyle: "sharp",
+      browStyle: "none",
+      noseStyle: "sharp",
+      mouthStyle: "none",
+    });
+    expect(mixed.eyes?.id).toBe("sharp");
+    expect(mixed.brows).toBeNull();
+    expect(mixed.nose?.id).toBe("sharp");
+    expect(mixed.mouth).toBeNull();
+
+    // Long-sleeve blazer catalog metadata is declared cleanly with shortSleeve=false and two RGB zones
+    const blazerMeta = ILLUSTRATED_TOP_PACKS_2D.find((p) => p.id === "blazer");
+    expect(blazerMeta).toBeDefined();
+    expect(blazerMeta?.shortSleeve).toBe(false);
+    expect(blazerMeta?.accentLabel).toBe("Dress Shirt (RGB)");
+
+    // Until Set 2 WebP art is marked ready=true, unready packs fall back safely and presets stay filtered
+    const availablePresets = getAvailableStylePresets2D();
+    expect(CHARACTER_STYLE_PRESETS_2D.length).toBeGreaterThanOrEqual(5);
+    expect(availablePresets.length).toBeGreaterThanOrEqual(2);
+    for (const preset of availablePresets) {
+      expect(preset.clothes.top).not.toBe("blazer");
+    }
+  });
+
+  it("provides a complete 6-slot modular manga accessories catalog with deterministic cache signatures", () => {
+    expect(ACCESSORY_SLOTS_2D).toHaveLength(6);
+    expect(ACCESSORY_CATALOG_2D.length).toBeGreaterThanOrEqual(20);
+    for (const slot of ACCESSORY_SLOTS_2D) {
+      expect(getAccessoriesForSlot2D(slot.id).length).toBeGreaterThanOrEqual(2);
+    }
+
+    const equipped = {
+      eyewear: { id: "glasses_rect" as const, color: "#18181b", accentColor: "#bae6fd" },
+      neck: { id: "necktie" as const, color: "#991b1b", accentColor: "#f8fafc" },
+      faceMark: { id: "scar_eye" as const, color: "#b4534a" },
+      back: { id: "katana_back" as const, color: "#18181b", accentColor: "#eab308" },
+    };
+    expect(countEquippedAccessories2D(equipped)).toBe(4);
+    expect(countEquippedAccessories2D(undefined)).toBe(0);
+
+    const sig1 = serializeAccessoriesSignature2D(equipped);
+    const sig2 = serializeAccessoriesSignature2D({
+      ...equipped,
+      neck: { id: "scarf", color: "#b91c1c", accentColor: "#f8fafc" },
+    });
+    expect(sig1).toContain("eyewear:glasses_rect");
+    expect(sig1).toContain("neck:necktie");
+    expect(sig2).not.toBe(sig1);
   });
 });

@@ -1,3 +1,5 @@
+import type { CharacterAccessories2D } from "./character2d-accessories";
+
 export const CHAR2D_W = 480;
 export const CHAR2D_H = 1000;
 
@@ -131,21 +133,24 @@ export interface BaseModel2D {
   anchors: Record<Angle2D, BodyAngleAnchors>;
 }
 
-export type EyeStyle2D = "none" | "sharp" | "round" | "almond" | "intense" | "gentle" | "stoic";
-export type BrowStyle2D = "none" | "sharp" | "thin" | "bold" | "soft" | "flat";
-export type NoseStyle2D = "none" | "sharp" | "subtle" | "wedge" | "classic" | "tall" | "button";
-export type MouthStyle2D = "none" | "sharp" | "line" | "grin" | "smile" | "smirk" | "soft" | "wide";
+export type EyeStyle2D =
+  "none" | "sharp" | "cool" | "round" | "almond" | "intense" | "gentle" | "stoic";
+export type BrowStyle2D = "none" | "sharp" | "cool" | "thin" | "bold" | "soft" | "flat";
+export type NoseStyle2D =
+  "none" | "sharp" | "cool" | "subtle" | "wedge" | "classic" | "tall" | "button";
+export type MouthStyle2D =
+  "none" | "sharp" | "cool" | "line" | "grin" | "smile" | "smirk" | "soft" | "wide";
 
 export type Expression2DId =
   "neutral" | "happy" | "angry" | "shocked" | "sad" | "smug" | "serious" | "closed";
 
 export type FaceFx2D = "blush" | "sweat" | "anger" | "tears" | "gloom";
 
-export type HairStyle2D = "none" | "spiky" | "messy" | "short" | "slick" | "curtains" | "long";
+export type HairStyle2D = "none" | "spiky" | "curtains" | "messy" | "short" | "slick" | "long";
 export type TopStyle2D =
-  "none" | "zip_hoodie_tee" | "hoodie" | "tshirt" | "longsleeve" | "zip_jacket" | "blazer";
-export type BottomStyle2D = "none" | "cargo" | "jeans" | "shorts";
-export type FootwearStyle2D = "none" | "sneakers" | "boots";
+  "none" | "zip_hoodie_tee" | "blazer" | "hoodie" | "tshirt" | "longsleeve" | "zip_jacket";
+export type BottomStyle2D = "none" | "cargo" | "trousers" | "jeans" | "shorts";
+export type FootwearStyle2D = "none" | "sneakers" | "loafers" | "boots";
 
 export interface CustomLayerTransform2D {
   x: number;
@@ -225,6 +230,8 @@ export interface Character2D {
     footwearColor: string;
     footwearAccentColor: string;
   };
+  /** Modular 6-slot manga accessories (eyewear, headwear, face marks, earrings, neckwear, back props). */
+  accessories?: CharacterAccessories2D;
   customLayers: CustomLayerInstance2D[];
   /** Optional per-angle offset adjustments on top of the active base model anchors. */
   anchorOverrides?: Partial<Record<Angle2D, Partial<BodyAngleAnchors>>>;

@@ -5,6 +5,7 @@ import {
   Copy,
   Download,
   FlipHorizontal,
+  Glasses,
   Layers,
   Palette,
   PenTool,
@@ -20,7 +21,9 @@ import {
   User,
 } from "lucide-react";
 import { AccountMenu } from "@/components/auth/AccountMenu";
+import { AccessoriesInspector2D } from "@/components/character2d/AccessoriesInspector2D";
 import { FeedbackButton } from "@/components/feedback/FeedbackProvider";
+import { countEquippedAccessories2D } from "@/lib/character2d-accessories";
 import type { PageLayout } from "@/lib/manga-layout";
 import {
   ANGLES_2D,
@@ -115,7 +118,7 @@ export interface Character2DStudioProps {
   onUpdatePanelElement: (elementId: string, dataUrl: string, source2d: Source2DMetadata) => void;
 }
 
-type InspectorTab2D = "face" | "hair" | "clothes" | "body" | "parts";
+type InspectorTab2D = "face" | "hair" | "clothes" | "accessories" | "body" | "parts";
 
 function ColorRgbControl({
   label,
@@ -226,7 +229,7 @@ export function Character2DStudio({
 
   const selectInspectorTab = (tab: InspectorTab2D) => {
     setInspectorTab(tab);
-    setCameraZoom(tab === "face" || tab === "hair" ? "face" : "full");
+    setCameraZoom(tab === "face" || tab === "hair" || tab === "accessories" ? "face" : "full");
   };
   const [targetPanelId, setTargetPanelId] = useState<string>(() => panels[0]?.id ?? "");
   const [renaming, setRenaming] = useState(false);
@@ -1048,28 +1051,36 @@ export function Character2DStudio({
         {/* Right / Bottom Layered Parts Inspector */}
         <aside className="flex w-full md:w-[360px] lg:w-[400px] max-h-[45dvh] md:max-h-none flex-col border-t-2 md:border-t-0 md:border-l-2 border-foreground bg-card min-h-0">
           {/* Inspector Tabs */}
-          <div className="grid grid-cols-5 border-b border-border bg-muted/40 text-[11px] font-bold shrink-0">
+          <div className="grid grid-cols-6 border-b border-border bg-muted/40 text-[10px] font-bold shrink-0">
             {(
               [
                 { id: "face", label: "Face", icon: Smile },
                 { id: "hair", label: "Hair", icon: Sparkles },
                 { id: "clothes", label: "Clothes", icon: Shirt },
+                { id: "accessories", label: "Access.", icon: Glasses },
                 { id: "body", label: "Body", icon: User },
                 { id: "parts", label: "Custom", icon: Layers },
               ] as const
             ).map((t) => {
               const Icon = t.icon;
               const isActive = inspectorTab === t.id;
+              const accBadge =
+                t.id === "accessories" ? countEquippedAccessories2D(activeChar.accessories) : 0;
               return (
                 <button
                   key={t.id}
                   type="button"
                   data-testid={`char2d-tab-${t.id}`}
                   onClick={() => selectInspectorTab(t.id)}
-                  className={`flex flex-col sm:flex-row items-center justify-center gap-1 border-b-2 py-2 transition-colors ${isActive ? "border-primary bg-card text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}
+                  className={`relative flex flex-col items-center justify-center gap-0.5 border-b-2 py-1.5 transition-colors ${isActive ? "border-primary bg-card text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}
                 >
                   <Icon className="h-3.5 w-3.5" />
                   <span>{t.label}</span>
+                  {accBadge > 0 && (
+                    <span className="absolute right-1 top-1 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-primary px-0.5 text-[8px] font-bold text-primary-foreground">
+                      {accBadge}
+                    </span>
+                  )}
                 </button>
               );
             })}
@@ -2002,6 +2013,19 @@ export function Character2DStudio({
                   </>
                 );
               })()}
+
+            {inspectorTab === "accessories" && (
+              <AccessoriesInspector2D
+                accessories={activeChar.accessories}
+                onChange={(nextAcc) =>
+                  updateActiveChar((c) => ({
+                    ...c,
+                    accessories: nextAcc,
+                  }))
+                }
+                onSuggestZoom={(z) => setCameraZoom(z)}
+              />
+            )}
 
             {inspectorTab === "body" && (
               <>

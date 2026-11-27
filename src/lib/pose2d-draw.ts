@@ -11,9 +11,10 @@ import {
   type HeadPack2D,
   type RenderMode2D,
 } from "./character2d-types";
+import { serializeAccessoriesSignature2D } from "./character2d-accessories";
 import {
   resolveIllustratedBottomPack2D,
-  resolveIllustratedFacePack2D,
+  resolveIllustratedFacePacks2D,
   resolveIllustratedFootwearPack2D,
   resolveIllustratedHairPack2D,
   resolveIllustratedTopPack2D,
@@ -138,13 +139,13 @@ export function hasRequiredCharacterImages2D(
     return false;
   }
   if (!isBackFacingAngle2D(ang)) {
-    const facePack =
-      resolveIllustratedFacePack2D(char.face.eyeStyle) ??
-      resolveIllustratedFacePack2D(char.face.browStyle) ??
-      resolveIllustratedFacePack2D(char.face.noseStyle) ??
-      resolveIllustratedFacePack2D(char.face.mouthStyle);
-    const faceAng = facePack?.angles[ang];
-    if (faceAng && !isImageLoaded(imageMap.get(faceAng.eyeLeftBase))) {
+    const facePacks = resolveIllustratedFacePacks2D(char.face);
+    const eyeAng = facePacks.eyes?.angles[ang];
+    if (eyeAng && !isImageLoaded(imageMap.get(eyeAng.eyeLeftBase))) {
+      return false;
+    }
+    const browAng = facePacks.brows?.angles[ang];
+    if (browAng && !isImageLoaded(imageMap.get(browAng.browLeft))) {
       return false;
     }
   }
@@ -166,6 +167,7 @@ function makeCharRigCacheKey(
   const customSig = char.customLayers
     .map((l) => `${l.id}:${l.assetId}:${l.zLayer}:${l.tintEnabled ? l.tintColor : ""}`)
     .join(";");
+  const accSig = serializeAccessoriesSignature2D(char.accessories);
   return [
     `v2k`,
     char.id,
@@ -200,6 +202,7 @@ function makeCharRigCacheKey(
     char.face.offsetY,
     expr,
     fx,
+    accSig,
     customSig,
   ].join("|");
 }
@@ -592,10 +595,12 @@ export function buildCharacterRigSlices(
 
   // For short-sleeve / bare-torso outfits on non-profile angles, render a cached bare-body reference
   // so bare forearms, wrists, thumbs, and hands are sliced 100% cleanly with ZERO hoodie/cargo pocket bleed!
+  // Long-sleeve illustrated tops (e.g. Suit Blazer) keep their sleeved forearms from `master`.
+  const resolvedTopPack = resolveIllustratedTopPack2D(effectiveChar.clothes.top);
   const hasShortOrNoSleeve =
     effectiveChar.clothes.top === "none" ||
-    effectiveChar.clothes.top === "zip_hoodie_tee" ||
-    effectiveChar.clothes.top === "tshirt";
+    effectiveChar.clothes.top === "tshirt" ||
+    Boolean(resolvedTopPack?.shortSleeve);
   const bareBodyMaster =
     !profile && hasShortOrNoSleeve
       ? (() => {
@@ -645,8 +650,9 @@ export function buildCharacterRigSlices(
     const wr = side === "left" ? wrL : wrR;
     const tip = side === "left" ? hTipL : hTipR;
 
-    // On 90°/270° profile, align both sleeve cuff and bare forearm cutout concentrically onto `el` and `wr`
+    // On 90°/270° profile, align both sleeve cuff and bare forearm/hand cutout concentrically onto `el` and `wr`
     // so bending the elbow in punches/blocks never creates a horizontal detachment seam!
+    // Long-sleeve tops keep the sleeved arm down to the wrist cuff (`wr.y + 8`) and stamp only the bare hand below!
     const profArmShiftX = profile && profileForearmCutout ? (actor.angle === 90 ? 10 : -10) : 0;
     const armMaster = profile
       ? profileForearmCutout
@@ -660,10 +666,24 @@ export function buildCharacterRigSlices(
             cx.scale(RIG_SCALE, RIG_SCALE);
             cx.save();
             cx.beginPath();
-            cx.rect(Math.max(0, sh.x - 42), Math.max(0, sh.y - 44), 96, el.y - sh.y + 38);
+            const sleeveEndY = hasShortOrNoSleeve ? el.y + 38 : wr.y + 10;
+            cx.rect(
+              Math.max(0, sh.x - 42),
+              Math.max(0, sh.y - 44),
+              96,
+              Math.max(40, sleeveEndY - (sh.y - 44)),
+            );
             cx.clip();
             cx.drawImage(master, -profArmShiftX * 0.45, 0, CHAR2D_W, CHAR2D_H);
             cx.restore();
+            cx.save();
+            if (!hasShortOrNoSleeve) {
+              // Long-sleeve top: clip bare cutout strictly to the hand below the blazer cuff
+              const handClipY = Math.max(0, Math.round(wr.y - 2));
+              cx.beginPath();
+              cx.rect(0, handClipY, CHAR2D_W, CHAR2D_H - handClipY);
+              cx.clip();
+            }
             cx.drawImage(
               profileForearmCutout.canvas,
               profileForearmCutout.x - profArmShiftX,
@@ -671,6 +691,7 @@ export function buildCharacterRigSlices(
               profileForearmCutout.w,
               profileForearmCutout.h,
             );
+            cx.restore();
             return c;
           })()
         : master
