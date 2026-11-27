@@ -1876,10 +1876,28 @@ export function Character2DStudio({
                             key={topId}
                             type="button"
                             onClick={() =>
-                              updateActiveChar((c) => ({
-                                ...c,
-                                clothes: { ...c.clothes, top: topId },
-                              }))
+                              updateActiveChar((c) => {
+                                const prevPack = resolveIllustratedTopPack2D(c.clothes.top);
+                                const nextPack = resolveIllustratedTopPack2D(topId);
+                                const topColor =
+                                  nextPack &&
+                                  (!prevPack ||
+                                    c.clothes.topColor.toLowerCase() ===
+                                      prevPack.defaultPrimary.toLowerCase())
+                                    ? nextPack.defaultPrimary
+                                    : c.clothes.topColor;
+                                const topAccentColor =
+                                  nextPack?.defaultAccent &&
+                                  (!prevPack?.defaultAccent ||
+                                    c.clothes.topAccentColor.toLowerCase() ===
+                                      prevPack.defaultAccent.toLowerCase())
+                                    ? nextPack.defaultAccent
+                                    : c.clothes.topAccentColor;
+                                return {
+                                  ...c,
+                                  clothes: { ...c.clothes, top: topId, topColor, topAccentColor },
+                                };
+                              })
                             }
                             className={`rounded-xs border px-2 py-1.5 text-left font-semibold ${activeTopId === topId ? "border-foreground bg-primary text-primary-foreground" : "border-border bg-background hover:border-foreground"}`}
                           >
@@ -1923,10 +1941,21 @@ export function Character2DStudio({
                             key={botId}
                             type="button"
                             onClick={() =>
-                              updateActiveChar((c) => ({
-                                ...c,
-                                clothes: { ...c.clothes, bottom: botId },
-                              }))
+                              updateActiveChar((c) => {
+                                const prevPack = resolveIllustratedBottomPack2D(c.clothes.bottom);
+                                const nextPack = resolveIllustratedBottomPack2D(botId);
+                                const bottomColor =
+                                  nextPack &&
+                                  (!prevPack ||
+                                    c.clothes.bottomColor.toLowerCase() ===
+                                      prevPack.defaultPrimary.toLowerCase())
+                                    ? nextPack.defaultPrimary
+                                    : c.clothes.bottomColor;
+                                return {
+                                  ...c,
+                                  clothes: { ...c.clothes, bottom: botId, bottomColor },
+                                };
+                              })
                             }
                             className={`rounded-xs border px-2 py-1.5 text-left font-semibold ${activeBottomId === botId ? "border-foreground bg-primary text-primary-foreground" : "border-border bg-background hover:border-foreground"}`}
                           >
@@ -1971,10 +2000,35 @@ export function Character2DStudio({
                               key={fwId}
                               type="button"
                               onClick={() =>
-                                updateActiveChar((c) => ({
-                                  ...c,
-                                  clothes: { ...c.clothes, footwear: fwId },
-                                }))
+                                updateActiveChar((c) => {
+                                  const prevPack = resolveIllustratedFootwearPack2D(
+                                    c.clothes.footwear,
+                                  );
+                                  const nextPack = resolveIllustratedFootwearPack2D(fwId);
+                                  const footwearColor =
+                                    nextPack &&
+                                    (!prevPack ||
+                                      c.clothes.footwearColor.toLowerCase() ===
+                                        prevPack.defaultPrimary.toLowerCase())
+                                      ? nextPack.defaultPrimary
+                                      : c.clothes.footwearColor;
+                                  const footwearAccentColor =
+                                    nextPack?.defaultAccent &&
+                                    (!prevPack?.defaultAccent ||
+                                      c.clothes.footwearAccentColor.toLowerCase() ===
+                                        prevPack.defaultAccent.toLowerCase())
+                                      ? nextPack.defaultAccent
+                                      : c.clothes.footwearAccentColor;
+                                  return {
+                                    ...c,
+                                    clothes: {
+                                      ...c.clothes,
+                                      footwear: fwId,
+                                      footwearColor,
+                                      footwearAccentColor,
+                                    },
+                                  };
+                                })
                               }
                               className={`rounded-xs border px-2 py-1.5 text-left font-semibold ${activeFootwearId === fwId ? "border-foreground bg-primary text-primary-foreground" : "border-border bg-background hover:border-foreground"}`}
                             >

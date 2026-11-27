@@ -40,6 +40,10 @@ export interface IllustratedClothingPack2D {
   defaultPrimary: string;
   defaultAccent?: string;
   shortSleeve?: boolean;
+  /** True for low-cut shoes (e.g. Dress Loafers) so natural ankle skin remains visible between trouser hem & shoe collar. */
+  lowCut?: boolean;
+  /** True for open-collar / lapelled tops (e.g. Suit Blazer) so collar warp expands for wider necks without pulling inward off narrow shoulders. */
+  openCollar?: boolean;
 }
 
 export interface IllustratedFaceAngleAssets2D {
@@ -142,7 +146,7 @@ export const ILLUSTRATED_HAIR_PACKS_2D: IllustratedHairPack2D[] = [
   {
     id: "curtains",
     name: "Center-Part Curtains",
-    ready: false,
+    ready: true,
     frontFrames: angleMap("/characters/parts/hair/curtains", "front", ALL8),
     backFrames: angleMap("/characters/parts/hair/curtains", "back", ALL8),
     canvasW: 280,
@@ -175,21 +179,16 @@ export const ILLUSTRATED_TOP_PACKS_2D: IllustratedClothingPack2D[] = [
   {
     id: "blazer",
     name: "Suit Blazer + Shirt",
-    ready: false,
+    ready: true,
     slot: "top",
     frames: angleMap("/characters/parts/tops/suit-blazer-shirt", "base", ALL8),
-    accentMasks: {
-      0: "/characters/parts/tops/suit-blazer-shirt/mask-angle-0.webp",
-      45: "/characters/parts/tops/suit-blazer-shirt/mask-angle-45.webp",
-      90: "/characters/parts/tops/suit-blazer-shirt/mask-angle-90.webp",
-      270: "/characters/parts/tops/suit-blazer-shirt/mask-angle-270.webp",
-      315: "/characters/parts/tops/suit-blazer-shirt/mask-angle-315.webp",
-    },
+    accentMasks: angleMap("/characters/parts/tops/suit-blazer-shirt", "mask", ALL8),
     primaryLabel: "Blazer Color (RGB)",
     accentLabel: "Dress Shirt (RGB)",
     defaultPrimary: "#1e293b",
     defaultAccent: "#f8fafc",
     shortSleeve: false,
+    openCollar: true,
   },
 ];
 
@@ -206,7 +205,7 @@ export const ILLUSTRATED_BOTTOM_PACKS_2D: IllustratedClothingPack2D[] = [
   {
     id: "trousers",
     name: "Dress Trousers",
-    ready: false,
+    ready: true,
     slot: "bottom",
     frames: angleMap("/characters/parts/bottoms/dress-trousers", "base", ALL8),
     primaryLabel: "Trousers Color (RGB)",
@@ -230,7 +229,7 @@ export const ILLUSTRATED_FOOTWEAR_PACKS_2D: IllustratedClothingPack2D[] = [
   {
     id: "loafers",
     name: "Dress Loafers",
-    ready: false,
+    ready: true,
     slot: "footwear",
     frames: angleMap("/characters/parts/footwear/dress-loafers", "base", ALL8),
     accentMasks: angleMap("/characters/parts/footwear/dress-loafers", "mask", ALL8),
@@ -238,6 +237,7 @@ export const ILLUSTRATED_FOOTWEAR_PACKS_2D: IllustratedClothingPack2D[] = [
     accentLabel: "Sole & Heel (RGB)",
     defaultPrimary: "#292524",
     defaultAccent: "#111827",
+    lowCut: true,
   },
 ];
 
@@ -284,7 +284,7 @@ export const ILLUSTRATED_FACE_PACKS_2D: IllustratedFacePack2D[] = [
   {
     id: "cool",
     name: "Cool Narrow",
-    ready: false,
+    ready: true,
     angles: buildFaceAngles("/characters/parts/face/cool-narrow"),
     eyeW: 72,
     eyeH: 56,

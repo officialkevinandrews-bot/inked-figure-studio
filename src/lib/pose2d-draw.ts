@@ -601,36 +601,35 @@ export function buildCharacterRigSlices(
     effectiveChar.clothes.top === "none" ||
     effectiveChar.clothes.top === "tshirt" ||
     Boolean(resolvedTopPack?.shortSleeve);
-  const bareBodyMaster =
-    !profile && hasShortOrNoSleeve
-      ? (() => {
-          const c = document.createElement("canvas");
-          c.width = CHAR2D_W * RIG_SCALE;
-          c.height = CHAR2D_H * RIG_SCALE;
-          const cctx = c.getContext("2d")!;
-          cctx.imageSmoothingEnabled = true;
-          cctx.imageSmoothingQuality = "high";
-          cctx.scale(RIG_SCALE, RIG_SCALE);
-          renderCharacter2DSync(
-            cctx,
-            {
-              ...effectiveChar,
-              hair: { ...effectiveChar.hair, style: "none" },
-              clothes: {
-                ...effectiveChar.clothes,
-                top: "none",
-                bottom: "none",
-                footwear: "none",
-              },
+  const bareBodyMaster = !profile
+    ? (() => {
+        const c = document.createElement("canvas");
+        c.width = CHAR2D_W * RIG_SCALE;
+        c.height = CHAR2D_H * RIG_SCALE;
+        const cctx = c.getContext("2d")!;
+        cctx.imageSmoothingEnabled = true;
+        cctx.imageSmoothingQuality = "high";
+        cctx.scale(RIG_SCALE, RIG_SCALE);
+        renderCharacter2DSync(
+          cctx,
+          {
+            ...effectiveChar,
+            hair: { ...effectiveChar.hair, style: "none" },
+            clothes: {
+              ...effectiveChar.clothes,
+              top: "none",
+              bottom: "none",
+              footwear: "none",
             },
-            baseModel,
-            [],
-            imageMap,
-            headPack,
-          );
-          return c;
-        })()
-      : null;
+          },
+          baseModel,
+          [],
+          imageMap,
+          headPack,
+        );
+        return c;
+      })()
+    : null;
 
   const profileForearmCutout =
     profile && usesIllustratedBodyCutout
@@ -707,12 +706,13 @@ export function buildCharacterRigSlices(
           traceArmOuterRegion(cx, a, side, topPad, elbowR);
           cx.clip();
           if (bareBodyMaster) {
-            // Draw bare forearm/hand first (100% free of hoodie/cargo pocket fragments!),
-            // then overlay the crisp short sleeve cleanly above the elbow cuff (y <= 368).
+            // Draw bare hand/forearm first (100% free of blazer-hem or cargo-pocket bleed!),
+            // then overlay the sleeve cleanly down to elbow (short sleeve) or wrist cuff (long sleeve).
             cx.drawImage(bareBodyMaster, 0, 0, CHAR2D_W, CHAR2D_H);
             cx.save();
             cx.beginPath();
-            cx.rect(0, 0, CHAR2D_W, 370);
+            const clipBottomY = hasShortOrNoSleeve ? 370 : Math.min(CHAR2D_H, wr.y + 4);
+            cx.rect(0, 0, CHAR2D_W, clipBottomY);
             cx.clip();
             cx.drawImage(master, 0, 0, CHAR2D_W, CHAR2D_H);
             cx.restore();

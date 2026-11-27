@@ -689,15 +689,20 @@ function getClothingMaskedBaseCanvas(
   anchors: BodyAngleAnchors,
   sil: HeadSilhouetteInfo | null,
   hasHair: boolean,
-  hasTop: boolean,
+  topImg: HTMLImageElement | HTMLCanvasElement | null,
+  topKey: string,
   hasBottom: boolean,
-  hasFootwear: boolean,
+  footwearImg: HTMLImageElement | null,
+  footwearKey: string,
+  lowCutFootwear: boolean,
 ): HTMLCanvasElement {
+  const hasTop = Boolean(topImg);
+  const hasFootwear = Boolean(footwearImg);
   if (!hasHair && !hasTop && !hasBottom && !hasFootwear) return processedBase;
   const w = processedBase.width;
   const h = processedBase.height;
   const s = w / CHAR2D_W;
-  const key = `cmask2|${silKey}|${w}x${h}|${angle}|${hasHair ? 1 : 0}${hasTop ? 1 : 0}${hasBottom ? 1 : 0}${hasFootwear ? 1 : 0}`;
+  const key = `cmask4|${silKey}|${w}x${h}|${angle}|h${hasHair ? 1 : 0}|t:${topKey}|b${hasBottom ? 1 : 0}|f:${footwearKey}:${lowCutFootwear ? 1 : 0}`;
   const hit = PROCESSED_SPRITE_CACHE.get(key);
   if (hit) return hit;
 
@@ -722,45 +727,81 @@ function getClothingMaskedBaseCanvas(
     }
   }
 
-  // 2. Hide covered central torso & inner deltoids under equipped top while keeping neck V-opening & bare forearms intact
-  if (hasTop) {
+  // 2. Hide covered bare torso & deltoids under equipped top:
+  //    - Upper shoulder/deltoid band (y = 234..334): clear covered deltoids/chest while keeping neck V-opening intact
+  //      so zero bare shoulder slivers poke out past slightly narrower short-sleeve tops (e.g. 45°/315° Zip Hoodie).
+  //    - Lower torso band (y = 335..484): clear strictly inside the equipped top's actual opaque silhouette
+  //      (eroded 1px inward) so bare forearms beside short sleeves (e.g. 135°/225° Zip Hoodie) are NEVER clipped!
+  if (topImg) {
     const neckCx = sil
       ? (sil.collarNeckL + sil.collarNeckR) / 2
       : (anchors.neckL + anchors.neckR) / 2;
-    const baseVHalf = sil ? Math.max(26, (sil.collarNeckR - sil.collarNeckL) * 0.56) : 26;
+    const baseVHalf = sil ? Math.max(34, (sil.collarNeckR - sil.collarNeckL) * 0.78) : 34;
     const isFrontV = angle === 0 || angle === 45 || angle === 315;
-    const isProf = angle === 90 || angle === 270;
     const yTop0 = Math.floor(234 * s);
     const yTop1 = Math.ceil(334 * s);
     const xTop0 = Math.floor(124 * s);
     const xTop1 = Math.ceil(356 * s);
     for (let y = yTop0; y <= yTop1; y++) {
       const ly = y / s;
-      const vHalfW = isFrontV ? Math.max(0, baseVHalf - Math.max(0, ly - 236) * 0.68) : 0;
-      const vCx = neckCx + (angle === 45 ? 4 : angle === 315 ? -4 : 0);
+      const vHalfW = isFrontV ? Math.max(0, baseVHalf - Math.max(0, ly - 236) * 0.56) : 0;
+      const vCx = neckCx + (angle === 45 ? 2 : angle === 315 ? -2 : 0);
       for (let x = xTop0; x <= xTop1; x++) {
         const lx = x / s;
+        if (isFrontV && ly <= 254 && Math.abs(lx - neckCx) <= 44) continue;
         if (vHalfW > 0 && Math.abs(lx - vCx) <= vHalfW) continue;
         d[(y * w + x) * 4 + 3] = 0;
       }
     }
-    const torsoClearL = Math.floor((isProf ? 155 : anchors.waistL + 6) * s);
-    const torsoClearR = Math.ceil((isProf ? 325 : anchors.waistR - 6) * s);
+
     const yMid0 = Math.floor(335 * s);
-    const yMid1 = Math.ceil(476 * s);
-    for (let y = yMid0; y <= yMid1; y++) {
-      for (let x = torsoClearL; x <= torsoClearR; x++) {
-        d[(y * w + x) * 4 + 3] = 0;
+    const yMid1 = Math.min(h - 1, Math.ceil(484 * s));
+    const bandH = yMid1 - yMid0 + 1;
+    const tc = document.createElement("canvas");
+    tc.width = w;
+    tc.height = bandH;
+    const tctx = tc.getContext("2d")!;
+    const tw =
+      topImg instanceof HTMLImageElement ? topImg.naturalWidth || topImg.width : topImg.width;
+    const th =
+      topImg instanceof HTMLImageElement ? topImg.naturalHeight || topImg.height : topImg.height;
+    const ts = tw / CHAR2D_W;
+    tctx.drawImage(
+      topImg,
+      0,
+      (yMid0 / s) * ts,
+      tw,
+      Math.min(th - (yMid0 / s) * ts, (bandH / s) * ts),
+      0,
+      0,
+      w,
+      bandH,
+    );
+    const td = tctx.getImageData(0, 0, w, bandH).data;
+    const er = Math.max(1, Math.round(1.25 * s));
+    for (let ly = er; ly < bandH - er; ly++) {
+      const y = yMid0 + ly;
+      const rowOff = ly * w;
+      for (let x = er; x < w - er; x++) {
+        if (
+          (td[(rowOff + x) * 4 + 3] ?? 0) >= 180 &&
+          (td[(rowOff + x - er) * 4 + 3] ?? 0) >= 150 &&
+          (td[(rowOff + x + er) * 4 + 3] ?? 0) >= 150 &&
+          (td[((ly - er) * w + x) * 4 + 3] ?? 0) >= 150 &&
+          (td[((ly + er) * w + x) * 4 + 3] ?? 0) >= 150
+        ) {
+          d[(y * w + x) * 4 + 3] = 0;
+        }
       }
     }
   }
 
   // 3. Hide solid dark briefs at hips using RAW colored base pixels (NEVER black-and-white Manga pixels!)
-  //    Erode+dilate the solid dark briefs core so thin 2-4px forearm/wrist/hand ink outlines are 100% preserved!
+  //    Protect warm bare skin pixels so hanging hands/wrists right beside hips are 100% preserved!
   if (hasBottom) {
-    const hipCoreL = Math.floor((anchors.hipL + 6) * s);
-    const hipCoreR = Math.ceil((anchors.hipR - 6) * s);
-    const yB0 = Math.floor(432 * s);
+    const hipCoreL = Math.floor((anchors.hipL + 8) * s);
+    const hipCoreR = Math.ceil((anchors.hipR - 8) * s);
+    const yB0 = Math.floor(416 * s);
     const yB1 = Math.ceil(584 * s);
     const xB0 = Math.floor(135 * s);
     const xB1 = Math.ceil(345 * s);
@@ -787,6 +828,17 @@ function getClothingMaskedBaseCanvas(
       );
       rawBandData = rctx.getImageData(0, 0, bandW, bandH).data;
     }
+
+    const isRawWarmSkin = (q: number): boolean => {
+      if (!rawBandData) return false;
+      const ri = q * 4;
+      if ((rawBandData[ri + 3] ?? 0) < 40) return false;
+      const r = rawBandData[ri] ?? 0;
+      const g = rawBandData[ri + 1] ?? 0;
+      const b = rawBandData[ri + 2] ?? 0;
+      const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+      return r > g + 5 && g > b + 2 && r - b >= 15 && lum >= 108;
+    };
 
     const darkNeutral = new Uint8Array(bandW * bandH);
     for (let ly = 0; ly < bandH; ly++) {
@@ -831,8 +883,8 @@ function getClothingMaskedBaseCanvas(
       }
     }
 
-    // Dilate surviving briefs core by 3.5*s so the briefs border clears cleanly without touching bare hands
-    const dilR = Math.max(3, Math.round(3.5 * s));
+    // Dilate surviving briefs core by 3*s so the briefs border clears cleanly without ever biting bare hands/wrists
+    const dilR = Math.max(3, Math.round(3 * s));
     const briefsMask = new Uint8Array(bandW * bandH);
     for (let ly = 0; ly < bandH; ly++) {
       for (let lx = 0; lx < bandW; lx++) {
@@ -858,7 +910,16 @@ function getClothingMaskedBaseCanvas(
         const q = ly * bandW + lx;
         const i = (y * w + x) * 4;
         if ((d[i + 3] ?? 0) < 10) continue;
-        if (briefsMask[q] || (x >= hipCoreL && x <= hipCoreR && wy >= 468)) {
+        if (briefsCore[q]) {
+          d[i + 3] = 0;
+        } else if (briefsMask[q] && !isRawWarmSkin(q)) {
+          d[i + 3] = 0;
+        } else if (
+          x >= hipCoreL &&
+          x <= hipCoreR &&
+          wy >= 468 &&
+          (wy >= 546 || !isRawWarmSkin(q))
+        ) {
           d[i + 3] = 0;
         }
       }
@@ -874,15 +935,72 @@ function getClothingMaskedBaseCanvas(
     }
   }
 
-  // 4. Hide bare ankles, heels, and toes under equipped footwear
-  if (hasFootwear) {
-    const yF0 = Math.floor(844 * s);
-    const yF1 = Math.min(h - 1, Math.ceil(970 * s));
+  // 4. Hide covered feet/toes (and ankles for high-top shoes) under equipped footwear.
+  //    Low-cut footwear (e.g. Dress Loafers) keeps natural bare ankles down to the loafer collar
+  //    while erasing any bare foot/heel pixel below y=910 or extending horizontally outside the loafer wall!
+  if (footwearImg) {
     const xF0 = Math.floor(95 * s);
     const xF1 = Math.ceil(385 * s);
-    for (let y = yF0; y <= yF1; y++) {
-      for (let x = xF0; x <= xF1; x++) {
-        d[(y * w + x) * 4 + 3] = 0;
+    const yF1 = Math.min(h - 1, Math.ceil(970 * s));
+    if (!lowCutFootwear) {
+      const yF0 = Math.floor(844 * s);
+      for (let y = yF0; y <= yF1; y++) {
+        for (let x = xF0; x <= xF1; x++) {
+          d[(y * w + x) * 4 + 3] = 0;
+        }
+      }
+    } else {
+      const yProbe0 = Math.floor(894 * s);
+      const yHardCut = Math.floor(910 * s);
+      const probeH = yF1 - yProbe0 + 1;
+      const probeW = xF1 - xF0 + 1;
+      const fc = document.createElement("canvas");
+      fc.width = probeW;
+      fc.height = probeH;
+      const fctx = fc.getContext("2d")!;
+      const fs = (footwearImg.naturalWidth || footwearImg.width || CHAR2D_W) / CHAR2D_W;
+      fctx.drawImage(
+        footwearImg,
+        (xF0 / s) * fs,
+        (yProbe0 / s) * fs,
+        (probeW / s) * fs,
+        (probeH / s) * fs,
+        0,
+        0,
+        probeW,
+        probeH,
+      );
+      const fd = fctx.getImageData(0, 0, probeW, probeH).data;
+      // For each x column, record whether the loafer exists at or below yProbe0 (ankle-to-heel footprint)
+      const colHasShoe = new Uint8Array(probeW);
+      for (let lx = 0; lx < probeW; lx++) {
+        for (let ly = 0; ly < probeH; ly++) {
+          if ((fd[(ly * probeW + lx) * 4 + 3] ?? 0) >= 120) {
+            colHasShoe[lx] = 1;
+            break;
+          }
+        }
+      }
+      const padX = Math.max(1, Math.round(1 * s));
+      for (let y = yProbe0; y <= yF1; y++) {
+        const ly = y - yProbe0;
+        for (let lx = 0; lx < probeW; lx++) {
+          const x = xF0 + lx;
+          if (y >= yHardCut) {
+            d[(y * w + x) * 4 + 3] = 0;
+            continue;
+          }
+          // Above yHardCut (894..910): erase bare foot skin if it pokes outside the loafer's horizontal footprint
+          // OR if it is already covered inside the loafer upper!
+          const insideCol =
+            colHasShoe[lx] ||
+            (lx >= padX && colHasShoe[lx - padX]) ||
+            (lx + padX < probeW && colHasShoe[lx + padX]);
+          const coveredByShoe = (fd[(ly * probeW + lx) * 4 + 3] ?? 0) >= 160;
+          if (!insideCol || coveredByShoe) {
+            d[(y * w + x) * 4 + 3] = 0;
+          }
+        }
       }
     }
   }
@@ -4072,6 +4190,31 @@ export function renderCharacter2DSync(
   drawIllustratedHair2D(ctx, char, anchors, angle, mode, "back", imageMap, hairPack, headSil);
   drawCustomLayers2D(ctx, char, customParts, "behind", angle, imageMap);
 
+  const [refColL, refColR] = M1_REF_COLLAR_NECK[angle];
+  const rawDL = headSil ? Math.max(-26, Math.min(26, headSil.collarNeckL - refColL)) : 0;
+  const rawDR = headSil ? Math.max(-26, Math.min(26, headSil.collarNeckR - refColR)) : 0;
+  const collarFit: TopCollarFit2D | null = headSil
+    ? {
+        srcL: refColL,
+        srcR: refColR,
+        dL: topPack?.openCollar ? Math.min(5, rawDL) : rawDL,
+        dR: topPack?.openCollar ? Math.max(-5, rawDR) : rawDR,
+        angle,
+      }
+    : null;
+
+  const topSrcForMask = topPack?.frames[angle] ?? "";
+  const rawTopImgForMask = topSrcForMask ? (imageMap.get(topSrcForMask) ?? null) : null;
+  const effectiveTopForMask =
+    rawTopImgForMask && collarFit && (Math.abs(collarFit.dL) > 1 || Math.abs(collarFit.dR) > 1)
+      ? getCollarWarpedSourceCanvas(rawTopImgForMask, topSrcForMask, collarFit)
+      : rawTopImgForMask;
+  const topMaskKey = rawTopImgForMask
+    ? `${topSrcForMask}|cw:${collarFit ? Math.round(collarFit.dL * 2) : 0}:${collarFit ? Math.round(collarFit.dR * 2) : 0}`
+    : "";
+  const footwearSrcForMask = footwearPack?.frames[angle] ?? "";
+  const footwearImgForMask = footwearSrcForMask ? (imageMap.get(footwearSrcForMask) ?? null) : null;
+
   if (processedBaseCanvas) {
     const maskedBase = getClothingMaskedBaseCanvas(
       processedBaseCanvas,
@@ -4081,9 +4224,12 @@ export function renderCharacter2DSync(
       anchors,
       headSil,
       Boolean(hairPack),
-      Boolean(topPack),
+      effectiveTopForMask,
+      topMaskKey,
       Boolean(bottomPack),
-      Boolean(footwearPack),
+      footwearImgForMask,
+      footwearSrcForMask,
+      Boolean(footwearPack?.lowCut),
     );
     ctx.drawImage(maskedBase, 0, 0, CHAR2D_W, CHAR2D_H);
   }
@@ -4108,16 +4254,6 @@ export function renderCharacter2DSync(
     shadingDepth,
     imageMap,
   );
-  const [refColL, refColR] = M1_REF_COLLAR_NECK[angle];
-  const collarFit: TopCollarFit2D | null = headSil
-    ? {
-        srcL: refColL,
-        srcR: refColR,
-        dL: Math.max(-26, Math.min(26, headSil.collarNeckL - refColL)),
-        dR: Math.max(-26, Math.min(26, headSil.collarNeckR - refColR)),
-        angle,
-      }
-    : null;
   drawIllustratedClothing2D(
     ctx,
     topPack,

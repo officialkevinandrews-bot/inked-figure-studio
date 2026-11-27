@@ -248,21 +248,25 @@ export interface Source2DMetadata {
 export const EYE_STYLE_LABELS_2D: Partial<Record<EyeStyle2D, string>> = {
   none: "None",
   sharp: "Shonen Sharp",
+  cool: "Cool Narrow",
 };
 
 export const BROW_STYLE_LABELS_2D: Partial<Record<BrowStyle2D, string>> = {
   none: "None",
   sharp: "Shonen Sharp",
+  cool: "Cool Narrow",
 };
 
 export const NOSE_STYLE_LABELS_2D: Partial<Record<NoseStyle2D, string>> = {
   none: "None",
   sharp: "Shonen Sharp",
+  cool: "Cool Narrow",
 };
 
 export const MOUTH_STYLE_LABELS_2D: Partial<Record<MouthStyle2D, string>> = {
   none: "None",
   sharp: "Shonen Sharp",
+  cool: "Cool Narrow",
 };
 
 export const EXPRESSION_PRESETS_2D: Record<
@@ -295,21 +299,25 @@ export const FACE_FX_LABELS_2D: Record<FaceFx2D, string> = {
 export const HAIR_STYLE_LABELS_2D: Partial<Record<HairStyle2D, string>> = {
   none: "Bald / Base",
   spiky: "Spiky Anime",
+  curtains: "Center-Part Curtains",
 };
 
 export const TOP_STYLE_LABELS_2D: Partial<Record<TopStyle2D, string>> = {
   none: "Bare Torso",
   zip_hoodie_tee: "Zip Hoodie + Tee",
+  blazer: "Suit Blazer + Shirt",
 };
 
 export const BOTTOM_STYLE_LABELS_2D: Partial<Record<BottomStyle2D, string>> = {
   none: "Base Briefs",
   cargo: "Cargo Joggers",
+  trousers: "Dress Trousers",
 };
 
 export const FOOTWEAR_STYLE_LABELS_2D: Partial<Record<FootwearStyle2D, string>> = {
   none: "Barefoot",
   sneakers: "High-Top Sneakers",
+  loafers: "Dress Loafers",
 };
 
 export const SKIN_PRESETS_2D: { label: string; color: string | null }[] = [

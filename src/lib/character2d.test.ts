@@ -381,32 +381,42 @@ describe("2D Character Creator Studio data model & Model #1", () => {
     }
   });
 
-  it("resolves face packs independently per feature and gates unready Set 2 packs & style presets safely", () => {
-    // Independent per-feature face pack resolution (none hides only that feature while others stay active)
+  it("resolves Set 2 packs, supports per-feature Sharp/Cool face mix-and-match, and unlocks Set 2 presets", () => {
+    // Independent per-feature face pack resolution (mix Shonen Sharp + Cool Narrow + none freely)
     const mixed = resolveIllustratedFacePacks2D({
-      eyeStyle: "sharp",
-      browStyle: "none",
-      noseStyle: "sharp",
+      eyeStyle: "cool",
+      browStyle: "sharp",
+      noseStyle: "cool",
       mouthStyle: "none",
     });
-    expect(mixed.eyes?.id).toBe("sharp");
-    expect(mixed.brows).toBeNull();
-    expect(mixed.nose?.id).toBe("sharp");
+    expect(mixed.eyes?.id).toBe("cool");
+    expect(mixed.brows?.id).toBe("sharp");
+    expect(mixed.nose?.id).toBe("cool");
     expect(mixed.mouth).toBeNull();
 
-    // Long-sleeve blazer catalog metadata is declared cleanly with shortSleeve=false and two RGB zones
-    const blazerMeta = ILLUSTRATED_TOP_PACKS_2D.find((p) => p.id === "blazer");
-    expect(blazerMeta).toBeDefined();
-    expect(blazerMeta?.shortSleeve).toBe(false);
-    expect(blazerMeta?.accentLabel).toBe("Dress Shirt (RGB)");
+    // All 5 Set 2 packs are ready and resolve cleanly
+    expect(resolveIllustratedHairPack2D("curtains")?.id).toBe("curtains");
+    const blazerPack = resolveIllustratedTopPack2D("blazer");
+    expect(blazerPack?.id).toBe("blazer");
+    expect(blazerPack?.shortSleeve).toBe(false);
+    expect(blazerPack?.openCollar).toBe(true);
+    expect(blazerPack?.accentLabel).toBe("Dress Shirt (RGB)");
+    expect(blazerPack?.accentMasks?.[0]).toContain("mask-angle-0.webp");
+    expect(blazerPack?.accentMasks?.[180]).toContain("mask-angle-180.webp");
+    expect(resolveIllustratedBottomPack2D("trousers")?.id).toBe("trousers");
+    const loafersPack = resolveIllustratedFootwearPack2D("loafers");
+    expect(loafersPack?.id).toBe("loafers");
+    expect(loafersPack?.lowCut).toBe(true);
+    expect(resolveIllustratedFacePack2D("cool")?.id).toBe("cool");
 
-    // Until Set 2 WebP art is marked ready=true, unready packs fall back safely and presets stay filtered
+    const blazerMeta = ILLUSTRATED_TOP_PACKS_2D.find((p) => p.id === "blazer");
+    expect(blazerMeta?.ready).toBe(true);
+
+    // Data-driven presets unlock all Set 1 + Set 2 outfits once their packs are ready
     const availablePresets = getAvailableStylePresets2D();
     expect(CHARACTER_STYLE_PRESETS_2D.length).toBeGreaterThanOrEqual(5);
-    expect(availablePresets.length).toBeGreaterThanOrEqual(2);
-    for (const preset of availablePresets) {
-      expect(preset.clothes.top).not.toBe("blazer");
-    }
+    expect(availablePresets.length).toBe(CHARACTER_STYLE_PRESETS_2D.length);
+    expect(availablePresets.some((p) => p.clothes.top === "blazer")).toBe(true);
   });
 
   it("provides a complete 6-slot modular manga accessories catalog with deterministic cache signatures", () => {
