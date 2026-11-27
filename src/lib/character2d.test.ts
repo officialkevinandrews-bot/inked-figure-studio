@@ -14,7 +14,7 @@ import {
   DEFAULT_HEAD_SHAPE_ID,
   resolveHeadPack2D,
 } from "./character2d-heads";
-import { resolveEffectiveAnchors } from "./character2d-draw";
+import { mapCollarWarpDstXToSrcX, resolveEffectiveAnchors } from "./character2d-draw";
 import { processMangaGpenPixels } from "./character2d-slicer";
 import {
   BASE_MODELS_2D_STORAGE_KEY,
@@ -295,5 +295,78 @@ describe("2D Character Creator Studio data model & Model #1", () => {
     // 7. Dark briefs interior turns pure opaque white while waistband boundary gets a continuous black seam
     expect(pxAt(28, 38).r).toBeLessThan(40);
     expect(pxAt(28, 46)).toEqual({ r: 255, g: 255, b: 255, a: 255 });
+  });
+
+  it("maps bidirectional collar & hood coordinates monotonically with locked shoulders and exact rim alignment", () => {
+    const cases: Array<{
+      name: string;
+      srcL: number;
+      srcR: number;
+      dL: number;
+      dR: number;
+      reachL: number;
+      reachR: number;
+    }> = [
+      // Strong Square 0°: wide muscular outward expansion on both sides
+      { name: "wide-0", srcL: 220, srcR: 263, dL: -16, dR: 15, reachL: 64, reachR: 64 },
+      // Slim neck inward contraction on both sides
+      { name: "slim-0", srcL: 220, srcR: 263, dL: 7, dR: -7, reachL: 64, reachR: 64 },
+      // 45° shifted nape + wide throat (Strong Square / Sharp V)
+      { name: "shift-45", srcL: 203, srcR: 245, dL: 10, dR: 21, reachL: 82, reachR: 64 },
+      // 315° extreme left shift (Sharp V / Strong Square)
+      { name: "shift-315", srcL: 237, srcR: 279, dL: -24, dR: -18, reachL: 64, reachR: 82 },
+    ];
+
+    for (const c of cases) {
+      const anchorL = c.srcL - c.reachL;
+      const anchorR = c.srcR + c.reachR;
+
+      // 1. Outer shoulders remain 100% locked outside [anchorL, anchorR] and whenever yFac = 0
+      expect(
+        mapCollarWarpDstXToSrcX(anchorL, 1, c.srcL, c.srcR, c.dL, c.dR, anchorL, anchorR),
+      ).toBe(anchorL);
+      expect(
+        mapCollarWarpDstXToSrcX(anchorL - 12, 1, c.srcL, c.srcR, c.dL, c.dR, anchorL, anchorR),
+      ).toBe(anchorL - 12);
+      expect(
+        mapCollarWarpDstXToSrcX(anchorR, 1, c.srcL, c.srcR, c.dL, c.dR, anchorL, anchorR),
+      ).toBe(anchorR);
+      expect(
+        mapCollarWarpDstXToSrcX(anchorR + 12, 1, c.srcL, c.srcR, c.dL, c.dR, anchorL, anchorR),
+      ).toBe(anchorR + 12);
+      expect(mapCollarWarpDstXToSrcX(c.srcL, 0, c.srcL, c.srcR, c.dL, c.dR, anchorL, anchorR)).toBe(
+        c.srcL,
+      );
+
+      // 2. Destination collar rims map back to the exact original collar rims at yFac = 1
+      expect(
+        mapCollarWarpDstXToSrcX(c.srcL + c.dL, 1, c.srcL, c.srcR, c.dL, c.dR, anchorL, anchorR),
+      ).toBeCloseTo(c.srcL, 6);
+      expect(
+        mapCollarWarpDstXToSrcX(c.srcR + c.dR, 1, c.srcL, c.srcR, c.dL, c.dR, anchorL, anchorR),
+      ).toBeCloseTo(c.srcR, 6);
+
+      // 3. Smooth vertical decay at yFac = 0.5 halves the shift
+      expect(
+        mapCollarWarpDstXToSrcX(
+          c.srcL + c.dL * 0.5,
+          0.5,
+          c.srcL,
+          c.srcR,
+          c.dL,
+          c.dR,
+          anchorL,
+          anchorR,
+        ),
+      ).toBeCloseTo(c.srcL, 6);
+
+      // 4. Strictly monotonic across the entire shoulder-to-shoulder span (zero folds or tears)
+      let prev = -Infinity;
+      for (let x = anchorL; x <= anchorR; x += 1) {
+        const sx = mapCollarWarpDstXToSrcX(x, 1, c.srcL, c.srcR, c.dL, c.dR, anchorL, anchorR);
+        expect(sx).toBeGreaterThan(prev);
+        prev = sx;
+      }
+    }
   });
 });

@@ -178,12 +178,12 @@ function getProcessedPartSprite(
 }
 
 function getRecoloredIllustratedPart(
-  baseImg: HTMLImageElement,
+  baseImg: HTMLImageElement | HTMLCanvasElement,
   srcKey: string,
   primaryHex: string,
   mode: RenderMode2D,
   shadingDepth: ShadingDepth2D,
-  accentMaskImg?: HTMLImageElement | null,
+  accentMaskImg?: HTMLImageElement | HTMLCanvasElement | null,
   accentKey?: string,
   accentHex?: string | null,
   targetW?: number,
@@ -277,6 +277,9 @@ interface HeadSilhouetteInfo {
   neckR: number;
   neckCx: number;
   neckW: number;
+  /** Exact neck [left, right] measured in the hoodie-collar contact band (y = 212..216). */
+  collarNeckL: number;
+  collarNeckR: number;
   headMaskCanvas: HTMLCanvasElement;
 }
 
@@ -292,6 +295,36 @@ const M1_REF_SKULL_W: Record<Angle2D, number> = {
   270: 101,
   315: 94,
 };
+
+/**
+ * Exact Model #1 (Classic Oval) neck [left, right] collar-contact edges measured in angle-aware bands:
+ * - Nape / back-of-neck side measured at y = 203..209 (right at the hood crest, strictly above the y = 211 shoulder-blend seam)
+ * - Front / throat side measured at y = 212..217 (strictly below protruding jaw/chin contours)
+ */
+const M1_REF_COLLAR_NECK: Record<Angle2D, readonly [number, number]> = {
+  0: [220, 263],
+  45: [203, 245],
+  90: [203, 245],
+  135: [204, 249],
+  180: [215, 262],
+  225: [237, 282],
+  270: [242, 284],
+  315: [237, 279],
+};
+
+function getCollarMeasureYBands2D(angle: Angle2D): {
+  leftBand: readonly [number, number];
+  rightBand: readonly [number, number];
+} {
+  if (angle === 0) return { leftBand: [205, 210], rightBand: [205, 210] };
+  if (angle === 180) return { leftBand: [204, 209], rightBand: [204, 209] };
+  // Facing right (45°, 90°, 135°): left = nape (hood crest), right = throat (below jaw/chin)
+  if (angle === 45 || angle === 135) return { leftBand: [203, 208], rightBand: [212, 216] };
+  if (angle === 90) return { leftBand: [204, 209], rightBand: [212, 217] };
+  // Facing left (225°, 270°, 315°): left = throat (below jaw/chin), right = nape (hood crest)
+  if (angle === 270) return { leftBand: [212, 217], rightBand: [204, 209] };
+  return { leftBand: [212, 216], rightBand: [203, 208] };
+}
 
 function analyzeBaseHeadSilhouette(
   processedBase: HTMLCanvasElement,
@@ -403,6 +436,23 @@ function analyzeBaseHeadSilhouette(
   const neckCx = (neckL + neckR) / 2;
   const neckW = neckR - neckL + 1;
 
+  // Measure exact collar-contact neck edges per side using angle-aware nape vs. throat Y bands
+  const { leftBand, rightBand } = getCollarMeasureYBands2D(angle);
+  const colLs: number[] = [];
+  for (let y = leftBand[0]; y <= leftBand[1]; y++) {
+    const sp = rowSpan(y);
+    if (sp && sp[1] - sp[0] >= 22) colLs.push(sp[0]);
+  }
+  const colRs: number[] = [];
+  for (let y = rightBand[0]; y <= rightBand[1]; y++) {
+    const sp = rowSpan(y);
+    if (sp && sp[1] - sp[0] >= 22) colRs.push(sp[1]);
+  }
+  colLs.sort((a, b) => a - b);
+  colRs.sort((a, b) => a - b);
+  const collarNeckL = colLs.length ? colLs[colLs.length >> 1]! : neckL;
+  const collarNeckR = colRs.length ? colRs[colRs.length >> 1]! : neckR;
+
   // Build per-pixel eroded interior head mask canvas at native sprite scale so zero face pixels float outside head outline
   const maskScale = Math.max(1, Math.round(s));
   const mrw = rw * maskScale;
@@ -463,6 +513,8 @@ function analyzeBaseHeadSilhouette(
     neckR,
     neckCx,
     neckW,
+    collarNeckL,
+    collarNeckR,
     headMaskCanvas,
   };
   if (HEAD_SILHOUETTE_CACHE.size >= 48) {
@@ -473,18 +525,69 @@ function analyzeBaseHeadSilhouette(
   return info;
 }
 
-function getNeckFittedTopSprite(
-  baseSprite: HTMLCanvasElement,
+export interface TopCollarFit2D {
+  srcL: number;
+  srcR: number;
+  /** Signed horizontal shift for left collar/hood rim (- = expand outward, + = pull inward/right). */
+  dL: number;
+  /** Signed horizontal shift for right collar/hood rim (+ = expand outward, - = pull inward/left). */
+  dR: number;
+  angle: Angle2D;
+}
+
+/**
+ * Pure monotonic C1 piecewise horizontal coordinate mapper for bidirectional collar & hood fitting.
+ * Keeps outer shoulders (`<= anchorL`, `>= anchorR`) 100% locked while smoothly moving the left & right
+ * collar/hood rims to hug any head shape's exact neck width & horizontal offset with zero folds or tears.
+ */
+export function mapCollarWarpDstXToSrcX(
+  x: number,
+  yFac: number,
+  srcL: number,
+  srcR: number,
+  dL: number,
+  dR: number,
+  anchorL: number,
+  anchorR: number,
+): number {
+  if (yFac <= 0.001 || x <= anchorL || x >= anchorR) return x;
+  const effDL = dL * yFac;
+  const effDR = dR * yFac;
+  const dstL = srcL + effDL;
+  const dstR = srcR + effDR;
+  if (dstL <= anchorL + 4 || dstR >= anchorR - 4 || dstR <= dstL + 8) return x;
+
+  if (x <= dstL) {
+    const u = (x - anchorL) / (dstL - anchorL);
+    const sm = u * u * (3 - 2 * u);
+    return x - effDL * sm;
+  }
+  if (x >= dstR) {
+    const u = (anchorR - x) / (anchorR - dstR);
+    const sm = u * u * (3 - 2 * u);
+    return x - effDR * sm;
+  }
+  const t = (x - dstL) / (dstR - dstL);
+  return x - (effDL + (effDR - effDL) * t);
+}
+
+/**
+ * Warps a raw top sprite (or its accent mask) BEFORE recoloring / Manga Ink extraction so collars & hoods
+ * hug every head/neck shape snugly (contracting for slim necks, expanding for wide necks, translating for shifted necks)
+ * while keeping shoulders, sleeves, zipper & pockets locked and Manga Ink lines razor sharp.
+ */
+function getCollarWarpedSourceCanvas(
+  srcImg: HTMLImageElement,
   srcKey: string,
-  extraL: number,
-  extraR: number,
-  neckCx: number,
-): HTMLCanvasElement {
-  if (extraL <= 2 && extraR <= 2) return baseSprite;
-  const w = baseSprite.width;
-  const h = baseSprite.height;
+  fit: TopCollarFit2D,
+): HTMLCanvasElement | HTMLImageElement {
+  if (Math.abs(fit.dL) <= 1 && Math.abs(fit.dR) <= 1) return srcImg;
+  const w = srcImg.naturalWidth || srcImg.width || CHAR2D_W;
+  const h = srcImg.naturalHeight || srcImg.height || CHAR2D_H;
   const s = w / CHAR2D_W;
-  const key = `neckwarp2|${srcKey}|${w}x${h}|${Math.round(extraL)}|${Math.round(extraR)}|${Math.round(neckCx)}`;
+  const rDL = Math.round(fit.dL * 2) / 2;
+  const rDR = Math.round(fit.dR * 2) / 2;
+  const key = `collarwarp4|${srcKey}|${w}x${h}|${fit.angle}|${rDL}|${rDR}`;
   const hit = PROCESSED_SPRITE_CACHE.get(key);
   if (hit) return hit;
 
@@ -492,44 +595,69 @@ function getNeckFittedTopSprite(
   out.width = w;
   out.height = h;
   const octx = out.getContext("2d")!;
-  octx.drawImage(baseSprite, 0, 0);
+  octx.drawImage(srcImg, 0, 0, w, h);
 
-  const yMin = Math.round(205 * s);
-  const yMax = Math.round(286 * s);
-  const bandH = yMax - yMin;
-  const srcId = baseSprite.getContext("2d")!.getImageData(0, yMin, w, bandH).data;
-  const dstId = octx.getImageData(0, yMin, w, bandH);
+  const yMin = Math.max(0, Math.floor(188 * s));
+  const yFull = Math.round(238 * s);
+  const yMax = Math.min(h - 1, Math.ceil(304 * s));
+  const bandH = yMax - yMin + 1;
+  if (bandH <= 2) return srcImg;
+
+  const srcId = octx.getImageData(0, yMin, w, bandH);
+  const sd = srcId.data;
+  const dstId = octx.createImageData(w, bandH);
   const dd = dstId.data;
-  const shiftL = Math.min(15, extraL * 0.95) * s;
-  const shiftR = Math.min(15, extraR * 0.95) * s;
-  const neckCxPx = neckCx * s;
-  const xScanMin = Math.round(136 * s);
-  const xScanMax = Math.round(344 * s);
+  dd.set(sd);
+
+  // Give generous reach on the draped-hood side so the entire back hood translates cohesively without squishing
+  const reachL = fit.angle === 45 || fit.angle === 90 || fit.angle === 135 ? 82 : 64;
+  const reachR = fit.angle === 225 || fit.angle === 270 || fit.angle === 315 ? 82 : 64;
+  const srcLPx = fit.srcL * s;
+  const srcRPx = fit.srcR * s;
+  const dLPx = rDL * s;
+  const dRPx = rDR * s;
+  const anchorLPx = Math.max(2, (fit.srcL - reachL) * s);
+  const anchorRPx = Math.min(w - 3, (fit.srcR + reachR) * s);
+  const xScanMin = Math.max(0, Math.floor(anchorLPx));
+  const xScanMax = Math.min(w - 1, Math.ceil(anchorRPx));
 
   for (let ly = 0; ly < bandH; ly++) {
     const wy = yMin + ly;
-    const yFac = Math.pow(1 - (wy - yMin) / bandH, 1.5);
-    if (yFac <= 0.01) continue;
-    for (let x = xScanMin; x < xScanMax; x++) {
-      const dx = x - neckCxPx;
-      const absDx = Math.abs(dx);
-      if (absDx < 2 * s || absDx > 72 * s) continue;
-      const sideShift = dx < 0 ? shiftL : shiftR;
-      if (sideShift <= 0.2) continue;
-      const hEnv = Math.exp(-Math.pow(Math.max(0, absDx - 18 * s) / (26 * s), 2));
-      const shift = Math.sign(dx) * sideShift * yFac * hEnv * Math.min(1, absDx / (12 * s));
-      const sx = x - shift;
+    let yFac = 1;
+    if (wy > yFull) {
+      const t = Math.max(0, Math.min(1, (yMax - wy) / Math.max(1, yMax - yFull)));
+      yFac = t * t * (3 - 2 * t);
+    }
+    if (yFac <= 0.001) continue;
+    const rowOff = ly * w;
+    for (let x = xScanMin; x <= xScanMax; x++) {
+      const sx = mapCollarWarpDstXToSrcX(x, yFac, srcLPx, srcRPx, dLPx, dRPx, anchorLPx, anchorRPx);
       const x0 = Math.max(0, Math.min(w - 2, Math.floor(sx)));
       const f = sx - x0;
-      const i0 = (ly * w + x0) * 4;
+      const i0 = (rowOff + x0) * 4;
       const i1 = i0 + 4;
-      const oi = (ly * w + x) * 4;
-      dd[oi] = Math.round((srcId[i0] ?? 0) * (1 - f) + (srcId[i1] ?? 0) * f);
-      dd[oi + 1] = Math.round((srcId[i0 + 1] ?? 0) * (1 - f) + (srcId[i1 + 1] ?? 0) * f);
-      dd[oi + 2] = Math.round((srcId[i0 + 2] ?? 0) * (1 - f) + (srcId[i1 + 2] ?? 0) * f);
-      dd[oi + 3] = Math.round((srcId[i0 + 3] ?? 0) * (1 - f) + (srcId[i1 + 3] ?? 0) * f);
+      const oi = (rowOff + x) * 4;
+      const a0 = sd[i0 + 3] ?? 0;
+      const a1 = sd[i1 + 3] ?? 0;
+      const aOut = a0 * (1 - f) + a1 * f;
+      if (aOut < 1) {
+        dd[oi] = 0;
+        dd[oi + 1] = 0;
+        dd[oi + 2] = 0;
+        dd[oi + 3] = 0;
+        continue;
+      }
+      // Premultiplied-alpha bilinear interpolation avoids dark/white edge fringes along collar silhouettes!
+      const w0 = (1 - f) * a0;
+      const w1 = f * a1;
+      const wSum = w0 + w1 || 1;
+      dd[oi] = Math.round(((sd[i0] ?? 0) * w0 + (sd[i1] ?? 0) * w1) / wSum);
+      dd[oi + 1] = Math.round(((sd[i0 + 1] ?? 0) * w0 + (sd[i1 + 1] ?? 0) * w1) / wSum);
+      dd[oi + 2] = Math.round(((sd[i0 + 2] ?? 0) * w0 + (sd[i1 + 2] ?? 0) * w1) / wSum);
+      dd[oi + 3] = Math.round(aOut);
     }
   }
+
   octx.putImageData(dstId, 0, yMin);
   return putProcessedCache(key, out);
 }
@@ -541,15 +669,12 @@ function redrawHeadNeckAboveCollar2D(
   angle: Angle2D,
 ) {
   if (!processedBase || !sil) return;
+  // On rear views (135°, 180°, 225°), the hoodie hood sits in front of the nape — NEVER stamp neck skin over the hood crest!
+  if (isBackFacingAngle2D(angle)) return;
   ctx.save();
   ctx.beginPath();
-  if (isBackFacingAngle2D(angle)) {
-    // On rear views (135°, 180°, 225°), keep head crisp only above the hoodie hood top (y = 214)
-    ctx.rect(140, 0, 200, 213);
-  } else {
-    // Keep jawline & chin crisp strictly above y = chinY + 1 so collar & inner T-shirt crewneck remain intact
-    ctx.rect(140, 0, 200, sil.chinY + 1);
-  }
+  // Keep jawline & chin crisp strictly above y = chinY + 1 so collar & inner T-shirt crewneck remain intact
+  ctx.rect(140, 0, 200, sil.chinY + 1);
   ctx.clip();
   ctx.drawImage(processedBase, 0, 0, CHAR2D_W, CHAR2D_H);
   ctx.restore();
@@ -598,7 +723,10 @@ function getClothingMaskedBaseCanvas(
 
   // 2. Hide covered central torso & inner deltoids under equipped top while keeping neck V-opening & bare forearms intact
   if (hasTop) {
-    const neckCx = sil ? sil.neckCx : (anchors.neckL + anchors.neckR) / 2;
+    const neckCx = sil
+      ? (sil.collarNeckL + sil.collarNeckR) / 2
+      : (anchors.neckL + anchors.neckR) / 2;
+    const baseVHalf = sil ? Math.max(26, (sil.collarNeckR - sil.collarNeckL) * 0.56) : 26;
     const isFrontV = angle === 0 || angle === 45 || angle === 315;
     const isProf = angle === 90 || angle === 270;
     const yTop0 = Math.floor(234 * s);
@@ -607,7 +735,7 @@ function getClothingMaskedBaseCanvas(
     const xTop1 = Math.ceil(356 * s);
     for (let y = yTop0; y <= yTop1; y++) {
       const ly = y / s;
-      const vHalfW = isFrontV ? Math.max(0, 26 - Math.max(0, ly - 236) * 0.68) : 0;
+      const vHalfW = isFrontV ? Math.max(0, baseVHalf - Math.max(0, ly - 236) * 0.68) : 0;
       const vCx = neckCx + (angle === 45 ? 4 : angle === 315 ? -4 : 0);
       for (let x = xTop0; x <= xTop1; x++) {
         const lx = x / s;
@@ -2958,7 +3086,7 @@ function drawIllustratedClothing2D(
   mode: RenderMode2D,
   shadingDepth: ShadingDepth2D,
   imageMap: Map<string, HTMLImageElement>,
-  neckFit?: { extraL: number; extraR: number; neckCx: number } | null,
+  collarFit?: TopCollarFit2D | null,
 ) {
   if (!pack) return;
   const src = pack.frames[angle];
@@ -2967,20 +3095,37 @@ function drawIllustratedClothing2D(
 
   const maskSrc = pack.accentMasks?.[angle];
   const maskImg = maskSrc ? imageMap.get(maskSrc) : undefined;
-  let sprite = getRecoloredIllustratedPart(
-    img,
-    src,
+
+  let effectiveImg: HTMLImageElement | HTMLCanvasElement = img;
+  let effectiveMask: HTMLImageElement | HTMLCanvasElement | undefined = maskImg;
+  let effectiveKey = src;
+  let effectiveMaskKey = maskSrc;
+
+  // Warp raw 2K top & accent mask BEFORE recoloring / G-Pen Manga Ink extraction for razor-sharp collar seams!
+  if (
+    pack.slot === "top" &&
+    collarFit &&
+    (Math.abs(collarFit.dL) > 1 || Math.abs(collarFit.dR) > 1)
+  ) {
+    const warpTag = `cw:${Math.round(collarFit.dL * 2)}:${Math.round(collarFit.dR * 2)}`;
+    effectiveImg = getCollarWarpedSourceCanvas(img, src, collarFit);
+    effectiveKey = `${src}|${warpTag}`;
+    if (maskImg && maskSrc) {
+      effectiveMask = getCollarWarpedSourceCanvas(maskImg, maskSrc, collarFit);
+      effectiveMaskKey = `${maskSrc}|${warpTag}`;
+    }
+  }
+
+  const sprite = getRecoloredIllustratedPart(
+    effectiveImg,
+    effectiveKey,
     primaryHex,
     mode,
     shadingDepth,
-    maskImg,
-    maskSrc,
+    effectiveMask,
+    effectiveMaskKey,
     accentHex,
   );
-  if (pack.slot === "top" && neckFit && (neckFit.extraL > 2 || neckFit.extraR > 2)) {
-    const sk = `ill|${src}|${maskSrc ?? "nomask"}|${mode}|${shadingDepth}|${primaryHex}|${accentHex}`;
-    sprite = getNeckFittedTopSprite(sprite, sk, neckFit.extraL, neckFit.extraR, neckFit.neckCx);
-  }
   ctx.drawImage(sprite, 0, 0, CHAR2D_W, CHAR2D_H);
 }
 
@@ -3928,12 +4073,14 @@ export function renderCharacter2DSync(
     shadingDepth,
     imageMap,
   );
-  const refNeckA = baseModel.anchors[angle];
-  const neckFit = headSil
+  const [refColL, refColR] = M1_REF_COLLAR_NECK[angle];
+  const collarFit: TopCollarFit2D | null = headSil
     ? {
-        extraL: Math.max(0, Math.min(16, refNeckA.neckL - headSil.neckL)),
-        extraR: Math.max(0, Math.min(16, headSil.neckR - refNeckA.neckR)),
-        neckCx: headSil.neckCx,
+        srcL: refColL,
+        srcR: refColR,
+        dL: Math.max(-26, Math.min(26, headSil.collarNeckL - refColL)),
+        dR: Math.max(-26, Math.min(26, headSil.collarNeckR - refColR)),
+        angle,
       }
     : null;
   drawIllustratedClothing2D(
@@ -3945,7 +4092,7 @@ export function renderCharacter2DSync(
     mode,
     shadingDepth,
     imageMap,
-    neckFit,
+    collarFit,
   );
   if (topPack) {
     redrawHeadNeckAboveCollar2D(ctx, processedBaseCanvas, headSil, angle);
